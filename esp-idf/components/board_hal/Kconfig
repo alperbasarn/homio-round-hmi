@@ -1,0 +1,66 @@
+menu "QNOB Hardware Configuration"
+
+    choice QNOB_HARDWARE_TARGET
+        prompt "Target Hardware Platform"
+        default QNOB_HW_ESP32S3_LCD_128
+        help
+            Select the target hardware platform for QNOB.
+
+        config QNOB_HW_ESP32S3_LCD_128
+            bool "ESP32-S3 with 1.28\" GC9A01 LCD (240x240)"
+            depends on IDF_TARGET_ESP32S3
+            help
+                Waveshare ESP32-S3-Touch-LCD-1.28 board with GC9A01 round LCD display.
+
+        config QNOB_HW_ESP32C6_AMOLED_143
+            bool "ESP32-C6 with 1.43\" RM67162 AMOLED (466x466)"
+            depends on IDF_TARGET_ESP32C6
+            help
+                Waveshare ESP32-C6-Touch-AMOLED-1.43 board with RM67162 round AMOLED display.
+    endchoice
+
+    config QNOB_ENABLE_TOUCH
+        bool "Enable Touch Panel"
+        default y
+        help
+            Enable the CST816S capacitive touch panel.
+
+    config QNOB_ENABLE_IMU
+        bool "Enable IMU Sensor"
+        default n
+        help
+            Enable the QMI8658 IMU sensor for motion detection.
+
+    config QNOB_ENABLE_KNOB_UART
+        bool "Enable Knob UART Communication"
+        default y
+        help
+            Enable UART communication with external knob controller.
+
+    config QNOB_KNOB_BAUD_RATE
+        int "Knob UART Baud Rate"
+        default 9600
+        depends on QNOB_ENABLE_KNOB_UART
+        help
+            Baud rate for UART communication with knob controller.
+
+    config QNOB_ENABLE_DEEP_SLEEP
+        bool "Enable Deep Sleep"
+        default y
+        help
+            Enable deep sleep mode for power saving.
+
+    config QNOB_INACTIVITY_TIMEOUT_SEC
+        int "Inactivity Timeout (seconds)"
+        default 30
+        depends on QNOB_ENABLE_DEEP_SLEEP
+        help
+            Time in seconds before entering sleep mode due to inactivity.
+
+    config QNOB_WIFI_CONNECT_TIMEOUT_SEC
+        int "WiFi Connection Timeout (seconds)"
+        default 10
+        help
+            Maximum time to wait for WiFi connection.
+
+endmenu

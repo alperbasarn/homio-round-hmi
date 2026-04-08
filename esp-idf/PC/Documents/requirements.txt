@@ -1,0 +1,4 @@
+paho-mqtt==1.6.1
+pyserial==3.5
+pywin32==305
+pillow==9.4.0

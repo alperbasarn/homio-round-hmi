@@ -1,0 +1,191 @@
+# QNOB Implementation Guide
+
+This guide provides detailed instructions for implementing the QNOB Control System, including how to integrate the PC application with the ESP32 firmware.
+
+## Directory Structure
+
+Create the following file structure:
+
+```
+QNOB/
+├── main.py
+├── sound_controller_app.py
+├── connect_tab.py
+├── configure_tab.py
+├── sound_controller_tab.py
+├── mqtt_handler.py
+├── media_controller.py
+├── windows_audio_controller.py
+└── requirements.txt
+```
+
+## Implementation Steps
+
+### 1. PC Application
+
+#### a. Set up the main entry point
+
+Create `main.py` as the entry point to launch the application:
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+QNOB Controller Application
+Author: Alper Basaran
+"""
+
+import tkinter as tk
+from sound_controller_app import QNOBApp
+
+def main():
+    # Initialize the root window
+    root = tk.Tk()
+    root.title("QNOB Controller")
+    
+    # Create the application
+    app = QNOBApp(root)
+    
+    # Set up window close handler
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
+    
+    # Start the main event loop
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
+```
+
+#### b. Implement the main application class
+
+Create `sound_controller_app.py` containing the `QNOBApp` class that manages the tabs and core functionality.
+
+#### c. Implement the tabs
+
+Create separate modules for each tab:
+- `connect_tab.py` - For Serial and TCP connections
+- `configure_tab.py` - For device configuration
+- `sound_controller_tab.py` - For sound and media control
+
+#### d. Reuse existing controllers
+
+Use the existing controller components:
+- `media_controller.py` - For controlling media playback
+- `windows_audio_controller.py` - For controlling Windows volume
+- Update `mqtt_handler.py` - For MQTT communication
+
+### 2. ESP32 Firmware Updates
+
+#### a. Update CommandHandler
+
+Modify the `CommandHandler` class to support NVS configuration commands:
+
+- Add new command handlers:
+  - `cmdListNVSValues` - For listing all NVS values
+
+- Register new commands in the `initialize()` method:
+  ```cpp
+  commands[commandCount++] = { "listNVSValues", &CommandHandler::cmdListNVSValues, "List all NVS values" };
+  ```
+
+- Implement command handlers in `CommandHandler.cpp`
+
+#### b. Ensure TCP/MQTT Support
+
+Make sure the existing TCP server and MQTT functionality supports the new commands and responses.
+
+## Testing
+
+### 1. Connection Testing
+
+- Test Serial connection:
+  - Connect the ESP32 via USB
+  - Use the Serial tab to connect to the COM port
+  - Verify communication by sending and receiving commands
+
+- Test TCP connection:
+  - Ensure the ESP32 is on the same network
+  - Use the TCP tab to scan for and connect to the device
+  - Verify communication by sending and receiving commands
+
+### 2. Configuration Testing
+
+- Test loading configuration:
+  - Connect to the device
+  - Switch to the Configure tab
+  - Verify all configuration values are loaded correctly
+
+- Test saving configuration:
+  - Modify configuration values
+  - Click Save
+  - Verify the changes are sent to the device
+  - Verify the device responds with success
+
+### 3. Media Control Testing
+
+- Test volume control:
+  - Adjust the volume slider
+  - Verify Windows volume changes
+  - Verify the device receives the volume change
+
+- Test media playback:
+  - Play/pause media
+  - Forward/rewind
+  - Verify the device receives the commands
+
+## Common Issues and Solutions
+
+### Connection Issues
+
+- **COM Port Not Found**: Ensure the correct drivers are installed for the ESP32
+- **TCP Connection Failed**: Check network settings and firewall rules
+- **Connection Drops**: Check for timeout settings and increase if necessary
+
+### Configuration Issues
+
+- **Values Not Saving**: Ensure the proper command format is being used
+- **Values Not Loading**: Check that the device is responding to requests
+- **Parse Errors**: Verify the format of responses from the device
+
+### Media Control Issues
+
+- **Media Control Not Working**: Check that the correct media applications are running
+- **Volume Control Not Working**: Ensure appropriate permissions for controlling Windows audio
+
+## MQTT Integration
+
+### Broker Configuration
+
+Configure the MQTT broker settings in the application or via device commands:
+
+```
+configureMQTTServer:broker.example.com:8883:username:password
+```
+
+### Topic Structure
+
+The QNOB uses the following MQTT topics:
+- `esp32/sound/control` - For media control commands
+- `esp32/sound/setpoint` - For volume control
+- `esp32/sound/response` - For device responses
+- `esp32/sound/get_state` - For state requests
+- `esp32/command/response` - For device command responses
+
+## Further Development
+
+### Adding New Commands
+
+To add a new command to the system:
+
+1. Add the command handler declaration in `CommandHandler.h`
+2. Implement the command handler in `CommandHandler.cpp`
+3. Register the command in the `initialize()` method
+4. Update the PC application to support the new command
+
+### UI Customization
+
+To customize the UI:
+
+1. Modify the relevant tab class
+2. Update styles and layouts as needed
+3. Ensure proper bindings for events and data flow

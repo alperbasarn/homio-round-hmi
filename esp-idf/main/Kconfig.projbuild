@@ -1,0 +1,40 @@
+menu "QNOB Application Configuration"
+
+    config QNOB_DEVICE_NAME
+        string "Default Device Name"
+        default "QNOB"
+        help
+            Default name for the device, used for MQTT client ID and display.
+
+    config QNOB_WIFI_SSID
+        string "Default WiFi SSID"
+        default ""
+        help
+            Default WiFi SSID for initial connection.
+
+    config QNOB_WIFI_PASSWORD
+        string "Default WiFi Password"
+        default ""
+        help
+            Default WiFi password for initial connection.
+
+    config QNOB_MQTT_BROKER_URL
+        string "Default MQTT Broker URL"
+        default ""
+        help
+            Default MQTT broker URL (e.g., mqtt://broker.example.com)
+
+    config QNOB_MQTT_BROKER_PORT
+        int "Default MQTT Broker Port"
+        default 1883
+        help
+            Default MQTT broker port.
+
+    config QNOB_LOG_LEVEL
+        int "Log Level (0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)"
+        default 3
+        range 0 5
+        help
+            Set the logging verbosity level.
+
+endmenu
