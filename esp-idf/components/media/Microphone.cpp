@@ -28,6 +28,11 @@ Microphone::~Microphone() {
 }
 
 esp_err_t Microphone::initialize(uint32_t sampleRate, uint8_t channels, uint8_t bitsPerSample) {
+#if QNOB_AUDIO_INPUT_BACKEND == QNOB_AUDIO_INPUT_BACKEND_NONE
+    ESP_LOGI(TAG, "Audio input is disabled for this board");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     if (initialized &&
         currentSampleRate == sampleRate &&
         currentChannels == channels &&
@@ -103,6 +108,11 @@ void Microphone::setSoftwareGain(float gain) {
 }
 
 esp_err_t Microphone::configure(uint32_t sampleRate, uint8_t channels, uint8_t bitsPerSample) {
+#if QNOB_AUDIO_INPUT_BACKEND != QNOB_AUDIO_INPUT_BACKEND_I2S
+    ESP_LOGE(TAG, "Unsupported audio input backend: %d", QNOB_AUDIO_INPUT_BACKEND);
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(AUDIO_I2S_PORT, I2S_ROLE_MASTER);
     chanCfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&chanCfg, nullptr, &rxChannel);

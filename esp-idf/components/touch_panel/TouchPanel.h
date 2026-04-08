@@ -39,6 +39,20 @@ extern "C" {
 #define CST816S_REG_IO_CTL          0xFD
 #define CST816S_REG_DIS_AUTO_SLEEP  0xFE
 
+// FT6x36/FT6146-Compatible Touch Controller Registers
+#define FT6X36_REG_GESTURE_ID       0x01
+#define FT6X36_REG_FINGER_NUM       0x02
+#define FT6X36_REG_XPOS_H           0x03
+#define FT6X36_REG_XPOS_L           0x04
+#define FT6X36_REG_YPOS_H           0x05
+#define FT6X36_REG_YPOS_L           0x06
+#define FT6X36_REG_MONITOR_CTRL     0x86
+#define FT6X36_REG_CHIP_ID          0xA3
+#define FT6X36_REG_G_MODE           0xA4
+#define FT6X36_REG_POWER_MODE       0xA5
+#define FT6X36_REG_FW_VERSION       0xA6
+#define FT6X36_REG_VENDOR_ID        0xA8
+
 // Gesture IDs
 typedef enum {
     GESTURE_NONE = 0x00,
@@ -68,6 +82,13 @@ typedef struct {
 
 #ifdef __cplusplus
 
+typedef enum {
+    TOUCH_CONTROLLER_UNKNOWN = 0,
+    TOUCH_CONTROLLER_CST816S,
+    TOUCH_CONTROLLER_FT6X36,
+    TOUCH_CONTROLLER_CST9217,
+} touch_controller_type_t;
+
 class TouchPanel {
 private:
     int sda_pin;
@@ -75,6 +96,7 @@ private:
     int rst_pin;
     int irq_pin;
     uint8_t i2c_addr;
+    touch_controller_type_t controller_type;
 
     bool initialized;
     bool first_press;
@@ -108,6 +130,8 @@ private:
     int release_y;
     touch_gesture_t gesture;
     i2c_master_dev_handle_t i2c_dev_handle;
+    uint16_t controller_chip_id16;
+    uint32_t controller_fw_version32;
 
     static constexpr int TAP_RELEASE_RADIUS_PX = 25;
     static constexpr int TAP_CONFIRM_MS = 100;
@@ -117,9 +141,15 @@ private:
     // I2C communication
     esp_err_t i2c_read_reg(uint8_t reg, uint8_t* data, size_t len);
     esp_err_t i2c_write_reg(uint8_t reg, uint8_t data);
+    esp_err_t i2c_read_reg16(uint16_t reg, uint8_t* data, size_t len);
+    esp_err_t i2c_write_cmd16(uint16_t reg);
 
     // Reset the touch controller
     void reset();
+    const char* getControllerName() const;
+    esp_err_t initializeCst9217();
+    bool readCst9217TouchData(touch_data_t* data);
+    void prepareCst9217ForSleep();
 
 public:
     TouchPanel(int sda, int scl, int rst, int irq);

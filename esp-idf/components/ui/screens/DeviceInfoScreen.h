@@ -14,8 +14,8 @@ struct DeviceBatteryStatus {
     bool presenceKnown = false;
     bool connected = false;
     bool percentageAvailable = false;
-    float percentage = 0.0f;
-    float voltage = 0.0f;
+    float percentage = -1.0f;
+    float voltage = -1.0f;
 };
 using BatteryCallback = std::function<DeviceBatteryStatus()>;
 

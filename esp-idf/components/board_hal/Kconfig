@@ -12,18 +12,27 @@ menu "QNOB Hardware Configuration"
             help
                 Waveshare ESP32-S3-Touch-LCD-1.28 board with GC9A01 round LCD display.
 
+        config QNOB_HW_ESP32S3_AMOLED_175
+            bool "ESP32-S3 with 1.75\" AMOLED (CO5300 QSPI, 466x466)"
+            depends on IDF_TARGET_ESP32S3
+            help
+                Waveshare ESP32-S3-Touch-AMOLED-1.75 board using the CO5300-compatible
+                QSPI AMOLED path and CST9217 capacitive touch controller.
+
         config QNOB_HW_ESP32C6_AMOLED_143
-            bool "ESP32-C6 with 1.43\" RM67162 AMOLED (466x466)"
+            bool "ESP32-C6 with 1.43\" AMOLED (SH8601 QSPI, 466x466)"
             depends on IDF_TARGET_ESP32C6
             help
-                Waveshare ESP32-C6-Touch-AMOLED-1.43 board with RM67162 round AMOLED display.
+                Waveshare ESP32-C6-Touch-AMOLED-1.43 board using the SH8601-compatible QSPI AMOLED path.
     endchoice
 
     config QNOB_ENABLE_TOUCH
         bool "Enable Touch Panel"
         default y
         help
-            Enable the CST816S capacitive touch panel.
+            Enable the target-specific capacitive touch panel
+            (CST816S on the 1.28 S3 board, CST9217 on the 1.75 S3 AMOLED board,
+            FT6x36-compatible on the C6 AMOLED board).
 
     config QNOB_ENABLE_IMU
         bool "Enable IMU Sensor"

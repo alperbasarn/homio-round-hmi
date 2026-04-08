@@ -1,5 +1,5 @@
-# ESP32-S3 Specific Configuration
-# Target: Waveshare ESP32-S3-Touch-LCD-1.28 with GC9A01
+# ESP32-S3 Base Configuration
+# Shared target defaults for Waveshare ESP32-S3 display boards
 
 CONFIG_IDF_TARGET="esp32s3"
 

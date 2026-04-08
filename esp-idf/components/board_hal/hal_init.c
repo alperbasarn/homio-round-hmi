@@ -262,11 +262,7 @@ esp_err_t board_hal_init(void)
 {
     ESP_LOGI(TAG, "Initializing HAL...");
 
-#if CONFIG_IDF_TARGET_ESP32S3
-    ESP_LOGI(TAG, "Target: ESP32-S3 with GC9A01 LCD (%dx%d)", DISPLAY_WIDTH, DISPLAY_HEIGHT);
-#elif CONFIG_IDF_TARGET_ESP32C6
-    ESP_LOGI(TAG, "Target: ESP32-C6 with SH8601 AMOLED (%dx%d)", DISPLAY_WIDTH, DISPLAY_HEIGHT);
-#endif
+    ESP_LOGI(TAG, "Target board: %s (%dx%d)", QNOB_BOARD_NAME, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     esp_err_t err = hal_gpio_init();
     if (err != ESP_OK) {

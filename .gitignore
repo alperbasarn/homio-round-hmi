@@ -4,6 +4,17 @@ Thumbs.db
 __pycache__/
 *.pyc
 **/.claude/settings.local.json
+Binaries/
+OTA/
 esp-idf/NUL
 esp-idf/build/
 esp-idf/screen-test/build/
+Hardware Ref/build_s3_amoled175/
+Hardware Ref/build_s3_lcd128/
+Hardware Ref/sdkconfig.esp32s3_amoled175
+Hardware Ref/build_c6_amoled143/
+Hardware Ref/build_esp32s3_lcd128/
+Hardware Ref/build_esp32s3_amoled175/
+Hardware Ref/build_esp32c6_amoled143/
+Hardware Ref/sdkconfig.esp32s3_lcd128
+Hardware Ref/sdkconfig.esp32c6_amoled143

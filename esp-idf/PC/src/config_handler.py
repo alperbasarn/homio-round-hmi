@@ -44,12 +44,20 @@ class ConfigHandler:
                 "port": 8883,
                 "username": "test123",
                 "password": "Test1234"
+            },
+            "ota": {
+                "host": "",
+                "port": 8070
             }
         }
     
     def get_mqtt_config(self):
         """Get MQTT configuration settings"""
         return self.config.get("mqtt", self.get_default_config()["mqtt"])
+
+    def get_ota_config(self):
+        """Get OTA helper configuration settings"""
+        return self.config.get("ota", self.get_default_config()["ota"])
     
     def save_mqtt_config(self, broker, port, username, password):
         """Save MQTT configuration settings"""
@@ -61,4 +69,14 @@ class ConfigHandler:
         self.config["mqtt"]["username"] = username
         self.config["mqtt"]["password"] = password
         
+        return self.save_config()
+
+    def save_ota_config(self, host, port):
+        """Save OTA helper configuration settings"""
+        if "ota" not in self.config:
+            self.config["ota"] = {}
+
+        self.config["ota"]["host"] = host
+        self.config["ota"]["port"] = port
+
         return self.save_config()

@@ -270,7 +270,7 @@ class QNOBApp:
             
         # Pass information to Configure tab for NVS values
         elif not command.startswith("sender=") and self.notebook.index(self.notebook.select()) == 2:
-            if "=" in command or "End of EEPROM Values" in command:
+            if command.startswith("ota") or "=" in command or "End of EEPROM Values" in command:
                 if hasattr(self.configure_tab, 'process_command_response'):
                     self.configure_tab.process_command_response(command)
 
@@ -288,6 +288,9 @@ class QNOBApp:
             # Stop audio monitoring
             if hasattr(self, 'audio_controller'):
                 self.audio_controller.stop_monitoring()
+
+            if hasattr(self, 'configure_tab'):
+                self.configure_tab.shutdown()
                 
             # Close connections
             if self.serial_connected and self.connected_device:

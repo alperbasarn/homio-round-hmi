@@ -25,8 +25,8 @@ DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
       batteryPresenceKnown(false),
       batteryConnected(false),
       batteryPercentageAvailable(false),
-      batteryPercentage(0.0f),
-      batteryVoltage(0.0f),
+      batteryPercentage(-1.0f),
+      batteryVoltage(-1.0f),
       batteryChanged(true),
       lastActivityTime(0),
       lastUpdateTime(0),
@@ -197,7 +197,7 @@ void DeviceInfoScreen::buildUi() {
 
     batteryStatusLabel = lv_label_create(root);
     lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
-    lv_label_set_text(batteryStatusLabel, "Unknown (ADC)");
+    lv_label_set_text(batteryStatusLabel, "Telemetry unavailable");
     lv_obj_set_pos(batteryStatusLabel, valueX, startY + itemSpacing * 3);
 
     batteryPercentIconLabel = lv_label_create(root);
@@ -266,9 +266,16 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
     }
 
     if (batteryChanged || forceFullRefresh) {
+        const bool telemetryAvailable = batteryPercentageAvailable || batteryVoltage >= 0.0f;
+
         if (!batteryPresenceKnown) {
-            lv_label_set_text(batteryStatusLabel, "Unknown (ADC)");
-            lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
+            if (telemetryAvailable) {
+                lv_label_set_text(batteryStatusLabel, "Presence unknown");
+                lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
+            } else {
+                lv_label_set_text(batteryStatusLabel, "Telemetry unavailable");
+                lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0x9BA7B6), 0);
+            }
         } else if (batteryConnected) {
             lv_label_set_text(batteryStatusLabel, "Connected");
             lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0x7CD97A), 0);

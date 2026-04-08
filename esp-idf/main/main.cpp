@@ -50,6 +50,31 @@
 
 static const char *TAG = "QNOB_MAIN";
 
+namespace {
+
+BatteryHandler::Config getBatteryHandlerConfig() {
+    BatteryHandler::Config config = {};
+
+#if QNOB_BATTERY_SOURCE == QNOB_BATTERY_SOURCE_ADC
+    config.source = BatteryHandler::TelemetrySource::ADC;
+    config.adcChannel = BAT_ADC_PIN;
+#elif QNOB_BATTERY_SOURCE == QNOB_BATTERY_SOURCE_AXP2101
+    config.source = BatteryHandler::TelemetrySource::AXP2101;
+    config.pmuI2cAddress = PMU_I2C_ADDR;
+#else
+    config.source = BatteryHandler::TelemetrySource::NONE;
+#endif
+
+    return config;
+}
+
+constexpr bool kAudioOutputSupported =
+    (QNOB_AUDIO_OUTPUT_BACKEND != QNOB_AUDIO_OUTPUT_BACKEND_NONE);
+constexpr bool kAudioInputSupported =
+    (QNOB_AUDIO_INPUT_BACKEND != QNOB_AUDIO_INPUT_BACKEND_NONE);
+
+}  // namespace
+
 // Global objects
 static LGFX* gfx = nullptr;
 static TouchPanel* touchPanel = nullptr;
@@ -108,7 +133,7 @@ void displayTask(void* parameter) {
 #endif
 
         if (batteryHandler && batteryHandler->isInitialized()) {
-            batteryHandler->update();
+            batteryHandler->analyze();
         }
         displayController->update();
 
@@ -199,7 +224,7 @@ extern "C" void app_main(void) {
     // Initialize Battery Handler
     ESP_LOGI(TAG, "Initializing battery handler...");
     batteryHandler = new BatteryHandler();
-    if (batteryHandler->initialize() != ESP_OK) {
+    if (batteryHandler->initialize(getBatteryHandlerConfig()) != ESP_OK) {
         ESP_LOGW(TAG, "Battery handler init failed - battery monitoring disabled");
     }
 
@@ -259,29 +284,58 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "  %s", sdCard->getRecordingsDir().c_str());
     }
 
-    // Initialize audio/media classes (available for controllers)
-    speaker = new Speaker();
-    microphone = new Microphone();
-    soundPlayer = new SoundPlayer(sdCard, speaker);
-    soundRecorder = new SoundRecorder(sdCard, microphone);
-    mediaController = new MediaController(soundRecorder, soundPlayer);
     bool startupChimeReady = false;
-    if (soundPlayer->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "SoundPlayer initialization failed");
+
+    // Initialize audio/media classes only when the selected board exposes audio.
+    if (!kAudioOutputSupported && !kAudioInputSupported) {
+        ESP_LOGI(TAG, "Audio is not supported on %s - media features disabled", QNOB_BOARD_NAME);
     } else {
-        startupChimeReady = true;
-    }
-    if (soundRecorder->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "SoundRecorder initialization failed");
-    }
-    if (mediaController->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "MediaController initialization failed");
+        ESP_LOGI(TAG, "Initializing audio/media classes...");
+
+        if (kAudioOutputSupported) {
+            speaker = new Speaker();
+            soundPlayer = new SoundPlayer(sdCard, speaker);
+            if (soundPlayer->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "SoundPlayer initialization failed");
+            } else {
+                startupChimeReady = true;
+            }
+        } else {
+            ESP_LOGI(TAG, "Audio output disabled for %s", QNOB_BOARD_NAME);
+        }
+
+        if (kAudioInputSupported) {
+            microphone = new Microphone();
+            soundRecorder = new SoundRecorder(sdCard, microphone);
+            if (soundRecorder->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "SoundRecorder initialization failed");
+            }
+        } else {
+            ESP_LOGI(TAG, "Audio input disabled for %s", QNOB_BOARD_NAME);
+        }
+
+        if (soundPlayer != nullptr) {
+            mediaController = new MediaController(soundRecorder, soundPlayer);
+            if (mediaController->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "MediaController initialization failed");
+            }
+        } else if (soundRecorder != nullptr) {
+            ESP_LOGW(TAG, "Audio input is present but no playback path is configured; media controller disabled");
+        }
     }
 
     // Initialize Knob Controller
+#if (KNOB_TX_PIN >= 0) && (KNOB_RX_PIN >= 0)
     ESP_LOGI(TAG, "Initializing knob controller...");
     knobController = new KnobController(KNOB_TX_PIN, KNOB_RX_PIN, KNOB_UART_NUM);
-    knobController->begin(KNOB_BAUD_RATE);
+    if (knobController->begin(KNOB_BAUD_RATE) != ESP_OK) {
+        ESP_LOGW(TAG, "Knob controller init failed - continuing without UART knob");
+        delete knobController;
+        knobController = nullptr;
+    }
+#else
+    ESP_LOGI(TAG, "Knob UART is not mapped for %s - skipping knob controller init", QNOB_BOARD_NAME);
+#endif
 
     // Initialize networking
     ESP_LOGI(TAG, "Initializing networking...");
@@ -321,9 +375,12 @@ extern "C" void app_main(void) {
     });
     deviceInfoScreen->setBatteryCallback([]() -> DeviceBatteryStatus {
         if (batteryHandler && batteryHandler->isInitialized()) {
-            return {false, false, true, batteryHandler->getBatteryPercentage(), batteryHandler->getBatteryVoltage()};
+            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
+            const bool percentageAvailable = telemetry.percentage >= 0.0f;
+            return {false, batteryHandler->isBatteryConnected(), percentageAvailable,
+                    telemetry.percentage, telemetry.voltageVolts};
         }
-        return {false, false, false, 0.0f, 0.0f};
+        return {false, false, false, -1.0f, -1.0f};
     });
 
     soundController = new SoundController(gfx, touchPanel);
