@@ -65,7 +65,7 @@ jobs:
         with:
           pattern: binaries-*
           path: Binaries
-          merge-multiple: true
+          merge-multiple: false
 
       - name: Generate OTA site payload
         shell: bash

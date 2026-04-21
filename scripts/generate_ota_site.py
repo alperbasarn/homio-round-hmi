@@ -36,6 +36,18 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def resolve_binary_path(publish_root: Path, variant: str) -> Path:
+    candidates = [
+        publish_root / variant / "qnob-screen.bin",
+        publish_root / f"binaries-{variant}" / "qnob-screen.bin",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    checked = "\n  - ".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"Missing OTA binary for {variant}. Checked:\n  - {checked}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate OTA site payload for GitHub Pages")
     parser.add_argument("--publish-root", required=True, help="Root containing Binaries/<variant>/qnob-screen.bin")
@@ -60,9 +72,7 @@ def main() -> int:
     }
 
     for variant, meta in VARIANTS.items():
-        binary_path = publish_root / variant / "qnob-screen.bin"
-        if not binary_path.is_file():
-            raise FileNotFoundError(f"Missing OTA binary for {variant}: {binary_path}")
+        binary_path = resolve_binary_path(publish_root, variant)
 
         release_binary_path = site_root / "ota" / "releases" / release_tag / variant / "qnob-screen.bin"
         release_binary_path.parent.mkdir(parents=True, exist_ok=True)
