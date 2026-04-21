@@ -49,6 +49,7 @@
 
 
 static const char *TAG = "QNOB_MAIN";
+static constexpr const char* kDefaultOtaManifestBaseUrl = "https://alperbasarn.github.io/homio-round-hmi/ota/latest";
 
 namespace {
 
@@ -348,6 +349,8 @@ extern "C" void app_main(void) {
     internetHandler = new InternetHandler(wifiManager);
     wifiManager->connectToWiFi();
     otaManager = new OTAManager(wifiManager);
+    otaManager->setDeviceVariantId(QNOB_OTA_VARIANT_ID);
+    otaManager->setManifestUrl(std::string(kDefaultOtaManifestBaseUrl) + "/" + QNOB_OTA_VARIANT_ID + ".json");
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
@@ -381,6 +384,25 @@ extern "C" void app_main(void) {
                     telemetry.percentage, telemetry.voltageVolts};
         }
         return {false, false, false, -1.0f, -1.0f};
+    });
+    deviceInfoScreen->setSoftwareUpdateStatusCallback([]() -> DeviceSoftwareUpdateState {
+        if (otaManager == nullptr) {
+            return {false, false, false, "unknown", "", "OTA manager unavailable"};
+        }
+
+        const OtaReleaseInfo info = otaManager->getReleaseInfo();
+        return {info.configured, info.busy, info.updateAvailable,
+                info.currentVersion, info.availableVersion, info.statusMessage};
+    });
+    deviceInfoScreen->setSoftwareUpdateActionCallback([]() {
+        if (otaManager == nullptr) {
+            return;
+        }
+
+        const esp_err_t err = otaManager->startReleaseUpdate(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to start release OTA update: %s", esp_err_to_name(err));
+        }
     });
 
     soundController = new SoundController(gfx, touchPanel);
@@ -500,7 +522,8 @@ extern "C" void app_main(void) {
 #endif
 
     if (startupChimeReady) {
-        xTaskCreate(startupSoundTask, "StartupSound", 4096, soundPlayer, 2, nullptr);
+        // Startup chime with 16384 byte stack to handle audio codec operations
+        xTaskCreate(startupSoundTask, "StartupSound", 16384, soundPlayer, 2, nullptr);
     }
 
     ESP_LOGI(TAG, "Tasks started.");

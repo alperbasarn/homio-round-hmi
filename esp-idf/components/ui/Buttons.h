@@ -1,4 +1,6 @@
 #pragma once
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverloaded-virtual"
 
 #include "LGFX_Config.hpp"
 #include "TouchPanel.h"
@@ -73,3 +75,5 @@ public:
     void initialize(int centerX, int centerY, int buttonWidth, int buttonHeight);
     void draw() override;
 };
+
+#pragma GCC diagnostic pop

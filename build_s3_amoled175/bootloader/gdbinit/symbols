@@ -1,0 +1,9 @@
+
+
+# Load bootloader symbols
+set confirm off
+    # Bootloader elf was not found
+set confirm on
+
+# Load application symbols
+file C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/bootloader/bootloader.elf

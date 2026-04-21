@@ -276,7 +276,6 @@ void DisplayController::setMode(Mode mode) {
     if (currentMode == mode) return;
 
     ESP_LOGI(TAG, "Changing mode from %s to %s", modeToString(currentMode), modeToString(mode));
-    Mode previousMode = currentMode;
     transitionToMode(mode);
     currentMode = mode;
     if (mode == SLEEP) {
@@ -290,10 +289,14 @@ void DisplayController::setMode(Mode mode) {
             initializationScreen->setProgress(0);
         }
     }
-    // Force full screen redraw when waking from SLEEP to INFO
-    if (mode == INFO && previousMode == SLEEP) {
+    if (mode == INFO) {
         if (infoScreen) {
             infoScreen->resetScreen();
+        }
+    }
+    if (mode == DEVICE_INFO) {
+        if (deviceInfoScreen) {
+            deviceInfoScreen->resetScreen();
         }
     }
     // Only reset activity when transitioning to an active mode, not when entering SLEEP.

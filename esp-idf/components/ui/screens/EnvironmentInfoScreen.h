@@ -22,6 +22,8 @@ private:
     bool pageBackRequested;
     bool deviceInfoRequested;
     bool lvglReady;
+    bool ignoreNextRelease;
+    int64_t activatedAtMs;
 
     // Date and time
     std::string currentDate;
@@ -56,6 +58,7 @@ private:
     static constexpr int64_t ANIMATION_DURATION = 700;
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
+    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
 
 
     // LVGL widgets (text + center disc + tracks only during animation)
@@ -113,6 +116,7 @@ private:
 
 public:
     EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch);
+    void activate();
 
     // Main update method
     void update();

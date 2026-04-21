@@ -5,7 +5,8 @@ param(
     [string]$Variant,
 
     [string]$WslDistro = "Ubuntu-22.04",
-    [string]$EspIdfExport = "~/esp/esp-idf/export.sh"
+    [string]$EspIdfExport = "~/esp/esp-idf/export.sh",
+    [string]$ProjectVersion = $env:PROJECT_VER
 )
 
 Set-StrictMode -Version Latest
@@ -105,7 +106,11 @@ $bashCommand = @(
     "set -e"
     "source $(Convert-ToBashPathExpression -Value $EspIdfExport) >/dev/null"
     "cd $(Quote-BashValue -Value $projectDirWsl)"
-    "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) build"
+        $(if ([string]::IsNullOrWhiteSpace($ProjectVersion)) {
+                "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) build"
+            } else {
+                "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) -DPROJECT_VER=$(Quote-BashValue -Value $ProjectVersion) build"
+            })
 ) -join " && "
 
 Write-Host "[$Variant] Building $($config.DisplayName)..."

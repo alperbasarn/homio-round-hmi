@@ -35,6 +35,8 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch)
       pageBackRequested(false),
       deviceInfoRequested(false),
       lvglReady(false),
+    ignoreNextRelease(false),
+    activatedAtMs(0),
       currentDate("--/--"),
       currentTime("--:--"),
       formattedDate("-- ---"),
@@ -70,6 +72,16 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch)
       targetOutdoorArcValue(0) {
     formatDate();
     lastColonToggleTime = millis();
+}
+
+void EnvironmentInfoScreen::activate() {
+    pageBackRequested = false;
+    deviceInfoRequested = false;
+    activatedAtMs = millis();
+    ignoreNextRelease = (touchPanel != nullptr) &&
+                        (touchPanel->isPressed() ||
+                         touchPanel->getHasNewRelease() ||
+                         touchPanel->getHasNewHoldRelease());
 }
 
 void EnvironmentInfoScreen::update() {
@@ -147,15 +159,24 @@ void EnvironmentInfoScreen::update() {
     }
 
     if (touchPanel && touchPanel->getHasNewRelease()) {
-        resetLastActivityTime();
-        pageBackRequested = true;
-        screenInitialized = false;
-        lv_anim_del(this, indoorArcAnimExec);
-        lv_anim_del(this, outdoorArcAnimExec);
-        if (root) {
-            lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+        const int64_t elapsedSinceActivation = millis() - activatedAtMs;
+        if (ignoreNextRelease || elapsedSinceActivation < STALE_RELEASE_GUARD_MS) {
+            ignoreNextRelease = false;
+            ESP_LOGI(TAG, "Ignoring stale release after screen activation (%lld ms)", elapsedSinceActivation);
+        } else {
+            resetLastActivityTime();
+            pageBackRequested = true;
+            screenInitialized = false;
+            lv_anim_del(this, indoorArcAnimExec);
+            lv_anim_del(this, outdoorArcAnimExec);
+            if (root) {
+                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+            }
+            ESP_LOGI(TAG, "Tap release detected, navigating to mode controller");
         }
-        ESP_LOGI(TAG, "Tap release detected, navigating to mode controller");
+    } else if (ignoreNextRelease && touchPanel && !touchPanel->isPressed() &&
+               (millis() - activatedAtMs) >= STALE_RELEASE_GUARD_MS) {
+        ignoreNextRelease = false;
     }
 }
 
@@ -720,6 +741,7 @@ void EnvironmentInfoScreen::resetScreen() {
     dateTimeChanged = true;
     indoorTempChanged = true;
     outdoorTempChanged = true;
+    activate();
     lv_anim_del(this, indoorArcAnimExec);
     lv_anim_del(this, outdoorArcAnimExec);
     if (root != nullptr) {

@@ -6,6 +6,7 @@ PROJECT_DIR="${SCRIPT_DIR}/esp-idf"
 OUTPUT_ROOT="${SCRIPT_DIR}/Hardware Ref"
 PUBLISH_ROOT="${SCRIPT_DIR}/Binaries"
 OTA_ROOT="${SCRIPT_DIR}/OTA"
+ESP_IDF_EXPORT="${ESP_IDF_EXPORT:-${HOME}/esp/esp-idf/export.sh}"
 LOCK_FILE="${PROJECT_DIR}/dependencies.lock"
 LOCK_BACKUP=""
 LOCK_FILE_PRESENT=0
@@ -70,14 +71,25 @@ esac
 echo "[${VARIANT}] Building ${DISPLAY_NAME}..."
 echo "[${VARIANT}] Output dir: ${BUILD_DIR}"
 
-source ~/esp/esp-idf/export.sh >/dev/null
+if [[ ! -f "${ESP_IDF_EXPORT}" ]]; then
+    echo "ESP-IDF export script not found: ${ESP_IDF_EXPORT}" >&2
+    exit 1
+fi
+
+source "${ESP_IDF_EXPORT}" >/dev/null
 cd "${PROJECT_DIR}"
+
+PROJECT_VER_ARGS=()
+if [[ -n "${PROJECT_VER:-}" ]]; then
+    PROJECT_VER_ARGS=(-DPROJECT_VER="${PROJECT_VER}")
+fi
 
 idf.py \
     -B "${BUILD_DIR}" \
     -DIDF_TARGET="${IDF_TARGET_NAME}" \
     -DSDKCONFIG="${SDKCONFIG_OUT}" \
     -DSDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS_ARG}" \
+    "${PROJECT_VER_ARGS[@]}" \
     build
 
 APP_NAME="qnob-screen"
