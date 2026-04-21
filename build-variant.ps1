@@ -37,6 +37,23 @@ function Quote-BashValue {
     return "'" + ($Value -replace "'", $escapedSingleQuote) + "'"
 }
 
+function Convert-ToBashPathExpression {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    if ($Value -eq "~") {
+        return '$HOME'
+    }
+
+    if ($Value.StartsWith("~/")) {
+        return '$HOME' + (Quote-BashValue -Value $Value.Substring(1))
+    }
+
+    return Quote-BashValue -Value $Value
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDir = Join-Path $repoRoot "esp-idf"
 $outputRoot = Join-Path $repoRoot "Hardware Ref"
@@ -86,7 +103,7 @@ $defaultsArg = $config.Defaults -join ";"
 
 $bashCommand = @(
     "set -e"
-    "source $(Quote-BashValue -Value $EspIdfExport) >/dev/null"
+    "source $(Convert-ToBashPathExpression -Value $EspIdfExport) >/dev/null"
     "cd $(Quote-BashValue -Value $projectDirWsl)"
     "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) build"
 ) -join " && "
