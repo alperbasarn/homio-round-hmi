@@ -40,6 +40,7 @@ def resolve_binary_path(publish_root: Path, variant: str) -> Path:
     candidates = [
         publish_root / variant / "qnob-screen.bin",
         publish_root / f"binaries-{variant}" / "qnob-screen.bin",
+        publish_root / f"binaries-{variant}" / variant / "qnob-screen.bin",
     ]
     for path in candidates:
         if path.is_file():
