@@ -1,5 +1,4 @@
 #include "OTAManager.h"
-
 #include <new>
 #include <vector>
 
@@ -182,13 +181,54 @@ esp_err_t OTAManager::startReleaseUpdate(bool rebootOnSuccess) {
     busy.store(true);
     updateReleaseState(availableVersion, "Checking for software update...", false, ESP_OK);
 
-    auto* args = new (std::nothrow) ReleaseTaskArgs{this, rebootOnSuccess};
+    auto* args = new (std::nothrow) ReleaseTaskArgs{this, rebootOnSuccess, true};
     if (args == nullptr) {
         busy.store(false);
         return ESP_ERR_NO_MEM;
     }
 
     if (xTaskCreate(releaseTaskEntry, "OTARelease", OTA_RELEASE_TASK_STACK_SIZE, args, OTA_TASK_PRIORITY, nullptr) != pdPASS) {
+        delete args;
+        busy.store(false);
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t OTAManager::checkForReleaseUpdate() {
+    if (busy.load()) {
+        ESP_LOGW(TAG, "OTA already in progress");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!isNetworkReady()) {
+        ESP_LOGE(TAG, "WiFi not connected - cannot check OTA release");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    std::string manifestUrlCopy;
+    if (stateMutex != nullptr) {
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        manifestUrlCopy = manifestUrl;
+        xSemaphoreGive(stateMutex);
+    } else {
+        manifestUrlCopy = manifestUrl;
+    }
+    if (manifestUrlCopy.empty()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    lastError = ESP_OK;
+    busy.store(true);
+    updateReleaseState(availableVersion, "Checking for software update...", false, ESP_OK);
+
+    auto* args = new (std::nothrow) ReleaseTaskArgs{this, false, false};
+    if (args == nullptr) {
+        busy.store(false);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(releaseTaskEntry, "OTACheck", OTA_RELEASE_TASK_STACK_SIZE, args, OTA_TASK_PRIORITY, nullptr) != pdPASS) {
         delete args;
         busy.store(false);
         return ESP_ERR_NO_MEM;
@@ -214,7 +254,7 @@ void OTAManager::releaseTaskEntry(void* arg) {
         vTaskDelete(nullptr);
         return;
     }
-    args->self->releaseTask(args->reboot);
+    args->self->releaseTask(args->reboot, args->install);
     delete args;
     vTaskDelete(nullptr);
 }
@@ -223,7 +263,7 @@ void OTAManager::otaTask(const std::string& url, bool reboot) {
     performOta(url, reboot);
 }
 
-void OTAManager::releaseTask(bool reboot) {
+void OTAManager::releaseTask(bool reboot, bool install) {
     std::string nextVersion;
     std::string downloadUrl;
     esp_err_t err = fetchManifest(nextVersion, downloadUrl);
@@ -236,6 +276,13 @@ void OTAManager::releaseTask(bool reboot) {
     const std::string currentVersion = getRunningVersion();
     if (compareVersions(currentVersion, nextVersion) >= 0) {
         updateReleaseState(nextVersion, "Software is already up to date", false, ESP_OK);
+        lastError = ESP_OK;
+        busy.store(false);
+        return;
+    }
+
+    if (!install) {
+        updateReleaseState(nextVersion, std::string("Update available: ") + nextVersion, true, ESP_OK);
         lastError = ESP_OK;
         busy.store(false);
         return;

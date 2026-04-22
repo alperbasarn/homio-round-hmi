@@ -64,6 +64,9 @@ public:
     esp_err_t saveCurrentConnectionAsStaticIP();
     void setSetupPortalScreenControlCallback(std::function<bool(const std::string&)> callback);
     void setSetupPortalScreenStatusCallback(std::function<std::string(void)> callback);
+    void setSetupPortalOtaConfigUpdatedCallback(std::function<void(void)> callback);
+    void setSetupPortalOtaStatusCallback(std::function<std::string(void)> callback);
+    void setSetupPortalOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
 
     // Callbacks
     void setConnectedCallback(WiFiConnectedCallback callback) { on_connected = callback; }
@@ -103,6 +106,9 @@ private:
     SetupPortal* setup_portal;
     std::function<bool(const std::string&)> portal_screen_control_callback;
     std::function<std::string(void)> portal_screen_status_callback;
+    std::function<void(void)> portal_ota_config_updated_callback;
+    std::function<std::string(void)> portal_ota_status_callback;
+    std::function<esp_err_t(const std::string&)> portal_ota_action_callback;
 
     // Event handler
     static void eventHandler(void* arg, esp_event_base_t event_base,

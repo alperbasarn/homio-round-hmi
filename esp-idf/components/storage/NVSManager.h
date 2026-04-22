@@ -45,6 +45,10 @@
 #define NVS_KEY_WEATHER_COUNTRY   "wth_country"
 #define NVS_KEY_TIME_API_TOKEN    "time_api_tok"
 
+// OTA keys
+#define NVS_KEY_OTA_VARIANT      "ota_variant"
+#define NVS_KEY_OTA_MANIFEST_URL "ota_manifest"
+
 // Device keys
 #define NVS_KEY_DEVICE_NAME     "device_name"
 #define NVS_KEY_AP_PASSWORD     "ap_password"
@@ -101,6 +105,10 @@ public:
     std::string deviceName;
     std::string accessPointPassword;
 
+    // OTA settings
+    std::string otaVariantId;
+    std::string otaManifestUrl;
+
     // Static IP Configuration
     bool staticIPEnabled;
     std::string staticIPSSID;
@@ -137,6 +145,7 @@ public:
     // Device name
     esp_err_t saveDeviceName(const std::string& name);
     esp_err_t saveAccessPointPassword(const std::string& password);
+    esp_err_t saveOtaConfig(const std::string& variantId, const std::string& manifestUrl);
 
     static std::string normalizeDeviceSuffix(const std::string& value);
     static std::string formatDeviceName(const std::string& value);

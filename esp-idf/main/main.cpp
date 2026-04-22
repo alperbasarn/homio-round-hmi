@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include <sstream>
 
 // HAL and hardware components
 #include "hal_config.h"
@@ -101,6 +102,38 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+
+static std::string resolveManifestUrl(const std::string& variantId,
+                                      const std::string& configuredManifestUrl) {
+    if (configuredManifestUrl.empty()) {
+        return std::string(kDefaultOtaManifestBaseUrl) + "/" + variantId + ".json";
+    }
+
+    const std::string placeholder = "{variant}";
+    const size_t pos = configuredManifestUrl.find(placeholder);
+    if (pos == std::string::npos) {
+        return configuredManifestUrl;
+    }
+
+    std::string expanded = configuredManifestUrl;
+    expanded.replace(pos, placeholder.size(), variantId);
+    return expanded;
+}
+
+static void applyOtaConfigFromNvs() {
+    if (otaManager == nullptr || nvsManager == nullptr) {
+        return;
+    }
+
+    const std::string variantId = nvsManager->otaVariantId.empty()
+        ? std::string(QNOB_OTA_VARIANT_ID)
+        : nvsManager->otaVariantId;
+    const std::string manifestUrl = resolveManifestUrl(variantId, nvsManager->otaManifestUrl);
+
+    otaManager->setDeviceVariantId(variantId);
+    otaManager->setManifestUrl(manifestUrl);
+    ESP_LOGI(TAG, "OTA config applied: variant=%s, manifest=%s", variantId.c_str(), manifestUrl.c_str());
+}
 
 
 // Task handles
@@ -349,8 +382,52 @@ extern "C" void app_main(void) {
     internetHandler = new InternetHandler(wifiManager, nvsManager);
     wifiManager->connectToWiFi();
     otaManager = new OTAManager(wifiManager);
-    otaManager->setDeviceVariantId(QNOB_OTA_VARIANT_ID);
-    otaManager->setManifestUrl(std::string(kDefaultOtaManifestBaseUrl) + "/" + QNOB_OTA_VARIANT_ID + ".json");
+    applyOtaConfigFromNvs();
+    wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
+        applyOtaConfigFromNvs();
+    });
+    wifiManager->setSetupPortalOtaStatusCallback([]() -> std::string {
+        if (otaManager == nullptr) {
+            return "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA manager unavailable\"}";
+        }
+
+        const OtaReleaseInfo info = otaManager->getReleaseInfo();
+        auto escape = [](const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            for (char c : value) {
+                if (c == '\\' || c == '"') {
+                    out.push_back('\\');
+                }
+                out.push_back(c);
+            }
+            return out;
+        };
+
+        std::ostringstream os;
+        os << "{";
+        os << "\"configured\":" << (info.configured ? "true" : "false") << ",";
+        os << "\"busy\":" << (info.busy ? "true" : "false") << ",";
+        os << "\"update_available\":" << (info.updateAvailable ? "true" : "false") << ",";
+        os << "\"current_version\":\"" << escape(info.currentVersion) << "\",";
+        os << "\"available_version\":\"" << escape(info.availableVersion) << "\",";
+        os << "\"status_message\":\"" << escape(info.statusMessage) << "\"";
+        os << "}";
+        return os.str();
+    });
+    wifiManager->setSetupPortalOtaActionCallback([](const std::string& action) -> esp_err_t {
+        if (otaManager == nullptr) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (action == "check") {
+            return otaManager->checkForReleaseUpdate();
+        }
+        if (action == "update") {
+            return otaManager->startReleaseUpdate(true);
+        }
+        return ESP_ERR_INVALID_ARG;
+    });
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");

@@ -24,6 +24,8 @@ NVSManager::NVSManager()
       weatherApiToken(""), weatherCity("Istanbul"), weatherCountryCode("tr"), timeApiToken(""),
       deviceName(std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix),
       accessPointPassword(std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix),
+    otaVariantId(""),
+    otaManifestUrl(""),
       staticIPEnabled(false),
     staticIPSSID(""),
       staticIP("192.168.4.1"), staticGateway("192.168.4.1"),
@@ -280,6 +282,8 @@ esp_err_t NVSManager::clearAll()
 
     deviceName = std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix;
     accessPointPassword = deviceName;
+    otaVariantId.clear();
+    otaManifestUrl.clear();
 
     staticIPEnabled = false;
     staticIPSSID.clear();
@@ -396,6 +400,17 @@ esp_err_t NVSManager::saveAccessPointPassword(const std::string& password)
     return ESP_OK;
 }
 
+esp_err_t NVSManager::saveOtaConfig(const std::string& variantId, const std::string& manifestUrl)
+{
+    otaVariantId = variantId;
+    otaManifestUrl = manifestUrl;
+    writeString(NVS_KEY_OTA_VARIANT, otaVariantId);
+    writeString(NVS_KEY_OTA_MANIFEST_URL, otaManifestUrl);
+    ESP_LOGI(TAG, "OTA config saved: variant=%s, manifest=%s",
+             otaVariantId.c_str(), otaManifestUrl.c_str());
+    return ESP_OK;
+}
+
 esp_err_t NVSManager::saveStaticIPConfig(bool enabled, const std::string& ip, const std::string& gateway,
                                           const std::string& subnet, const std::string& dns1, const std::string& dns2,
                                           const std::string& ssid)
@@ -486,6 +501,10 @@ esp_err_t NVSManager::loadAllConfigurations()
         accessPointPassword = deviceName;
         writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
     }
+
+    // OTA settings
+    readString(NVS_KEY_OTA_VARIANT, otaVariantId, "");
+    readString(NVS_KEY_OTA_MANIFEST_URL, otaManifestUrl, "");
 
     // Static IP
     loadStaticIPConfig();

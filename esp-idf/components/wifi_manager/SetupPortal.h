@@ -20,6 +20,9 @@ public:
     void stop();
     void setScreenControlCallback(std::function<bool(const std::string&)> callback);
     void setScreenStatusCallback(std::function<std::string(void)> callback);
+    void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
+    void setOtaStatusCallback(std::function<std::string(void)> callback);
+    void setOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
 
 private:
     WiFiManager* wifiManager;
@@ -30,6 +33,9 @@ private:
     int dnsSocket;
     std::function<bool(const std::string&)> screenControlCallback;
     std::function<std::string(void)> screenStatusCallback;
+    std::function<void(void)> otaConfigUpdatedCallback;
+    std::function<std::string(void)> otaStatusCallback;
+    std::function<esp_err_t(const std::string&)> otaActionCallback;
 
     static constexpr int HTTP_PORT = 80;
     static constexpr int DNS_PORT = 53;
@@ -49,6 +55,7 @@ private:
     static esp_err_t devicePostHandler(httpd_req_t* req);
     static esp_err_t staticIpPostHandler(httpd_req_t* req);
     static esp_err_t screenControlPostHandler(httpd_req_t* req);
+    static esp_err_t otaPostHandler(httpd_req_t* req);
     static esp_err_t wifiPostHandler(httpd_req_t* req);
     static esp_err_t mqttPostHandler(httpd_req_t* req);
     static esp_err_t weatherPostHandler(httpd_req_t* req);
@@ -68,6 +75,7 @@ private:
     esp_err_t saveDeviceFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveStaticIpFromCurrentConnection(std::string& responseJson);
     esp_err_t saveScreenControlFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t saveOtaFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveWifiFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveMqttFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveWeatherFromForm(const std::string& body, std::string& responseJson);

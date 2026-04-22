@@ -46,6 +46,18 @@ void SetupPortal::setScreenStatusCallback(std::function<std::string(void)> callb
     screenStatusCallback = std::move(callback);
 }
 
+void SetupPortal::setOtaConfigUpdatedCallback(std::function<void(void)> callback) {
+    otaConfigUpdatedCallback = std::move(callback);
+}
+
+void SetupPortal::setOtaStatusCallback(std::function<std::string(void)> callback) {
+    otaStatusCallback = std::move(callback);
+}
+
+void SetupPortal::setOtaActionCallback(std::function<esp_err_t(const std::string&)> callback) {
+    otaActionCallback = std::move(callback);
+}
+
 esp_err_t SetupPortal::start() {
     esp_err_t err = startHttpServer();
     if (err != ESP_OK) {
@@ -117,6 +129,13 @@ esp_err_t SetupPortal::startHttpServer() {
     screenControlPost.handler = screenControlPostHandler;
     screenControlPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &screenControlPost);
+
+    httpd_uri_t otaPost = {};
+    otaPost.uri = "/api/ota";
+    otaPost.method = HTTP_POST;
+    otaPost.handler = otaPostHandler;
+    otaPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &otaPost);
 
     httpd_uri_t wifiPost = {};
     wifiPost.uri = "/api/wifi";
@@ -478,12 +497,20 @@ std::string SetupPortal::renderRootPage() const {
      << "<div class='label'>Connected WiFi</div><div class='value' id='ovStaSsid'>-</div><div></div>"
      << "<div class='label'>STA IP</div><div class='value' id='ovStaIp'>-</div><button id='staticIpBtn' class='action-inline hidden' type='button'>Set Static IP</button>"
      << "<div class='label'>Static IP Target</div><div class='value' id='ovStaticIpTarget'>-</div><div></div>"
+    << "<div class='label'>Software Version</div><div class='value' id='ovCurrentVersion'>-</div><div></div>"
+    << "<div class='label'>Available Version</div><div class='value' id='ovAvailableVersion'>-</div><div></div>"
+    << "<div class='label'>OTA Status</div><div class='value' id='ovOtaStatus'>-</div><div></div>"
      << "</div></section>"
      << "<form id='deviceForm'><h2>Device</h2><label>Device Suffix</label><input name='device_suffix' maxlength='4' placeholder='0000'>"
      << "<small>Device name is always Homio-&lt;suffix&gt; using only A-Z and 0-9.</small>"
      << "<label>Access Point Password</label><input name='ap_password' type='password' placeholder='Homio-0000'>"
      << "<small>Leave blank to reset the password to the device name.</small>"
      << "<button type='submit'>Save Device Settings</button></form>"
+        << "<form id='otaForm'><h2>OTA</h2><label>Variant</label><input name='variant' placeholder='esp32s3_lcd128'>"
+        << "<small>This variant selects which release image your device is allowed to install.</small>"
+        << "<label>Manifest URL (optional)</label><input name='manifest_url' placeholder='https://.../latest/{variant}.json'>"
+        << "<small>Use {variant} placeholder or leave empty to use default server path.</small>"
+        << "<button type='submit'>Save OTA Settings</button><button id='otaCheckBtn' type='button'>Check for Update</button><button id='otaUpdateBtn' type='button' disabled>Update Now</button></form>"
      << "<form id='wifiForm'><h2>WiFi</h2><label>Scan Results</label><select id='scanList'></select>"
      << "<label>Or SSID</label><input name='ssid_manual' placeholder='SSID'>"
      << "<label>Password</label><input name='password' type='password' placeholder='Password'>"
@@ -513,11 +540,14 @@ std::string SetupPortal::renderRootPage() const {
      << "function toggleSecret(btn){const id=btn.dataset.target;const showing=btn.dataset.showing==='true';setText(id,showing?maskValue(secrets[id]):(secrets[id]||'(not set)'));btn.dataset.showing=showing?'false':'true';btn.textContent=showing?'Show':'Hide';}"
      << "document.querySelectorAll('.toggle').forEach(b=>b.addEventListener('click',()=>toggleSecret(b)));"
      << "document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.remove('active-tab'));btn.classList.add('active-tab');document.getElementById('configureTab').classList.toggle('hidden',btn.dataset.tab!=='configureTab');document.getElementById('controlTab').classList.toggle('hidden',btn.dataset.tab!=='controlTab');}));"
-         << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}}"
+        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}}"
      << "async function scan(){const s=document.getElementById('scanList');s.innerHTML='';const wait=document.createElement('option');wait.textContent='Scanning...';wait.disabled=true;wait.selected=true;s.appendChild(wait);try{const r=await fetch('/api/scan');const d=await r.json();s.innerHTML='';(d.networks||[]).forEach(n=>{const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+'dBm)';s.appendChild(o);});if(!s.options.length){const o=document.createElement('option');o.textContent='No networks found';o.disabled=true;o.selected=true;s.appendChild(o);}resultEl.textContent=JSON.stringify(d,null,2);}catch(e){s.innerHTML='';const o=document.createElement('option');o.textContent='Scan failed';o.disabled=true;o.selected=true;s.appendChild(o);resultEl.textContent=JSON.stringify({ok:false,message:String(e)},null,2);}}"
      << "function formBody(f){return new URLSearchParams(new FormData(f)).toString();}"
      << "async function postForm(id,url,extra){const f=document.getElementById(id);const data=formBody(f)+(extra||'');const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:data});resultEl.textContent=JSON.stringify(await r.json(),null,2);refreshStatus();}"
      << "document.getElementById('deviceForm').addEventListener('submit',e=>{e.preventDefault();postForm('deviceForm','/api/device');});"
+        << "document.getElementById('otaForm').addEventListener('submit',e=>{e.preventDefault();postForm('otaForm','/api/ota');});"
+      << "document.getElementById('otaCheckBtn').addEventListener('click',()=>{fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=check'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
+      << "document.getElementById('otaUpdateBtn').addEventListener('click',()=>{fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('wifiForm').addEventListener('submit',e=>{e.preventDefault();const f=e.target;const selected=document.getElementById('scanList').value;const manual=f.ssid_manual.value.trim();const ssid=manual||selected;if(!ssid||ssid==='No networks found'||ssid==='Scan failed'||ssid==='Scanning...'){resultEl.textContent=JSON.stringify({ok:false,message:'SSID is required'},null,2);return;}const p=new URLSearchParams();p.set('ssid',ssid);p.set('password',f.password.value||'');fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('screenForm').addEventListener('submit',e=>{e.preventDefault();postForm('screenForm','/api/control/screen');});"
      << "staticIpBtn.addEventListener('click',()=>{fetch('/api/static-ip/current',{method:'POST'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
@@ -573,6 +603,9 @@ std::string SetupPortal::renderStatusJson() const {
     os << "\"static_ip_enabled\":" << (nvsManager && nvsManager->staticIPEnabled ? "true" : "false") << ",";
     os << "\"static_ip_target_ssid\":\"" << jsonEscape(nvsManager ? nvsManager->staticIPSSID : "") << "\",";
     os << "\"current_screen\":\"" << jsonEscape(screenStatusCallback ? screenStatusCallback() : "unknown") << "\",";
+    os << "\"ota_variant\":\"" << jsonEscape(nvsManager ? nvsManager->otaVariantId : "") << "\",";
+    os << "\"ota_manifest_url\":\"" << jsonEscape(nvsManager ? nvsManager->otaManifestUrl : "") << "\",";
+    os << "\"ota_release\":" << (otaStatusCallback ? otaStatusCallback() : "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA unavailable\"}") << ",";
     os << "\"configured_static_ip\":\"" << jsonEscape(nvsManager ? nvsManager->staticIP : "") << "\"";
     os << "}";
     return os.str();
@@ -590,6 +623,61 @@ esp_err_t SetupPortal::devicePostHandler(httpd_req_t* req) {
     return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
 }
 
+esp_err_t SetupPortal::otaPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+
+    std::string response;
+    self->saveOtaFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::saveOtaFromForm(const std::string& body, std::string& responseJson) {
+    const std::string action = getFormValue(body, "action");
+    if (!action.empty()) {
+        if (!otaActionCallback) {
+            responseJson = "{\"ok\":false,\"message\":\"OTA action unavailable\"}";
+            return ESP_ERR_INVALID_STATE;
+        }
+        const esp_err_t err = otaActionCallback(action);
+        if (err != ESP_OK) {
+            responseJson = std::string("{\"ok\":false,\"message\":\"OTA ") + jsonEscape(action) + " failed: " + esp_err_to_name(err) + "\"}";
+            return err;
+        }
+        responseJson = std::string("{\"ok\":true,\"message\":\"OTA ") + jsonEscape(action) + " started\"}";
+        return ESP_OK;
+    }
+
+    if (nvsManager == nullptr) {
+        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
+        return ESP_FAIL;
+    }
+
+    std::string variant = getFormValue(body, "variant");
+    std::string manifestUrl = getFormValue(body, "manifest_url");
+
+    // Keep variant compact and safe for manifest matching.
+    variant.erase(std::remove_if(variant.begin(), variant.end(), [](char c) {
+        return !(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+    }), variant.end());
+
+    if (variant.empty()) {
+        responseJson = "{\"ok\":false,\"message\":\"Variant is required\"}";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvsManager->saveOtaConfig(variant, manifestUrl);
+    if (otaConfigUpdatedCallback) {
+        otaConfigUpdatedCallback();
+    }
+
+    responseJson = std::string("{\"ok\":true,\"variant\":\"") + jsonEscape(nvsManager->otaVariantId) +
+                   "\",\"manifest_url\":\"" + jsonEscape(nvsManager->otaManifestUrl) + "\"}";
+    return ESP_OK;
+}
 esp_err_t SetupPortal::saveStaticIpFromCurrentConnection(std::string& responseJson) {
     if (wifiManager == nullptr || nvsManager == nullptr) {
         responseJson = "{\"ok\":false,\"message\":\"Static IP unavailable\"}";

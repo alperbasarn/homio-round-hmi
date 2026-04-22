@@ -27,6 +27,7 @@ public:
 
     esp_err_t startUpdate(const std::string& url, bool rebootOnSuccess = true);
     esp_err_t startReleaseUpdate(bool rebootOnSuccess = true);
+    esp_err_t checkForReleaseUpdate();
     bool isBusy() const { return busy.load(); }
     esp_err_t getLastError() const { return lastError; }
 
@@ -49,6 +50,7 @@ private:
     struct ReleaseTaskArgs {
         OTAManager* self;
         bool reboot;
+        bool install;
     };
 
     WiFiManager* wifiManager;
@@ -66,7 +68,7 @@ private:
     static void otaTaskEntry(void* arg);
     static void releaseTaskEntry(void* arg);
     void otaTask(const std::string& url, bool reboot);
-    void releaseTask(bool reboot);
+    void releaseTask(bool reboot, bool install);
     esp_err_t performOta(const std::string& url, bool reboot);
     esp_err_t fetchManifest(std::string& outVersion, std::string& outUrl);
     bool isNetworkReady() const;
