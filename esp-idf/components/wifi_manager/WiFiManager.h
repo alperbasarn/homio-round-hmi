@@ -10,14 +10,13 @@
 
 // Forward declaration
 class NVSManager;
+class SetupPortal;
 
 // WiFi event callback types
 using WiFiConnectedCallback = std::function<void(const std::string& ssid, const std::string& ip)>;
 using WiFiDisconnectedCallback = std::function<void()>;
 
 // Configuration
-#define WIFI_AP_SSID_PREFIX     "QNOB-"
-#define WIFI_AP_PASSWORD        "knobsetup"
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
 
@@ -51,12 +50,20 @@ public:
     bool isAPModeActive() const { return ap_mode_active; }
     int getSignalStrength();  // Returns 0-4 (like phone bars)
     std::string getIPAddress() const;
+    std::string getAPIPAddress() const;
     std::string getSSID() const;
+    std::string getAPSSID() const;
+    std::string getAPPassword() const;
     int8_t getRSSI() const;
 
     // Scanning
     esp_err_t scanNetworks();
     int getScanResultCount() const { return scan_result_count; }
+    esp_err_t connectToNetwork(const std::string& ssid, const std::string& password, bool remember = true);
+    esp_err_t syncAccessPointConfig();
+    esp_err_t saveCurrentConnectionAsStaticIP();
+    void setSetupPortalScreenControlCallback(std::function<bool(const std::string&)> callback);
+    void setSetupPortalScreenStatusCallback(std::function<std::string(void)> callback);
 
     // Callbacks
     void setConnectedCallback(WiFiConnectedCallback callback) { on_connected = callback; }
@@ -81,6 +88,9 @@ private:
 
     std::string current_ssid;
     std::string current_ip;
+    std::string current_ap_ssid;
+    std::string current_ap_ip;
+    std::string current_ap_password;
     int wifi_channel;
 
     int64_t last_ap_check_time;
@@ -90,6 +100,9 @@ private:
     // Callbacks
     WiFiConnectedCallback on_connected;
     WiFiDisconnectedCallback on_disconnected;
+    SetupPortal* setup_portal;
+    std::function<bool(const std::string&)> portal_screen_control_callback;
+    std::function<std::string(void)> portal_screen_status_callback;
 
     // Event handler
     static void eventHandler(void* arg, esp_event_base_t event_base,
@@ -100,6 +113,7 @@ private:
     // Helper methods
     esp_err_t initWiFi();
     esp_err_t connectToStoredNetwork(int index);
+    esp_err_t applySTAIPConfig(const std::string& targetSsid = "");
     std::string generateAPName();
 };
 

@@ -172,13 +172,35 @@ void DeviceInfoScreen::buildUi() {
 
     // Keep text rows responsive for both 240x240 and 466x466 displays.
     const int rowCount = 6;
-    const int topInset = std::max(scalePx(56), displayH / 7);
-    const int bottomInset = std::max(scalePx(90), displayH / 4);
+    const int topInset = std::max(scalePx(108), displayH / 4);
+    const int bottomInset = std::max(scalePx(54), displayH / 7);
     const int availableHeight = std::max(1, displayH - topInset - bottomInset);
     const int itemSpacing = std::max(scalePx(24), availableHeight / rowCount);
     const int startY = topInset;
     const int labelX = displayW / 5;
     const int valueX = (displayW * 3) / 5;
+
+    updateButton = lv_btn_create(root);
+    lv_obj_set_size(updateButton, std::max(scalePx(154), displayW / 2), std::max(scalePx(34), displayH / 13));
+    lv_obj_align(updateButton, LV_ALIGN_TOP_MID, 0, std::max(scalePx(42), displayH / 8));
+    lv_obj_set_style_bg_color(updateButton, lv_color_hex(0x2D6CDF), 0);
+    lv_obj_set_style_bg_opa(updateButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(updateButton, scalePx(10), 0);
+    lv_obj_add_event_cb(updateButton, updateButtonEventHandler, LV_EVENT_CLICKED, this);
+    lv_obj_add_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+
+    updateButtonLabel = lv_label_create(updateButton);
+    lv_obj_set_style_text_color(updateButtonLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(updateButtonLabel, "Update Software");
+    lv_obj_center(updateButtonLabel);
+
+    softwareStatusLabel = lv_label_create(root);
+    lv_obj_set_width(softwareStatusLabel, displayW - 2 * std::max(scalePx(18), displayW / 12));
+    lv_obj_set_style_text_align(softwareStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(softwareStatusLabel, lv_color_hex(0x9BA7B6), 0);
+    lv_label_set_text(softwareStatusLabel, "");
+    lv_obj_align_to(softwareStatusLabel, updateButton, LV_ALIGN_OUT_BOTTOM_MID, 0, scalePx(8));
+    lv_obj_add_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
     // WiFi Status
     wifiIconLabel = lv_label_create(root);
@@ -244,26 +266,6 @@ void DeviceInfoScreen::buildUi() {
     lv_obj_set_style_text_color(softwareVersionLabel, lv_color_hex(0x9BA7B6), 0);
     lv_label_set_text(softwareVersionLabel, "unknown");
     lv_obj_set_pos(softwareVersionLabel, valueX, startY + itemSpacing * 5);
-
-    updateButton = lv_btn_create(root);
-    lv_obj_set_size(updateButton, std::max(scalePx(132), displayW / 2), std::max(scalePx(34), displayH / 13));
-    lv_obj_align(updateButton, LV_ALIGN_BOTTOM_MID, 0, -std::max(scalePx(48), displayH / 8));
-    lv_obj_set_style_bg_color(updateButton, lv_color_hex(0x2D6CDF), 0);
-    lv_obj_set_style_bg_opa(updateButton, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(updateButton, scalePx(10), 0);
-    lv_obj_add_event_cb(updateButton, updateButtonEventHandler, LV_EVENT_CLICKED, this);
-
-    updateButtonLabel = lv_label_create(updateButton);
-    lv_obj_set_style_text_color(updateButtonLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(updateButtonLabel, "Update Software");
-    lv_obj_center(updateButtonLabel);
-
-    softwareStatusLabel = lv_label_create(root);
-    lv_obj_set_width(softwareStatusLabel, displayW - 2 * std::max(scalePx(18), displayW / 12));
-    lv_obj_set_style_text_align(softwareStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(softwareStatusLabel, lv_color_hex(0x9BA7B6), 0);
-    lv_label_set_text(softwareStatusLabel, "Ready to check for updates");
-    lv_obj_align_to(softwareStatusLabel, updateButton, LV_ALIGN_OUT_TOP_MID, 0, -scalePx(10));
 
     // Swipe hint
     swipeHintLabel = lv_label_create(root);
@@ -358,6 +360,8 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
     }
 
     if (softwareChanged || forceFullRefresh) {
+        const bool showUpdateAction = softwareUpdateBusy || softwareUpdateAvailable;
+
         if (softwareUpdateAvailable && !availableSoftwareVersion.empty()) {
             lv_label_set_text_fmt(softwareVersionLabel, "%s -> %s",
                                   currentSoftwareVersion.c_str(), availableSoftwareVersion.c_str());
@@ -372,15 +376,22 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
                                     softwareUpdateAvailable ? lv_color_hex(0x7CD97A) : lv_color_hex(0x9BA7B6),
                                     0);
 
+        if (showUpdateAction) {
+            lv_obj_clear_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
+        }
+
         if (softwareUpdateBusy) {
             lv_obj_add_state(updateButton, LV_STATE_DISABLED);
             lv_label_set_text(updateButtonLabel, "Updating...");
+        } else if (softwareUpdateAvailable && !availableSoftwareVersion.empty()) {
+            lv_obj_clear_state(updateButton, LV_STATE_DISABLED);
+            lv_label_set_text_fmt(updateButtonLabel, "Update to %s", availableSoftwareVersion.c_str());
         } else {
-            if (softwareUpdateConfigured) {
-                lv_obj_clear_state(updateButton, LV_STATE_DISABLED);
-            } else {
-                lv_obj_add_state(updateButton, LV_STATE_DISABLED);
-            }
+            lv_obj_add_state(updateButton, LV_STATE_DISABLED);
             lv_label_set_text(updateButtonLabel, "Update Software");
         }
 
@@ -489,6 +500,7 @@ void DeviceInfoScreen::resetScreen() {
     networkStatusChanged = true;
     batteryChanged = true;
     softwareChanged = true;
+    activate();
     if (root != nullptr) {
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
     }

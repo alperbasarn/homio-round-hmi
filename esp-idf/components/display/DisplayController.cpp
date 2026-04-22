@@ -11,6 +11,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "hal_config.h"
+#include <algorithm>
+#include <cctype>
 
 static const char *TAG = "DisplayController";
 static constexpr int64_t INIT_SEQUENCE_DURATION_MS = 2500;
@@ -47,13 +49,21 @@ constexpr const char* SWIPE_RIGHT_EFFECT_FILE = "swipe_right";
 constexpr const char* SWIPE_UP_EFFECT_FILE = "swipe_up";
 constexpr const char* SWIPE_DOWN_EFFECT_FILE = "swipe_down";
 
+std::string normalizeScreenName(const std::string& value) {
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return normalized;
+}
+
 }  // namespace
 
 DisplayController::DisplayController(LGFX* graphics, TouchPanel* touch)
   : gfx(graphics), touchPanel(touch), knobController(nullptr), soundController(nullptr),
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
     infoScreen(nullptr), deviceInfoScreen(nullptr), mediaController(nullptr), currentMode(INITIALIZATION), lastActivityTime(0), displayIsOn(true),
-    initializationProgress(0), initializationCompleteTime(0) {
+        initializationProgress(0), initializationCompleteTime(0), pendingModeRequest(-1), pendingHomeActivation(false) {
 }
 
 DisplayController::~DisplayController() {
@@ -76,6 +86,18 @@ void DisplayController::init() {
 }
 
 void DisplayController::update() {
+    const int pendingMode = pendingModeRequest.exchange(-1);
+    if (pendingMode >= 0) {
+        const Mode requested = static_cast<Mode>(pendingMode);
+        if (modeController != nullptr && requested != HOME) {
+            modeController->setActive(false);
+        }
+        setMode(requested);
+        if (requested == HOME && modeController != nullptr && pendingHomeActivation.exchange(false)) {
+            modeController->setActive(true);
+        }
+    }
+
     bool hasActivityEvent = false;
 
     if (touchPanel) {
@@ -163,10 +185,10 @@ void DisplayController::update() {
                 // Check if user wants to go to mode selection
                 else if (infoScreen->isPageBackRequested()) {
                     infoScreen->resetPageBackRequest();
+                    setMode(HOME);
                     if (modeController) {
                         modeController->setActive(true);
                     }
-                    setMode(HOME);
                 }
             }
             break;
@@ -308,6 +330,55 @@ void DisplayController::setMode(Mode mode) {
 
 Mode DisplayController::getMode() const {
     return currentMode;
+}
+
+bool DisplayController::showNamedScreen(const std::string& screenName) {
+    const std::string normalized = normalizeScreenName(screenName);
+    Mode target = currentMode;
+    bool activateHome = false;
+
+    if (normalized == "info" || normalized == "infoscreen" || normalized == "environment" || normalized == "environmentinfoscreen") {
+        target = INFO;
+    } else if (normalized == "deviceinfo" || normalized == "deviceinfoscreen") {
+        target = DEVICE_INFO;
+    } else if (normalized == "home") {
+        target = HOME;
+        activateHome = true;
+    } else if (normalized == "sound" || normalized == "soundcontroller") {
+        target = SOUND;
+    } else if (normalized == "light" || normalized == "lightcontroller") {
+        target = LIGHT;
+    } else if (normalized == "calibrate" || normalized == "calibrate_orientation" || normalized == "calibrateorientation") {
+        target = CALIBRATE_ORIENTATION;
+    } else {
+        return false;
+    }
+
+    pendingHomeActivation.store(activateHome);
+    pendingModeRequest.store(static_cast<int>(target));
+    return true;
+}
+
+std::string DisplayController::getModeName() const {
+    switch (currentMode) {
+        case INFO:
+            return "info";
+        case DEVICE_INFO:
+            return "deviceInfo";
+        case HOME:
+            return "home";
+        case SOUND:
+            return "sound";
+        case LIGHT:
+            return "light";
+        case CALIBRATE_ORIENTATION:
+            return "calibrate";
+        case SLEEP:
+            return "sleep";
+        case INITIALIZATION:
+        default:
+            return "initialization";
+    }
 }
 
 void DisplayController::registerKnobController(KnobController* knob) {

@@ -346,7 +346,7 @@ extern "C" void app_main(void) {
     if (mqttManager->initialize() != ESP_OK) {
         ESP_LOGW(TAG, "MQTT not configured yet (init skipped)");
     }
-    internetHandler = new InternetHandler(wifiManager);
+    internetHandler = new InternetHandler(wifiManager, nvsManager);
     wifiManager->connectToWiFi();
     otaManager = new OTAManager(wifiManager);
     otaManager->setDeviceVariantId(QNOB_OTA_VARIANT_ID);
@@ -416,6 +416,12 @@ extern "C" void app_main(void) {
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
+    wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
+        return displayController != nullptr && displayController->showNamedScreen(screen);
+    });
+    wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
+        return displayController != nullptr ? displayController->getModeName() : "unknown";
+    });
     displayController->init();
 
     // Initialize Sleep Handler (power management)

@@ -39,11 +39,19 @@
 #define NVS_KEY_LIGHT_MQTT_USER "lgt_mqtt_user"
 #define NVS_KEY_LIGHT_MQTT_PASS "lgt_mqtt_pass"
 
+// Weather and time keys
+#define NVS_KEY_WEATHER_API_TOKEN "wth_api_tok"
+#define NVS_KEY_WEATHER_CITY      "wth_city"
+#define NVS_KEY_WEATHER_COUNTRY   "wth_country"
+#define NVS_KEY_TIME_API_TOKEN    "time_api_tok"
+
 // Device keys
 #define NVS_KEY_DEVICE_NAME     "device_name"
+#define NVS_KEY_AP_PASSWORD     "ap_password"
 
 // Static IP keys
 #define NVS_KEY_STATIC_ENABLED  "static_en"
+#define NVS_KEY_STATIC_SSID     "static_ssid"
 #define NVS_KEY_STATIC_IP       "static_ip"
 #define NVS_KEY_STATIC_GATEWAY  "static_gw"
 #define NVS_KEY_STATIC_SUBNET   "static_sub"
@@ -83,11 +91,19 @@ public:
     std::string lightMQTTUsername;
     std::string lightMQTTPassword;
 
+    // Weather/time settings
+    std::string weatherApiToken;
+    std::string weatherCity;
+    std::string weatherCountryCode;
+    std::string timeApiToken;
+
     // Device name
     std::string deviceName;
+    std::string accessPointPassword;
 
     // Static IP Configuration
     bool staticIPEnabled;
+    std::string staticIPSSID;
     std::string staticIP;
     std::string staticGateway;
     std::string staticSubnet;
@@ -112,12 +128,25 @@ public:
     esp_err_t saveLightMQTTServer(const std::string& url, int port,
                                    const std::string& username, const std::string& password);
 
+    // Weather/time configuration
+    esp_err_t saveWeatherConfig(const std::string& apiToken,
+                                const std::string& city,
+                                const std::string& countryCode);
+    esp_err_t saveTimeApiToken(const std::string& apiToken);
+
     // Device name
     esp_err_t saveDeviceName(const std::string& name);
+    esp_err_t saveAccessPointPassword(const std::string& password);
+
+    static std::string normalizeDeviceSuffix(const std::string& value);
+    static std::string formatDeviceName(const std::string& value);
+    static std::string extractDeviceSuffix(const std::string& value);
+    static bool isValidAccessPointPassword(const std::string& value);
 
     // Static IP configuration
     esp_err_t saveStaticIPConfig(bool enabled, const std::string& ip, const std::string& gateway,
-                                  const std::string& subnet, const std::string& dns1, const std::string& dns2);
+                                  const std::string& subnet, const std::string& dns1, const std::string& dns2,
+                                  const std::string& ssid = "");
     esp_err_t loadStaticIPConfig();
 
     // Load all configurations

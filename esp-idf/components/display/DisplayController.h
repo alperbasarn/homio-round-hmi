@@ -3,6 +3,8 @@
 
 #include "LGFX_Config.hpp"
 #include "TouchPanel.h"
+#include <string>
+#include <atomic>
 #include <cstdint>
 
 // Forward declarations to avoid circular dependencies
@@ -44,6 +46,8 @@ private:
   bool displayIsOn;
   int initializationProgress;
   int64_t initializationCompleteTime;
+  std::atomic<int> pendingModeRequest;
+  std::atomic<bool> pendingHomeActivation;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
@@ -57,6 +61,8 @@ public:
   
   void setMode(Mode mode);
   Mode getMode() const;
+  bool showNamedScreen(const std::string& screenName);
+  std::string getModeName() const;
 
   void registerKnobController(KnobController* knob);
   void registerSoundController(SoundController* sound);
