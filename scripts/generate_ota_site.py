@@ -41,12 +41,24 @@ def resolve_binary_path(publish_root: Path, variant: str) -> Path:
         publish_root / variant / "qnob-screen.bin",
         publish_root / f"binaries-{variant}" / "qnob-screen.bin",
         publish_root / f"binaries-{variant}" / variant / "qnob-screen.bin",
+        publish_root / f"binaries-{variant}" / "Binaries" / variant / "qnob-screen.bin",
     ]
     for path in candidates:
         if path.is_file():
             return path
+
+    recursive_matches = sorted(
+        path for path in publish_root.rglob("qnob-screen.bin")
+        if variant in {part.name for part in path.parents}
+    )
+    if recursive_matches:
+        return recursive_matches[0]
+
     checked = "\n  - ".join(str(p) for p in candidates)
-    raise FileNotFoundError(f"Missing OTA binary for {variant}. Checked:\n  - {checked}")
+    discovered = "\n  - ".join(str(p) for p in recursive_matches[:10]) or "<none>"
+    raise FileNotFoundError(
+        f"Missing OTA binary for {variant}. Checked:\n  - {checked}\nDiscovered qnob-screen.bin files:\n  - {discovered}"
+    )
 
 
 def main() -> int:
