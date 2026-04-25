@@ -52,7 +52,7 @@ private:
     static constexpr float ARC_START_ANGLE = 120.0f;
     static constexpr float ARC_LENGTH = 300.0f;
     static constexpr int ARC_RANGE_MAX = 1000;
-    static constexpr int64_t ANIMATION_DURATION = 950;
+    static constexpr int64_t ANIMATION_DURATION = 665;  // 950ms * 0.7 — 30% faster
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
     static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
@@ -61,6 +61,7 @@ private:
     // LVGL widgets (text + center disc + tracks only during animation)
     lv_obj_t* root;
     lv_obj_t* outdoorTrackArc;
+    lv_obj_t* indoorTrackArc;
     lv_obj_t* outdoorArc;
     lv_obj_t* indoorArc;
     lv_obj_t* centerDisc;
@@ -74,6 +75,8 @@ private:
     int currentOutdoorArcValue;
     int targetIndoorArcValue;
     int targetOutdoorArcValue;
+    int currentIndoorTrackValue;
+    int currentOutdoorTrackValue;
     bool animationPending;
 
     // Callbacks for external data
@@ -87,13 +90,19 @@ private:
     void positionTemperatureLabels();
     void applyIndoorArcFromValue(int value);
     void applyOutdoorArcFromValue(int value);
+    void applyIndoorTrackFromValue(int value);
+    void applyOutdoorTrackFromValue(int value);
 
     // Arc animations
     void startAnimations();
     void startIndoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     void startOutdoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
+    void startIndoorTrackAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
+    void startOutdoorTrackAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     static void indoorArcAnimExec(void* var, int32_t value);
     static void outdoorArcAnimExec(void* var, int32_t value);
+    static void indoorTrackAnimExec(void* var, int32_t value);
+    static void outdoorTrackAnimExec(void* var, int32_t value);
 
     // Data helpers
     void formatDate();
