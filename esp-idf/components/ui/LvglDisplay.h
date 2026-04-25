@@ -1,18 +1,24 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+// LGFX_Config.hpp is intentionally NOT included here.
+// LovyanGFX lives only inside LvglDisplay.cpp — call setHardware() once
+// (from main.cpp, which does have access to LGFX) before init().
 #include <lvgl.h>
 #include <cstdint>
 
 class LvglDisplay {
 public:
+    // Provide the hardware driver (opaque pointer; caller must pass LGFX*).
+    // Must be called before init().
+    static void setHardware(void* gfxPtr);
+
     // LVGL lifecycle
-    static bool init(LGFX* graphics);
+    static bool init();
     static bool isInitialized();
     static void taskHandler();
     static void invalidateScreen();
 
-    // Display dimensions and brightness — no LGFX type exposed to callers
+    // Display dimensions and brightness
     static int  getWidth();
     static int  getHeight();
     static void setBrightness(uint8_t brightness);
@@ -27,6 +33,7 @@ public:
     static void     drawLine(int x0, int y0, int x1, int y1, uint32_t rgb888);
     static void     fillArc(int cx, int cy, int outerR, int innerR, float startAngle, float endAngle, uint32_t rgb888);
     static void     drawArc(int cx, int cy, int outerR, int innerR, float startAngle, float endAngle, uint32_t rgb888);
+    static void     fillEllipse(int cx, int cy, int rx, int ry, uint32_t rgb888);
     static void     setTextSize(int scale);
     static void     setTextColor(uint32_t rgb888);
     static void     setCursor(int x, int y);

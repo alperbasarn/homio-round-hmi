@@ -1,4 +1,5 @@
 #include "LvglDisplay.h"
+#include "LGFX_Config.hpp"   // LGFX stays here — not exposed in the header
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -26,17 +27,19 @@ esp_timer_handle_t s_tickTimer = nullptr;
 
 }  // namespace
 
-bool LvglDisplay::init(LGFX* graphics) {
+void LvglDisplay::setHardware(void* gfxPtr) {
+    s_gfx = static_cast<LGFX*>(gfxPtr);
+}
+
+bool LvglDisplay::init() {
     if (s_initialized) {
         return true;
     }
 
-    if (graphics == nullptr) {
-        ESP_LOGE(TAG, "Cannot initialize LVGL display: graphics handle is null");
+    if (s_gfx == nullptr) {
+        ESP_LOGE(TAG, "Cannot initialize LVGL display: call setHardware() first");
         return false;
     }
-
-    s_gfx = graphics;
     lv_init();
 
     const uint32_t width = static_cast<uint32_t>(s_gfx->width());
@@ -257,6 +260,10 @@ void LvglDisplay::fillArc(int cx, int cy, int outerR, int innerR,
 void LvglDisplay::drawArc(int cx, int cy, int outerR, int innerR,
                            float startAngle, float endAngle, uint32_t rgb888) {
     if (s_gfx) s_gfx->drawArc(cx, cy, outerR, innerR, startAngle, endAngle,
+        s_gfx->color888((rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::fillEllipse(int cx, int cy, int rx, int ry, uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillEllipse(cx, cy, rx, ry,
         s_gfx->color888((rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
 }
 void LvglDisplay::setTextSize(int scale) {
