@@ -22,6 +22,8 @@ int16_t normalizeAngle(float degrees) {
 }
 
 const lv_color_t OUTDOOR_ARC_COLOR = lv_color_hex(0x39D9FF);
+const lv_color_t OUTDOOR_TRACK_COLOR = lv_color_hex(0x102238);
+const lv_color_t INDOOR_TRACK_COLOR = lv_color_hex(0x153019);
 
 }  // namespace
 
@@ -51,7 +53,8 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(TouchPanel* touch)
       inactivityTimeoutReached(false),
       root(nullptr),
       outdoorTrackArc(nullptr),
-            outdoorArc(nullptr),
+    indoorTrackArc(nullptr),
+    outdoorArc(nullptr),
       indoorArc(nullptr),
       centerDisc(nullptr),
       timeLabel(nullptr),
@@ -63,6 +66,8 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(TouchPanel* touch)
       currentOutdoorArcValue(0),
       targetIndoorArcValue(0),
       targetOutdoorArcValue(0),
+      currentIndoorTrackValue(0),
+      currentOutdoorTrackValue(0),
       animationPending(false) {
     formatDate();
     lastColonToggleTime = millis();
@@ -200,9 +205,10 @@ void EnvironmentInfoScreen::buildUi() {
     };
 
     outdoorTrackArc = createArc(outerDiameter, outerArcWidth);
-    lv_obj_set_style_arc_color(outdoorTrackArc, lv_color_hex(0x102238), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_90, LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_TRANSP, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(outdoorTrackArc, OUTDOOR_TRACK_COLOR, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_90, LV_PART_INDICATOR);
+    lv_obj_set_style_shadow_opa(outdoorTrackArc, LV_OPA_TRANSP, LV_PART_INDICATOR);
 
     outdoorArc = createArc(outerDiameter, outerArcWidth);
     lv_obj_set_style_arc_opa(outdoorArc, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -211,9 +217,14 @@ void EnvironmentInfoScreen::buildUi() {
     lv_obj_set_style_shadow_width(outdoorArc, scalePx(4), LV_PART_INDICATOR);
     lv_obj_set_style_shadow_opa(outdoorArc, LV_OPA_50, LV_PART_INDICATOR);
 
+    indoorTrackArc = createArc(innerDiameter, innerArcWidth);
+    lv_obj_set_style_arc_opa(indoorTrackArc, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(indoorTrackArc, INDOOR_TRACK_COLOR, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(indoorTrackArc, LV_OPA_90, LV_PART_INDICATOR);
+    lv_obj_set_style_shadow_opa(indoorTrackArc, LV_OPA_TRANSP, LV_PART_INDICATOR);
+
     indoorArc = createArc(innerDiameter, innerArcWidth);
-    lv_obj_set_style_arc_color(indoorArc, lv_color_hex(0x153019), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(indoorArc, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(indoorArc, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_arc_color(indoorArc, lv_color_hex(0x7BE85A), LV_PART_INDICATOR);
     lv_obj_set_style_shadow_color(indoorArc, lv_color_hex(0x7BE85A), LV_PART_INDICATOR);
     lv_obj_set_style_shadow_width(indoorArc, scalePx(4), LV_PART_INDICATOR);
@@ -390,13 +401,17 @@ void EnvironmentInfoScreen::startAnimations() {
 
     ESP_LOGI(TAG, "startAnimations: indoor=%d outdoor=%d", indoorValue, outdoorValue);
 
-    // Phase 1: outdoor segment arcs (the "shadow ring") grow immediately.
+    // Foreground arcs: 0 → temperature value
     startOutdoorArcAnimation(outdoorValue, false, 0);
     targetOutdoorArcValue = outdoorValue;
 
     // Start both arcs together so intro timing matches.
     startIndoorArcAnimation(indoorValue, false, 0);
     targetIndoorArcValue = indoorValue;
+
+    // Track arcs: 0 → full span, same duration so backgrounds grow in sync with foreground
+    startOutdoorTrackAnimation(ARC_RANGE_MAX, false, 0);
+    startIndoorTrackAnimation(ARC_RANGE_MAX, false, 0);
 
     positionTemperatureLabels();
 }
@@ -470,6 +485,74 @@ void EnvironmentInfoScreen::outdoorArcAnimExec(void* var, int32_t value) {
     self->applyOutdoorArcFromValue(self->currentOutdoorArcValue);
 }
 
+void EnvironmentInfoScreen::startIndoorTrackAnimation(int targetValue, bool immediate, uint32_t delayMs) {
+    lv_anim_del(this, indoorTrackAnimExec);
+
+    if (immediate) {
+        currentIndoorTrackValue = targetValue;
+        applyIndoorTrackFromValue(targetValue);
+        return;
+    }
+
+    if (currentIndoorTrackValue == targetValue && delayMs == 0) {
+        return;
+    }
+
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, this);
+    lv_anim_set_values(&anim, currentIndoorTrackValue, targetValue);
+    lv_anim_set_time(&anim, ANIMATION_DURATION);
+    lv_anim_set_delay(&anim, delayMs);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
+    lv_anim_set_exec_cb(&anim, indoorTrackAnimExec);
+    lv_anim_start(&anim);
+}
+
+void EnvironmentInfoScreen::startOutdoorTrackAnimation(int targetValue, bool immediate, uint32_t delayMs) {
+    lv_anim_del(this, outdoorTrackAnimExec);
+
+    if (immediate) {
+        currentOutdoorTrackValue = targetValue;
+        applyOutdoorTrackFromValue(targetValue);
+        return;
+    }
+
+    if (currentOutdoorTrackValue == targetValue && delayMs == 0) {
+        return;
+    }
+
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, this);
+    lv_anim_set_values(&anim, currentOutdoorTrackValue, targetValue);
+    lv_anim_set_time(&anim, ANIMATION_DURATION);
+    lv_anim_set_delay(&anim, delayMs);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
+    lv_anim_set_exec_cb(&anim, outdoorTrackAnimExec);
+    lv_anim_start(&anim);
+}
+
+void EnvironmentInfoScreen::indoorTrackAnimExec(void* var, int32_t value) {
+    EnvironmentInfoScreen* self = static_cast<EnvironmentInfoScreen*>(var);
+    if (self == nullptr) {
+        return;
+    }
+
+    self->currentIndoorTrackValue = static_cast<int>(value);
+    self->applyIndoorTrackFromValue(static_cast<int>(value));
+}
+
+void EnvironmentInfoScreen::outdoorTrackAnimExec(void* var, int32_t value) {
+    EnvironmentInfoScreen* self = static_cast<EnvironmentInfoScreen*>(var);
+    if (self == nullptr) {
+        return;
+    }
+
+    self->currentOutdoorTrackValue = static_cast<int>(value);
+    self->applyOutdoorTrackFromValue(static_cast<int>(value));
+}
+
 void EnvironmentInfoScreen::positionTemperatureLabels() {
     if (outdoorTrackArc == nullptr || indoorArc == nullptr ||
         indoorTempLabel == nullptr || outdoorTempLabel == nullptr) {
@@ -525,9 +608,24 @@ void EnvironmentInfoScreen::applyIndoorArcFromValue(int value) {
     const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
     const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
     const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
-    lv_arc_set_angles(indoorArc,
-                      normalizeAngle(ARC_START_ANGLE),
-                      normalizeAngle(endAngleFloat));
+    const int16_t startAngle = normalizeAngle(ARC_START_ANGLE);
+    const int16_t endAngle = normalizeAngle(endAngleFloat);
+
+    lv_arc_set_angles(indoorArc, startAngle, endAngle);
+}
+
+void EnvironmentInfoScreen::applyIndoorTrackFromValue(int value) {
+    if (indoorTrackArc == nullptr) {
+        return;
+    }
+
+    const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
+    const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
+    const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
+    const int16_t startAngle = normalizeAngle(ARC_START_ANGLE);
+    const int16_t endAngle = normalizeAngle(endAngleFloat);
+
+    lv_arc_set_angles(indoorTrackArc, startAngle, endAngle);
 }
 
 void EnvironmentInfoScreen::applyOutdoorArcFromValue(int value) {
@@ -538,9 +636,24 @@ void EnvironmentInfoScreen::applyOutdoorArcFromValue(int value) {
     const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
     const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
     const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
-    lv_arc_set_angles(outdoorArc,
-                      normalizeAngle(ARC_START_ANGLE),
-                      normalizeAngle(endAngleFloat));
+    const int16_t startAngle = normalizeAngle(ARC_START_ANGLE);
+    const int16_t endAngle = normalizeAngle(endAngleFloat);
+
+    lv_arc_set_angles(outdoorArc, startAngle, endAngle);
+}
+
+void EnvironmentInfoScreen::applyOutdoorTrackFromValue(int value) {
+    if (outdoorTrackArc == nullptr) {
+        return;
+    }
+
+    const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
+    const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
+    const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
+    const int16_t startAngle = normalizeAngle(ARC_START_ANGLE);
+    const int16_t endAngle = normalizeAngle(endAngleFloat);
+
+    lv_arc_set_angles(outdoorTrackArc, startAngle, endAngle);
 }
 
 lv_color_t EnvironmentInfoScreen::getTemperatureColor(float temperature, bool isIndoor) {
@@ -709,10 +822,15 @@ void EnvironmentInfoScreen::deactivate() {
     animationPending = false;
     lv_anim_del(this, indoorArcAnimExec);
     lv_anim_del(this, outdoorArcAnimExec);
+    lv_anim_del(this, indoorTrackAnimExec);
+    lv_anim_del(this, outdoorTrackAnimExec);
     if (root != nullptr) {
-        if (currentIndoorArcValue > 0 || currentOutdoorArcValue > 0) {
+        if (currentIndoorArcValue > 0 || currentOutdoorArcValue > 0 ||
+            currentIndoorTrackValue > 0 || currentOutdoorTrackValue > 0) {
             startIndoorArcAnimation(0, false, 0);
             startOutdoorArcAnimation(0, false, 0);
+            startIndoorTrackAnimation(0, false, 0);
+            startOutdoorTrackAnimation(0, false, 0);
 
             const int64_t tStart = millis();
             while ((millis() - tStart) < ANIMATION_DURATION) {
@@ -723,13 +841,18 @@ void EnvironmentInfoScreen::deactivate() {
 
         currentIndoorArcValue = 0;
         currentOutdoorArcValue = 0;
+        currentIndoorTrackValue = 0;
+        currentOutdoorTrackValue = 0;
         applyIndoorArcFromValue(0);
         applyOutdoorArcFromValue(0);
+        applyIndoorTrackFromValue(0);
+        applyOutdoorTrackFromValue(0);
         LvglDisplay::invalidateScreen();
         LvglDisplay::taskHandler();
         lv_obj_del(root);
         root = nullptr;
         outdoorTrackArc = nullptr;
+        indoorTrackArc = nullptr;
         outdoorArc = nullptr;
         indoorArc = nullptr;
         centerDisc = nullptr;
@@ -750,11 +873,14 @@ void EnvironmentInfoScreen::resetScreen() {
     outdoorTempChanged = true;
     lv_anim_del(this, indoorArcAnimExec);
     lv_anim_del(this, outdoorArcAnimExec);
+    lv_anim_del(this, indoorTrackAnimExec);
+    lv_anim_del(this, outdoorTrackAnimExec);
 
     if (root != nullptr) {
         lv_obj_del(root);
         root = nullptr;
         outdoorTrackArc = nullptr;
+        indoorTrackArc = nullptr;
         outdoorArc = nullptr;
         indoorArc = nullptr;
         centerDisc = nullptr;
@@ -764,6 +890,11 @@ void EnvironmentInfoScreen::resetScreen() {
         indoorTempLabel = nullptr;
         outdoorTempLabel = nullptr;
     }
+
+    currentIndoorArcValue = 0;
+    currentOutdoorArcValue = 0;
+    currentIndoorTrackValue = 0;
+    currentOutdoorTrackValue = 0;
 
     activate();
     LvglDisplay::invalidateScreen();

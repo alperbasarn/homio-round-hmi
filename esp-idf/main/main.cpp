@@ -179,7 +179,8 @@ void displayTask(void* parameter) {
             sleepHandler->checkActivity();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS
+        // Drive UI loop at LVGL tick granularity for maximum animation smoothness.
+        vTaskDelay(pdMS_TO_TICKS(5)); // ~200 FPS
     }
 }
 
