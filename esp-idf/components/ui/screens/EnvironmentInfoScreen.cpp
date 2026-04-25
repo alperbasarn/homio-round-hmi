@@ -1,6 +1,8 @@
 #include "EnvironmentInfoScreen.h"
 #include "LvglDisplay.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -19,18 +21,12 @@ int16_t normalizeAngle(float degrees) {
     return static_cast<int16_t>(std::round(normalized));
 }
 
-const std::array<lv_color_t, 4> OUTDOOR_SEGMENT_COLORS = {
-    lv_color_hex(0xFF3A55),
-    lv_color_hex(0xFF7B39),
-    lv_color_hex(0xFFD85C),
-    lv_color_hex(0x39D9FF)
-};
+const lv_color_t OUTDOOR_ARC_COLOR = lv_color_hex(0x39D9FF);
 
 }  // namespace
 
-EnvironmentInfoScreen::EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics),
-      touchPanel(touch),
+EnvironmentInfoScreen::EnvironmentInfoScreen(TouchPanel* touch)
+    : touchPanel(touch),
       screenInitialized(false),
       pageBackRequested(false),
       deviceInfoRequested(false),
@@ -55,21 +51,19 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch)
       inactivityTimeoutReached(false),
       root(nullptr),
       outdoorTrackArc(nullptr),
+            outdoorArc(nullptr),
       indoorArc(nullptr),
-      outdoorSegmentArcs{nullptr, nullptr, nullptr, nullptr},
       centerDisc(nullptr),
       timeLabel(nullptr),
       dayLabel(nullptr),
       dateLabel(nullptr),
       indoorTempLabel(nullptr),
       outdoorTempLabel(nullptr),
-      outdoorSegmentStops{0.0f, 0.25f, 0.50f, 0.75f, 1.0f},
-      outdoorSegmentStartAngles{0, 0, 0, 0},
-      outdoorSegmentEndAngles{0, 0, 0, 0},
       currentIndoorArcValue(0),
       currentOutdoorArcValue(0),
       targetIndoorArcValue(0),
-      targetOutdoorArcValue(0) {
+      targetOutdoorArcValue(0),
+      animationPending(false) {
     formatDate();
     lastColonToggleTime = millis();
 }
@@ -130,62 +124,22 @@ void EnvironmentInfoScreen::update() {
         const bool forceFullRefresh = !screenInitialized;
         updateUi(forceFullRefresh);
         LvglDisplay::taskHandler();
-    }
-
-    // Handle touch gestures
-    if (touchPanel && touchPanel->getHasNewGesture()) {
-        resetLastActivityTime();
-        touch_gesture_t touchGesture = touchPanel->getLastGesture();
-
-        if (touchGesture == GESTURE_SWIPE_RIGHT) {
-            pageBackRequested = true;
-            screenInitialized = false;
-            lv_anim_del(this, indoorArcAnimExec);
-            lv_anim_del(this, outdoorArcAnimExec);
-            if (root) {
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Swipe right detected, navigating to mode controller");
-        } else if (touchGesture == GESTURE_SWIPE_UP) {
-            deviceInfoRequested = true;
-            screenInitialized = false;
-            lv_anim_del(this, indoorArcAnimExec);
-            lv_anim_del(this, outdoorArcAnimExec);
-            if (root) {
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Swipe up detected, navigating to device info");
+        if (animationPending) {
+            animationPending = false;
+            startAnimations();
         }
-    }
-
-    if (touchPanel && touchPanel->getHasNewRelease()) {
-        const int64_t elapsedSinceActivation = millis() - activatedAtMs;
-        if (ignoreNextRelease || elapsedSinceActivation < STALE_RELEASE_GUARD_MS) {
-            ignoreNextRelease = false;
-            ESP_LOGI(TAG, "Ignoring stale release after screen activation (%lld ms)", elapsedSinceActivation);
-        } else {
-            resetLastActivityTime();
-            pageBackRequested = true;
-            screenInitialized = false;
-            lv_anim_del(this, indoorArcAnimExec);
-            lv_anim_del(this, outdoorArcAnimExec);
-            if (root) {
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Tap release detected, navigating to mode controller");
-        }
-    } else if (ignoreNextRelease && touchPanel && !touchPanel->isPressed() &&
-               (millis() - activatedAtMs) >= STALE_RELEASE_GUARD_MS) {
-        ignoreNextRelease = false;
     }
 }
 
 void EnvironmentInfoScreen::ensureUi() {
     if (lvglReady) {
+        if (root == nullptr) {
+            buildUi();
+        }
         return;
     }
 
-    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init()) {
         ESP_LOGE(TAG, "LVGL display init failed");
         return;
     }
@@ -199,17 +153,21 @@ void EnvironmentInfoScreen::buildUi() {
         return;
     }
 
-    const int displayW = gfx->width();
-    const int displayH = gfx->height();
+    const int displayW = LvglDisplay::getWidth();
+    const int displayH = LvglDisplay::getHeight();
     const int displaySize = std::min(displayW, displayH);
 
-    const int framePadding = std::max(scalePx(10), displaySize / 20);
+    // Use almost full panel area on 1.75" displays while keeping tiny safety margin.
+    const int framePadding = std::max(1, displaySize / 120);
     const int outerDiameter = displaySize - (2 * framePadding);
-    const int outerArcWidth = std::max(scalePx(12), displaySize / 18);
-    const int ringGap = std::max(scalePx(4), displaySize / 58);
-    const int innerArcWidth = std::max(scalePx(9), outerArcWidth - scalePx(8));
+    const int outerArcWidth = std::max(scalePx(12), displaySize / 16);
+    const int innerArcWidth = std::max(scalePx(9), static_cast<int>(outerArcWidth * 0.75f));
+    // Requested spacing: 10% of arc thickness between outer and inner arcs.
+    const int ringGap = std::max(1, innerArcWidth / 10);
     const int innerDiameter = std::max(scalePx(120), outerDiameter - 2 * (outerArcWidth + ringGap));
-    const int centerDiameter = std::max(scalePx(90), innerDiameter - 2 * (innerArcWidth + scalePx(8)));
+    // Requested spacing: 10% of inner arc thickness between inner arc and white center disc.
+    const int centerGap = std::max(1, innerArcWidth / 10);
+    const int centerDiameter = std::max(scalePx(150), innerDiameter - 2 * (innerArcWidth + centerGap));
 
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
@@ -246,28 +204,12 @@ void EnvironmentInfoScreen::buildUi() {
     lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_90, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(outdoorTrackArc, LV_OPA_TRANSP, LV_PART_INDICATOR);
 
-    const float segmentSpan = ARC_LENGTH / static_cast<float>(OUTDOOR_SEGMENT_COUNT);
-    const float segmentGap = (displayW >= 400) ? 4.0f : 3.0f;
-
-    for (size_t i = 0; i < OUTDOOR_SEGMENT_COUNT; ++i) {
-        lv_obj_t* segmentArc = createArc(outerDiameter, outerArcWidth);
-        lv_obj_set_style_arc_opa(segmentArc, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_arc_color(segmentArc, OUTDOOR_SEGMENT_COLORS[i], LV_PART_INDICATOR);
-        lv_obj_set_style_shadow_color(segmentArc, OUTDOOR_SEGMENT_COLORS[i], LV_PART_INDICATOR);
-        lv_obj_set_style_shadow_width(segmentArc, scalePx(4), LV_PART_INDICATOR);
-        lv_obj_set_style_shadow_opa(segmentArc, LV_OPA_50, LV_PART_INDICATOR);
-
-        const float segStart = (segmentSpan * static_cast<float>(i)) + (i == 0 ? 0.0f : segmentGap * 0.5f);
-        const float segEnd = (segmentSpan * static_cast<float>(i + 1))
-                           - (i == OUTDOOR_SEGMENT_COUNT - 1 ? 0.0f : segmentGap * 0.5f);
-        lv_arc_set_bg_angles(segmentArc,
-                             normalizeAngle(ARC_START_ANGLE + segStart),
-                             normalizeAngle(ARC_START_ANGLE + segEnd));
-
-        outdoorSegmentArcs[i] = segmentArc;
-        outdoorSegmentStartAngles[i] = normalizeAngle(ARC_START_ANGLE + segStart);
-        outdoorSegmentEndAngles[i] = normalizeAngle(ARC_START_ANGLE + segEnd);
-    }
+    outdoorArc = createArc(outerDiameter, outerArcWidth);
+    lv_obj_set_style_arc_opa(outdoorArc, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(outdoorArc, OUTDOOR_ARC_COLOR, LV_PART_INDICATOR);
+    lv_obj_set_style_shadow_color(outdoorArc, OUTDOOR_ARC_COLOR, LV_PART_INDICATOR);
+    lv_obj_set_style_shadow_width(outdoorArc, scalePx(4), LV_PART_INDICATOR);
+    lv_obj_set_style_shadow_opa(outdoorArc, LV_OPA_50, LV_PART_INDICATOR);
 
     indoorArc = createArc(innerDiameter, innerArcWidth);
     lv_obj_set_style_arc_color(indoorArc, lv_color_hex(0x153019), LV_PART_MAIN);
@@ -282,31 +224,40 @@ void EnvironmentInfoScreen::buildUi() {
     lv_obj_set_size(centerDisc, centerDiameter, centerDiameter);
     lv_obj_center(centerDisc);
     lv_obj_set_style_radius(centerDisc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(centerDisc, lv_color_hex(0x0A1016), 0);
-    lv_obj_set_style_bg_grad_color(centerDisc, lv_color_hex(0x161E2A), 0);
-    lv_obj_set_style_bg_grad_dir(centerDisc, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(centerDisc, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(centerDisc, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(centerDisc, LV_OPA_COVER, 0);  // opaque — hides arc interior
     lv_obj_set_style_border_color(centerDisc, lv_color_hex(0x2C3948), 0);
     lv_obj_set_style_border_width(centerDisc, scalePx(2), 0);
-    lv_obj_set_style_shadow_color(centerDisc, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_width(centerDisc, scalePx(5), 0);
-    lv_obj_set_style_shadow_opa(centerDisc, LV_OPA_60, 0);
+    lv_obj_set_style_shadow_width(centerDisc, 0, 0);
+    lv_obj_set_style_shadow_opa(centerDisc, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(centerDisc, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Labels are children of centerDisc so they're guaranteed above the disc and arcs.
     timeLabel = lv_label_create(centerDisc);
     lv_obj_set_style_text_color(timeLabel, lv_color_white(), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_48)
+    lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_48, 0);
+#elif defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_32, 0);
+#endif
     lv_label_set_text(timeLabel, "--:--");
-    lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, -scalePx(20));
+    lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, -scalePx(40));
 
     dayLabel = lv_label_create(centerDisc);
     lv_obj_set_style_text_color(dayLabel, lv_color_hex(0x9AA8BA), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_28)
+    lv_obj_set_style_text_font(dayLabel, &lv_font_montserrat_28, 0);
+#endif
     lv_label_set_text(dayLabel, "---");
-    lv_obj_align(dayLabel, LV_ALIGN_CENTER, 0, scalePx(4));
+    lv_obj_align(dayLabel, LV_ALIGN_CENTER, 0, scalePx(14));
 
     dateLabel = lv_label_create(centerDisc);
     lv_obj_set_style_text_color(dateLabel, lv_color_hex(0xC7D0DD), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_28)
+    lv_obj_set_style_text_font(dateLabel, &lv_font_montserrat_28, 0);
+#endif
     lv_label_set_text(dateLabel, "-- ---");
-    lv_obj_align(dateLabel, LV_ALIGN_CENTER, 0, scalePx(22));
+    lv_obj_align(dateLabel, LV_ALIGN_CENTER, 0, scalePx(52));
 
     indoorTempLabel = lv_label_create(root);
     lv_obj_set_style_text_color(indoorTempLabel, lv_color_hex(0xA0FF8C), 0);
@@ -316,7 +267,6 @@ void EnvironmentInfoScreen::buildUi() {
     lv_obj_set_style_text_color(outdoorTempLabel, lv_color_hex(0x6AC7FF), 0);
     lv_label_set_text(outdoorTempLabel, "0C");
 
-    positionTemperatureLabels();
     LvglDisplay::invalidateScreen();
 }
 
@@ -326,8 +276,12 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
     }
 
     if (forceFullRefresh) {
-        // Turn off display to hide LVGL band rendering
-        gfx->setBrightness(0);
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
+        // Turn off display to hide LVGL band rendering (backlight panels only).
+        // AMOLED panels use display commands for brightness — dimming to 0 can
+        // leave the panel off with no reliable recovery path without a BL pin.
+        LvglDisplay::setBrightness(0);
+#endif
 
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
         screenInitialized = true;
@@ -336,7 +290,7 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
         currentIndoorArcValue = 0;
         currentOutdoorArcValue = 0;
         applyIndoorArcFromValue(0);
-        updateOutdoorSegmentsFromValue(0);
+        applyOutdoorArcFromValue(0);
 
         // Set text labels
         lv_label_set_text(timeLabel, getTimeStringForDisplay().c_str());
@@ -357,31 +311,26 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
         lv_label_set_text(outdoorTempLabel, tempBuffer);
         lv_obj_set_style_text_color(outdoorTempLabel, outdoorColor, 0);
 
+        // Force LVGL layout so label sizes are valid for transform positioning.
+        lv_obj_update_layout(root);
+
         positionTemperatureLabels();
 
-        // Render full LVGL frame while display is dark (text + tracks, arcs at 0)
+        // Mark frame dirty; let the normal per-frame handler render it in the
+        // outer update loop to avoid a long blocking render in this call.
         LvglDisplay::invalidateScreen();
-        LvglDisplay::taskHandler();
 
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
         // Fade display in — user sees text + empty tracks instantly
         for (int b = 0; b <= 255; b += 15) {
-            gfx->setBrightness(b);
+            LvglDisplay::setBrightness(static_cast<uint8_t>(b));
             vTaskDelay(pdMS_TO_TICKS(2));
         }
-        gfx->setBrightness(255);
+#endif
+        LvglDisplay::setBrightness(255);
 
-        // Compute animation targets
-        const float indoorNorm = constrain((indoorTemp - 0.0f) / 40.0f, 0.0f, 1.0f);
-        const float outdoorNorm = constrain((outdoorTemp - (-20.0f)) / 70.0f, 0.0f, 1.0f);
-        const int indoorValue = static_cast<int>(std::lround(indoorNorm * ARC_RANGE_MAX));
-        const int outdoorValue = static_cast<int>(std::lround(outdoorNorm * ARC_RANGE_MAX));
-        ESP_LOGI(TAG, "ENV_ARC_V4 start=%d indoor=%d outdoor=%d",
-                 normalizeAngle(ARC_START_ANGLE), indoorValue, outdoorValue);
-
-        startIndoorArcAnimation(indoorValue, false);
-        startOutdoorArcAnimation(outdoorValue, false);
-        targetIndoorArcValue = indoorValue;
-        targetOutdoorArcValue = outdoorValue;
+        // Schedule arc grow animations to start after the rendered frame is flushed.
+        animationPending = true;
 
         dateTimeChanged = false;
         indoorTempChanged = false;
@@ -407,6 +356,7 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
 
         startIndoorArcAnimation(indoorValue, false);
         targetIndoorArcValue = indoorValue;
+        positionTemperatureLabels();
     }
 
     if (outdoorTempChanged) {
@@ -418,6 +368,7 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
 
         startOutdoorArcAnimation(outdoorValue, false);
         targetOutdoorArcValue = outdoorValue;
+        positionTemperatureLabels();
     }
 
     if (dateTimeChanged) {
@@ -426,14 +377,31 @@ void EnvironmentInfoScreen::updateUi(bool forceFullRefresh) {
         lv_label_set_text(dateLabel, formattedDate.empty() ? "-- ---" : formattedDate.c_str());
     }
 
-    positionTemperatureLabels();
-
     dateTimeChanged = false;
     indoorTempChanged = false;
     outdoorTempChanged = false;
 }
 
-void EnvironmentInfoScreen::startIndoorArcAnimation(int targetValue, bool immediate) {
+void EnvironmentInfoScreen::startAnimations() {
+    const float indoorNorm  = constrain((indoorTemp - 0.0f)   / 40.0f, 0.0f, 1.0f);
+    const float outdoorNorm = constrain((outdoorTemp - (-20.0f)) / 70.0f, 0.0f, 1.0f);
+    const int indoorValue   = static_cast<int>(std::lround(indoorNorm  * ARC_RANGE_MAX));
+    const int outdoorValue  = static_cast<int>(std::lround(outdoorNorm * ARC_RANGE_MAX));
+
+    ESP_LOGI(TAG, "startAnimations: indoor=%d outdoor=%d", indoorValue, outdoorValue);
+
+    // Phase 1: outdoor segment arcs (the "shadow ring") grow immediately.
+    startOutdoorArcAnimation(outdoorValue, false, 0);
+    targetOutdoorArcValue = outdoorValue;
+
+    // Start both arcs together so intro timing matches.
+    startIndoorArcAnimation(indoorValue, false, 0);
+    targetIndoorArcValue = indoorValue;
+
+    positionTemperatureLabels();
+}
+
+void EnvironmentInfoScreen::startIndoorArcAnimation(int targetValue, bool immediate, uint32_t delayMs) {
     lv_anim_del(this, indoorArcAnimExec);
 
     if (immediate) {
@@ -452,21 +420,22 @@ void EnvironmentInfoScreen::startIndoorArcAnimation(int targetValue, bool immedi
     lv_anim_set_var(&anim, this);
     lv_anim_set_values(&anim, startValue, targetValue);
     lv_anim_set_time(&anim, ANIMATION_DURATION);
-    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_delay(&anim, delayMs);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
     lv_anim_set_exec_cb(&anim, indoorArcAnimExec);
     lv_anim_start(&anim);
 }
 
-void EnvironmentInfoScreen::startOutdoorArcAnimation(int targetValue, bool immediate) {
+void EnvironmentInfoScreen::startOutdoorArcAnimation(int targetValue, bool immediate, uint32_t delayMs) {
     lv_anim_del(this, outdoorArcAnimExec);
 
     if (immediate) {
         currentOutdoorArcValue = targetValue;
-        updateOutdoorSegmentsFromValue(currentOutdoorArcValue);
+        applyOutdoorArcFromValue(currentOutdoorArcValue);
         return;
     }
 
-    if (currentOutdoorArcValue == targetValue) {
+    if (currentOutdoorArcValue == targetValue && delayMs == 0) {
         return;
     }
 
@@ -475,7 +444,8 @@ void EnvironmentInfoScreen::startOutdoorArcAnimation(int targetValue, bool immed
     lv_anim_set_var(&anim, this);
     lv_anim_set_values(&anim, currentOutdoorArcValue, targetValue);
     lv_anim_set_time(&anim, ANIMATION_DURATION);
-    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_delay(&anim, delayMs);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
     lv_anim_set_exec_cb(&anim, outdoorArcAnimExec);
     lv_anim_start(&anim);
 }
@@ -497,30 +467,54 @@ void EnvironmentInfoScreen::outdoorArcAnimExec(void* var, int32_t value) {
     }
 
     self->currentOutdoorArcValue = static_cast<int>(value);
-    self->updateOutdoorSegmentsFromValue(self->currentOutdoorArcValue);
+    self->applyOutdoorArcFromValue(self->currentOutdoorArcValue);
 }
 
 void EnvironmentInfoScreen::positionTemperatureLabels() {
-    if (outdoorTrackArc == nullptr || indoorArc == nullptr || indoorTempLabel == nullptr || outdoorTempLabel == nullptr) {
+    if (outdoorTrackArc == nullptr || indoorArc == nullptr ||
+        indoorTempLabel == nullptr || outdoorTempLabel == nullptr) {
         return;
     }
 
-    const int centerX = gfx->width() / 2;
-    const int centerY = gfx->height() / 2;
-    const int indoorRadius = lv_obj_get_width(indoorArc) / 2;
+    const int centerX = LvglDisplay::getWidth() / 2;
+    const int centerY = LvglDisplay::getHeight() / 2;
+    const int indoorRadius  = lv_obj_get_width(indoorArc) / 2;
     const int outdoorRadius = lv_obj_get_width(outdoorTrackArc) / 2;
 
-    auto placeLabel = [&](lv_obj_t* label, int radius, float angleDeg) {
-        const float angleRad = angleDeg * PI / 180.0f;
-        const int x = centerX + static_cast<int>(std::round(radius * std::cos(angleRad)));
-        const int y = centerY + static_cast<int>(std::round(radius * std::sin(angleRad)));
-        const int labelW = lv_obj_get_width(label);
-        const int labelH = lv_obj_get_height(label);
-        lv_obj_set_pos(label, x - labelW / 2, y - labelH / 2);
+    // Compute the angle (degrees, clockwise from east = 0°) at the tip of each arc.
+    const float indoorNorm  = constrain((indoorTemp  - 0.0f)    / 40.0f,  0.0f, 1.0f);
+    const float outdoorNorm = constrain((outdoorTemp - (-20.0f)) / 70.0f, 0.0f, 1.0f);
+    const float indoorEndAngle  = ARC_START_ANGLE + ARC_LENGTH * indoorNorm;
+    const float outdoorEndAngle = ARC_START_ANGLE + ARC_LENGTH * outdoorNorm;
+
+    // Place a label centered on the arc tip and rotate it tangentially so it
+    // reads naturally along the arc direction.
+    auto placeArcTipLabel = [&](lv_obj_t* label, int radius, float tipAngleDeg) {
+        const float angleRad = tipAngleDeg * PI / 180.0f;
+        const int tipX = centerX + static_cast<int>(std::round(radius * std::cos(angleRad)));
+        const int tipY = centerY + static_cast<int>(std::round(radius * std::sin(angleRad)));
+
+        const int w = lv_obj_get_width(label);
+        const int h = lv_obj_get_height(label);
+        lv_obj_set_pos(label, tipX - w / 2, tipY - h / 2);
+
+        // Rotate text tangentially (perpendicular to the radius).
+        // Use (tipAngle + 90°) as the tangent direction; flip by 180° if it
+        // would produce upside-down text (tangent angle in the 90°–270° range).
+        float textAngle = tipAngleDeg + 90.0f;
+        if (textAngle >= 90.0f && textAngle < 270.0f) {
+            textAngle += 180.0f;
+        }
+        textAngle = std::fmod(textAngle + 360.0f, 360.0f);
+
+        lv_obj_set_style_transform_pivot_x(label, w / 2, 0);
+        lv_obj_set_style_transform_pivot_y(label, h / 2, 0);
+        lv_obj_set_style_transform_angle(label, static_cast<int16_t>(textAngle * 10.0f), 0);
+        lv_obj_add_flag(label, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     };
 
-    placeLabel(indoorTempLabel, indoorRadius - scalePx(12), 8.0f);
-    placeLabel(outdoorTempLabel, outdoorRadius - scalePx(12), 26.0f);
+    placeArcTipLabel(indoorTempLabel,  indoorRadius,  indoorEndAngle);
+    placeArcTipLabel(outdoorTempLabel, outdoorRadius, outdoorEndAngle);
 }
 
 void EnvironmentInfoScreen::applyIndoorArcFromValue(int value) {
@@ -531,47 +525,22 @@ void EnvironmentInfoScreen::applyIndoorArcFromValue(int value) {
     const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
     const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
     const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
-    const int16_t startAngle = normalizeAngle(ARC_START_ANGLE);
-    const int16_t endAngle = normalizeAngle(endAngleFloat);
-
-    lv_arc_set_angles(indoorArc, startAngle, endAngle);
+    lv_arc_set_angles(indoorArc,
+                      normalizeAngle(ARC_START_ANGLE),
+                      normalizeAngle(endAngleFloat));
 }
 
-void EnvironmentInfoScreen::updateOutdoorSegmentsFromValue(int value) {
-    const float normalized = constrain(static_cast<float>(value) / static_cast<float>(ARC_RANGE_MAX), 0.0f, 1.0f);
-
-    for (size_t i = 0; i < OUTDOOR_SEGMENT_COUNT; ++i) {
-        if (outdoorSegmentArcs[i] == nullptr) {
-            continue;
-        }
-
-        const float start = outdoorSegmentStops[i];
-        const float end = outdoorSegmentStops[i + 1];
-        const float range = end - start;
-        float segmentProgress = 0.0f;
-        if (range > 0.0f) {
-            segmentProgress = constrain((normalized - start) / range, 0.0f, 1.0f);
-        }
-
-        const int16_t startAngle = outdoorSegmentStartAngles[i];
-        const int16_t endAngle = outdoorSegmentEndAngles[i];
-        int16_t span = static_cast<int16_t>(endAngle - startAngle);
-        if (span < 0) {
-            span = static_cast<int16_t>(span + 360);
-        }
-
-        const float currentAngleFloat = static_cast<float>(startAngle) + (segmentProgress * static_cast<float>(span));
-        const int16_t currentAngle = normalizeAngle(currentAngleFloat);
-        lv_arc_set_angles(outdoorSegmentArcs[i], startAngle, currentAngle);
-
-        const bool segmentVisible = segmentProgress > 0.0f;
-        lv_obj_set_style_arc_opa(outdoorSegmentArcs[i],
-                                 segmentVisible ? LV_OPA_COVER : LV_OPA_TRANSP,
-                                 LV_PART_INDICATOR);
-        lv_obj_set_style_shadow_opa(outdoorSegmentArcs[i],
-                                    segmentVisible ? LV_OPA_40 : LV_OPA_TRANSP,
-                                    LV_PART_INDICATOR);
+void EnvironmentInfoScreen::applyOutdoorArcFromValue(int value) {
+    if (outdoorArc == nullptr) {
+        return;
     }
+
+    const int clampedValue = constrain(value, 0, ARC_RANGE_MAX);
+    const float progress = static_cast<float>(clampedValue) / static_cast<float>(ARC_RANGE_MAX);
+    const float endAngleFloat = ARC_START_ANGLE + (ARC_LENGTH * progress);
+    lv_arc_set_angles(outdoorArc,
+                      normalizeAngle(ARC_START_ANGLE),
+                      normalizeAngle(endAngleFloat));
 }
 
 lv_color_t EnvironmentInfoScreen::getTemperatureColor(float temperature, bool isIndoor) {
@@ -640,7 +609,7 @@ std::string EnvironmentInfoScreen::getTimeStringForDisplay() const {
 }
 
 int EnvironmentInfoScreen::scalePx(int referencePx) const {
-    return std::max(1, (referencePx * gfx->width()) / 240);
+    return std::max(1, (referencePx * LvglDisplay::getWidth()) / 240);
 }
 
 void EnvironmentInfoScreen::formatDate() {
@@ -735,18 +704,68 @@ void EnvironmentInfoScreen::resetDeviceInfoRequest() {
     deviceInfoRequested = false;
 }
 
-void EnvironmentInfoScreen::resetScreen() {
-    ESP_LOGI(TAG, "resetScreen called - forcing redraw");
+void EnvironmentInfoScreen::deactivate() {
     screenInitialized = false;
-    dateTimeChanged = true;
-    indoorTempChanged = true;
-    outdoorTempChanged = true;
-    activate();
+    animationPending = false;
     lv_anim_del(this, indoorArcAnimExec);
     lv_anim_del(this, outdoorArcAnimExec);
     if (root != nullptr) {
-        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        if (currentIndoorArcValue > 0 || currentOutdoorArcValue > 0) {
+            startIndoorArcAnimation(0, false, 0);
+            startOutdoorArcAnimation(0, false, 0);
+
+            const int64_t tStart = millis();
+            while ((millis() - tStart) < ANIMATION_DURATION) {
+                LvglDisplay::taskHandler();
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+
+        currentIndoorArcValue = 0;
+        currentOutdoorArcValue = 0;
+        applyIndoorArcFromValue(0);
+        applyOutdoorArcFromValue(0);
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+        lv_obj_del(root);
+        root = nullptr;
+        outdoorTrackArc = nullptr;
+        outdoorArc = nullptr;
+        indoorArc = nullptr;
+        centerDisc = nullptr;
+        timeLabel = nullptr;
+        dayLabel = nullptr;
+        dateLabel = nullptr;
+        indoorTempLabel = nullptr;
+        outdoorTempLabel = nullptr;
     }
+}
+
+void EnvironmentInfoScreen::resetScreen() {
+    ESP_LOGI(TAG, "resetScreen called - forcing redraw");
+    screenInitialized = false;
+    animationPending = false;
+    dateTimeChanged = true;
+    indoorTempChanged = true;
+    outdoorTempChanged = true;
+    lv_anim_del(this, indoorArcAnimExec);
+    lv_anim_del(this, outdoorArcAnimExec);
+
+    if (root != nullptr) {
+        lv_obj_del(root);
+        root = nullptr;
+        outdoorTrackArc = nullptr;
+        outdoorArc = nullptr;
+        indoorArc = nullptr;
+        centerDisc = nullptr;
+        timeLabel = nullptr;
+        dayLabel = nullptr;
+        dateLabel = nullptr;
+        indoorTempLabel = nullptr;
+        outdoorTempLabel = nullptr;
+    }
+
+    activate();
     LvglDisplay::invalidateScreen();
 }
 
