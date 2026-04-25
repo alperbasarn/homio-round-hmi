@@ -11,9 +11,8 @@ constexpr const char* TAG = "DeviceInfoScreen";
 
 }  // namespace
 
-DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics),
-      touchPanel(touch),
+DeviceInfoScreen::DeviceInfoScreen(TouchPanel* touch)
+    : touchPanel(touch),
       screenInitialized(false),
       pageBackRequested(false),
       lvglReady(false),
@@ -106,40 +105,17 @@ void DeviceInfoScreen::update() {
         updateUi(forceFullRefresh);
         LvglDisplay::taskHandler();
     }
-
-    // Handle touch gestures
-    if (touchPanel && touchPanel->getHasNewGesture()) {
-        resetLastActivityTime();
-        touch_gesture_t touchGesture = touchPanel->getLastGesture();
-
-        if (touchGesture == GESTURE_SWIPE_DOWN) {
-            pageBackRequested = true;
-            screenInitialized = false;
-            if (root) {
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Swipe down detected, navigating back to environment info");
-        }
-    }
-
-    if (touchPanel && touchPanel->getHasNewRelease()) {
-        const int64_t elapsedSinceActivation = millis() - activatedAtMs;
-        if (ignoreNextRelease || elapsedSinceActivation < STALE_RELEASE_GUARD_MS) {
-            ignoreNextRelease = false;
-            ESP_LOGI(TAG, "Ignoring stale release after screen activation (%lld ms)", elapsedSinceActivation);
-        }
-    } else if (ignoreNextRelease && touchPanel && !touchPanel->isPressed() &&
-               (millis() - activatedAtMs) >= STALE_RELEASE_GUARD_MS) {
-        ignoreNextRelease = false;
-    }
 }
 
 void DeviceInfoScreen::ensureUi() {
     if (lvglReady) {
+        if (root == nullptr) {
+            buildUi();
+        }
         return;
     }
 
-    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init()) {
         ESP_LOGE(TAG, "LVGL display init failed");
         return;
     }
@@ -153,8 +129,8 @@ void DeviceInfoScreen::buildUi() {
         return;
     }
 
-    const int displayW = gfx->width();
-    const int displayH = gfx->height();
+    const int displayW = LvglDisplay::getWidth();
+    const int displayH = LvglDisplay::getHeight();
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
     lv_obj_set_size(root, displayW, displayH);
@@ -443,7 +419,7 @@ void DeviceInfoScreen::updateSoftwareUpdateState() {
 }
 
 int DeviceInfoScreen::scalePx(int referencePx) const {
-    return std::max(1, (referencePx * gfx->width()) / 240);
+    return std::max(1, (referencePx * LvglDisplay::getWidth()) / 240);
 }
 
 lv_color_t DeviceInfoScreen::getBatteryColor(float percentage) const {
@@ -494,15 +470,62 @@ void DeviceInfoScreen::resetPageBackRequest() {
     pageBackRequested = false;
 }
 
+void DeviceInfoScreen::deactivate() {
+    screenInitialized = false;
+    if (root != nullptr) {
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+        lv_obj_del(root);
+        root = nullptr;
+        titleLabel = nullptr;
+        wifiIconLabel = nullptr;
+        wifiStatusLabel = nullptr;
+        internetIconLabel = nullptr;
+        internetStatusLabel = nullptr;
+        mqttIconLabel = nullptr;
+        mqttStatusLabel = nullptr;
+        batteryIconLabel = nullptr;
+        batteryStatusLabel = nullptr;
+        batteryPercentIconLabel = nullptr;
+        batteryPercentLabel = nullptr;
+        softwareIconLabel = nullptr;
+        softwareVersionLabel = nullptr;
+        updateButton = nullptr;
+        updateButtonLabel = nullptr;
+        softwareStatusLabel = nullptr;
+        swipeHintLabel = nullptr;
+    }
+}
+
 void DeviceInfoScreen::resetScreen() {
     ESP_LOGI(TAG, "resetScreen called - forcing redraw");
     screenInitialized = false;
     networkStatusChanged = true;
     batteryChanged = true;
     softwareChanged = true;
-    activate();
+
     if (root != nullptr) {
-        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_del(root);
+        root = nullptr;
+        titleLabel = nullptr;
+        wifiIconLabel = nullptr;
+        wifiStatusLabel = nullptr;
+        internetIconLabel = nullptr;
+        internetStatusLabel = nullptr;
+        mqttIconLabel = nullptr;
+        mqttStatusLabel = nullptr;
+        batteryIconLabel = nullptr;
+        batteryStatusLabel = nullptr;
+        batteryPercentIconLabel = nullptr;
+        batteryPercentLabel = nullptr;
+        softwareIconLabel = nullptr;
+        softwareVersionLabel = nullptr;
+        updateButton = nullptr;
+        updateButtonLabel = nullptr;
+        softwareStatusLabel = nullptr;
+        swipeHintLabel = nullptr;
     }
+
+    activate();
     LvglDisplay::invalidateScreen();
 }

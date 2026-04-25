@@ -7,8 +7,8 @@
 
 static const char* TAG = "InitScreen";
 
-InitializationScreen::InitializationScreen(LGFX* graphics)
-    : gfx(graphics), lvglReady(false), screenInitialized(false),
+InitializationScreen::InitializationScreen()
+    : lvglReady(false), screenInitialized(false),
       root(nullptr), progressArc(nullptr), qLabel(nullptr), nobLabel(nullptr),
       currentArcValue(0), targetArcValue(0) {
 }
@@ -20,12 +20,12 @@ int16_t InitializationScreen::normalizeAngle(float degrees) {
 }
 
 int InitializationScreen::scalePx(int referencePx) const {
-    return std::max(1, (referencePx * gfx->width()) / 240);
+    return std::max(1, (referencePx * LvglDisplay::getWidth()) / 240);
 }
 
 void InitializationScreen::ensureUi() {
     if (lvglReady) return;
-    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init()) {
         ESP_LOGE(TAG, "LVGL init failed");
         return;
     }
@@ -36,8 +36,8 @@ void InitializationScreen::ensureUi() {
 void InitializationScreen::buildUi() {
     if (root != nullptr) return;
 
-    const int w          = gfx->width();
-    const int h          = gfx->height();
+    const int w          = LvglDisplay::getWidth();
+    const int h          = LvglDisplay::getHeight();
     const int padding    = std::max(2, w / 32);
     const int arcDiam    = std::min(w, h) - 2 * padding;
     const int arcWidth   = std::max(12, (14 * w) / 240);
@@ -157,16 +157,21 @@ void InitializationScreen::updateScreen() {
     if (!lvglReady) return;
 
     if (!screenInitialized) {
-        // Render while dark to avoid visible LVGL band rendering
-        gfx->setBrightness(0);
+        // Render while dark only on backlight-driven panels.
+        // AMOLED panels without BL pin should not be dimmed to 0.
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
+        LvglDisplay::setBrightness(0);
+#endif
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
         LvglDisplay::invalidateScreen();
         LvglDisplay::taskHandler();
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
         for (int b = 0; b <= 255; b += 15) {
-            gfx->setBrightness(b);
+            LvglDisplay::setBrightness(static_cast<uint8_t>(b));
             vTaskDelay(pdMS_TO_TICKS(2));
         }
-        gfx->setBrightness(255);
+#endif
+        LvglDisplay::setBrightness(255);
         screenInitialized = true;
 
         // Start the progress animation now that LVGL is live
@@ -197,14 +202,22 @@ void InitializationScreen::reset() {
         lv_anim_del(this, arcAnimExec);
         applyArcValue(0);
     }
+    // If hideScreen() already deleted the root, nothing to un-hide.
     if (root != nullptr) {
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
 void InitializationScreen::hideScreen() {
-    if (lvglReady && root != nullptr) {
-        lv_anim_del(this, arcAnimExec);
-        lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+    if (!lvglReady) return;
+    lv_anim_del(this, arcAnimExec);
+    if (root != nullptr) {
+        lv_obj_del(root);
+        root = nullptr;
+        progressArc = nullptr;
+        qLabel = nullptr;
+        nobLabel = nullptr;
     }
+    lvglReady = false;
+    screenInitialized = false;
 }

@@ -1,6 +1,7 @@
 #include "ModeController.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include <algorithm>
 
 static const char* TAG = "ModeController";
 
@@ -98,7 +99,7 @@ void ModeController::refreshUi() {
     lv_obj_set_style_bg_color(iconObj, lv_color_hex(color), 0);
     lv_label_set_text(nameLabel, name);
     lv_obj_set_style_text_color(nameLabel, lv_color_hex(color), 0);
-    lv_obj_realign(nameLabel);
+    lv_obj_align(nameLabel, LV_ALIGN_CENTER, 0, lv_obj_get_height(iconObj) / 3 + 8);
     LvglDisplay::invalidateScreen();
 }
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
 #include "LvglDisplay.h"
 #include <lvgl.h>
 #include <cstdint>
@@ -8,7 +7,6 @@
 
 class InitializationScreen {
 private:
-    LGFX* gfx;
     bool lvglReady;
     bool screenInitialized;
 
@@ -22,8 +20,8 @@ private:
     int currentArcValue;  // 0-100
     int targetArcValue;   // 0-100
 
-    static constexpr float ARC_START_ANGLE  = 120.0f;
-    static constexpr float ARC_SPAN         = 300.0f;
+    static constexpr float ARC_START_ANGLE   = 120.0f;
+    static constexpr float ARC_SPAN          = 300.0f;
     static constexpr int   ANIMATION_DURATION = 500;  // ms
 
     static int16_t normalizeAngle(float degrees);
@@ -34,7 +32,7 @@ private:
     int scalePx(int referencePx) const;
 
 public:
-    explicit InitializationScreen(LGFX* graphics);
+    InitializationScreen();
 
     void updateScreen();
     void setProgress(int progress);

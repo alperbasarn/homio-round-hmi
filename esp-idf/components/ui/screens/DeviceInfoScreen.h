@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
 #include <cstdint>
@@ -31,7 +31,6 @@ using SoftwareUpdateActionCallback = std::function<void()>;
 
 class DeviceInfoScreen {
 private:
-    LGFX* gfx;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
@@ -112,7 +111,8 @@ private:
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    DeviceInfoScreen(LGFX* graphics, TouchPanel* touch);
+    explicit DeviceInfoScreen(TouchPanel* touch);
+    void deactivate();
     void activate();
 
     // Main update method
