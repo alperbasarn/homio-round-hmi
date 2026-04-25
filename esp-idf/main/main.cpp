@@ -267,28 +267,12 @@ extern "C" void app_main(void) {
     nvsManager = new NVSManager();
     ESP_ERROR_CHECK(nvsManager->begin());
 
-    // Initialize Display
+    // Create display object early so the pointer is valid, but defer hardware init
+    // until just before the display task starts (after WiFi init) to avoid a 7+
+    // second idle gap between gfx->init() and the first actual draw call, which
+    // causes the CO5300 AMOLED to drop subsequent pixel commands (blank screen).
     ESP_LOGI(TAG, "Initializing display...");
-
     gfx = new LGFX();
-
-    // Initialize with brightness at 0 to prevent showing garbage during startup
-    gfx->init();
-    gfx->setRotation(0);
-    gfx->setBrightness(0);
-
-    // Clear screen while brightness is off
-    gfx->fillScreen(TFT_BLACK);
-
-    // Small delay for display to stabilize after init commands
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    // Now bring up brightness smoothly
-    for (int i = 0; i <= 255; i += 15) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    gfx->setBrightness(255);
 
     // Initialize Touch Panel
     ESP_LOGI(TAG, "Initializing touch panel...");
@@ -428,6 +412,73 @@ extern "C" void app_main(void) {
         }
         return ESP_ERR_INVALID_ARG;
     });
+    wifiManager->setSetupPortalDeviceInfoStatusCallback([]() -> std::string {
+        auto escape = [](const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            for (char c : value) {
+                if (c == '\\' || c == '"') {
+                    out.push_back('\\');
+                }
+                out.push_back(c);
+            }
+            return out;
+        };
+
+        bool wifi = wifiManager != nullptr && wifiManager->isConnected();
+        bool internet = internetHandler != nullptr && internetHandler->isInternetAvailable();
+        bool mqtt = mqttManager != nullptr && mqttManager->isConnected();
+        int strength = wifiManager != nullptr ? wifiManager->getSignalStrength() : 0;
+
+        bool batteryPresenceKnown = false;
+        bool batteryConnected = false;
+        bool batteryPercentageAvailable = false;
+        float batteryPercentage = -1.0f;
+        float batteryVoltage = -1.0f;
+        if (batteryHandler != nullptr && batteryHandler->isInitialized()) {
+            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
+            batteryConnected = batteryHandler->isBatteryConnected();
+            batteryPercentage = telemetry.percentage;
+            batteryPercentageAvailable = telemetry.percentage >= 0.0f;
+            batteryVoltage = telemetry.voltageVolts;
+        }
+
+        bool softwareConfigured = false;
+        bool softwareBusy = false;
+        bool softwareUpdateAvailable = false;
+        std::string currentVersion = "unknown";
+        std::string availableVersion;
+        std::string statusText = "OTA unavailable";
+        if (otaManager != nullptr) {
+            const OtaReleaseInfo info = otaManager->getReleaseInfo();
+            softwareConfigured = info.configured;
+            softwareBusy = info.busy;
+            softwareUpdateAvailable = info.updateAvailable;
+            currentVersion = info.currentVersion;
+            availableVersion = info.availableVersion;
+            statusText = info.statusMessage;
+        }
+
+        std::ostringstream os;
+        os << "{";
+        os << "\"wifi_connected\":" << (wifi ? "true" : "false") << ",";
+        os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
+        os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
+        os << "\"wifi_strength_bars\":" << strength << ",";
+        os << "\"battery_presence_known\":" << (batteryPresenceKnown ? "true" : "false") << ",";
+        os << "\"battery_connected\":" << (batteryConnected ? "true" : "false") << ",";
+        os << "\"battery_percentage_available\":" << (batteryPercentageAvailable ? "true" : "false") << ",";
+        os << "\"battery_percentage\":" << batteryPercentage << ",";
+        os << "\"battery_voltage\":" << batteryVoltage << ",";
+        os << "\"software_configured\":" << (softwareConfigured ? "true" : "false") << ",";
+        os << "\"software_busy\":" << (softwareBusy ? "true" : "false") << ",";
+        os << "\"software_update_available\":" << (softwareUpdateAvailable ? "true" : "false") << ",";
+        os << "\"current_version\":\"" << escape(currentVersion) << "\",";
+        os << "\"available_version\":\"" << escape(availableVersion) << "\",";
+        os << "\"status_text\":\"" << escape(statusText) << "\"";
+        os << "}";
+        return os.str();
+    });
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
@@ -499,6 +550,20 @@ extern "C" void app_main(void) {
     wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
         return displayController != nullptr ? displayController->getModeName() : "unknown";
     });
+
+    // Initialize display hardware here — immediately before the display task starts
+    // so the gap between gfx->init() and the first draw is <100 ms.
+    gfx->init();
+    gfx->setRotation(0);
+    gfx->setBrightness(0);
+    gfx->fillScreen(TFT_BLACK);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    for (int i = 0; i <= 255; i += 15) {
+        gfx->setBrightness(i);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    gfx->setBrightness(255);
+
     displayController->init();
 
     // Initialize Sleep Handler (power management)

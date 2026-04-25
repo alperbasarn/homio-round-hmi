@@ -1,208 +1,210 @@
 #include "InitializationScreen.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cmath>
+#include <algorithm>
 
 static const char* TAG = "InitScreen";
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
+InitializationScreen::InitializationScreen(LGFX* graphics)
+    : gfx(graphics), lvglReady(false), screenInitialized(false),
+      root(nullptr), progressArc(nullptr), qLabel(nullptr), nobLabel(nullptr),
+      currentArcValue(0), targetArcValue(0) {
+}
+
+int16_t InitializationScreen::normalizeAngle(float degrees) {
+    float n = std::fmod(degrees, 360.0f);
+    if (n < 0.0f) n += 360.0f;
+    return static_cast<int16_t>(std::round(n));
+}
+
+int InitializationScreen::scalePx(int referencePx) const {
+    return std::max(1, (referencePx * gfx->width()) / 240);
+}
+
+void InitializationScreen::ensureUi() {
+    if (lvglReady) return;
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+        ESP_LOGE(TAG, "LVGL init failed");
+        return;
+    }
+    lvglReady = true;
+    buildUi();
+}
+
+void InitializationScreen::buildUi() {
+    if (root != nullptr) return;
+
+    const int w          = gfx->width();
+    const int h          = gfx->height();
+    const int padding    = std::max(2, w / 32);
+    const int arcDiam    = std::min(w, h) - 2 * padding;
+    const int arcWidth   = std::max(12, (14 * w) / 240);
+    const int discDiam   = static_cast<int>(arcDiam * 0.6f);
+
+    // Full-screen black root
+    root = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, w, h);
+    lv_obj_set_pos(root, 0, 0);
+    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Progress arc: dark-blue track, red indicator
+    progressArc = lv_arc_create(root);
+    lv_obj_set_size(progressArc, arcDiam, arcDiam);
+    lv_obj_center(progressArc);
+    lv_obj_clear_flag(progressArc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(progressArc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_arc_width(progressArc, arcWidth, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(progressArc, arcWidth, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(progressArc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(progressArc, true, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0x121A2A), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0xFF4858), LV_PART_INDICATOR);
+    lv_arc_set_mode(progressArc, LV_ARC_MODE_NORMAL);
+    lv_arc_set_rotation(progressArc, 0);
+    const int16_t bgStart = normalizeAngle(ARC_START_ANGLE);
+    const int16_t bgEnd   = normalizeAngle(ARC_START_ANGLE + ARC_SPAN);
+    lv_arc_set_bg_angles(progressArc, bgStart, bgEnd);
+    lv_arc_set_angles(progressArc, bgStart, bgStart);  // empty indicator
+
+    // Black center disc masks arc interior
+    lv_obj_t* disc = lv_obj_create(root);
+    lv_obj_remove_style_all(disc);
+    lv_obj_set_size(disc, discDiam, discDiam);
+    lv_obj_center(disc);
+    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(disc, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Font: Montserrat 32 for AMOLED (≥400 px), 14 for smaller displays
+#if defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    const lv_font_t* font = (w >= 400) ? &lv_font_montserrat_32 : LV_FONT_DEFAULT;
+#else
+    const lv_font_t* font = LV_FONT_DEFAULT;
 #endif
 
-InitializationScreen::InitializationScreen(LGFX* graphics)
-    : gfx(graphics), progressValue(0), previousProgress(0),
-      screenInitialized(false), qnobTextDrawn(false),
-      wifiConnected(false), wifiStrength(0), mqttConnected(false),
-      animatedProgressAngle(0), targetProgressAngle(0),
-      startProgressAngle(0), lastRenderedProgressAngle(0),
-      animationStartTime(0),
-      lastAnimationUpdateTime(0) {
+    // "Q" label (red)
+    qLabel = lv_label_create(disc);
+    lv_obj_set_style_text_font(qLabel, font, 0);
+    lv_obj_set_style_text_color(qLabel, lv_color_hex(0xFF0000), 0);
+    lv_label_set_text(qLabel, "Q");
+
+    // "NOB" label (white)
+    nobLabel = lv_label_create(disc);
+    lv_obj_set_style_text_font(nobLabel, font, 0);
+    lv_obj_set_style_text_color(nobLabel, lv_color_white(), 0);
+    lv_label_set_text(nobLabel, "NOB");
+
+    // Position the two labels side-by-side in the disc center
+    lv_obj_update_layout(disc);
+    const int qW       = lv_obj_get_width(qLabel);
+    const int nobW     = lv_obj_get_width(nobLabel);
+    const int textH    = lv_obj_get_height(qLabel);
+    const int totalW   = qW + nobW;
+    const int discW    = lv_obj_get_width(disc);
+    const int discH    = lv_obj_get_height(disc);
+    lv_obj_set_pos(qLabel,   (discW - totalW) / 2,        (discH - textH) / 2);
+    lv_obj_set_pos(nobLabel, (discW - totalW) / 2 + qW,   (discH - textH) / 2);
+
+    LvglDisplay::invalidateScreen();
+}
+
+void InitializationScreen::applyArcValue(int value) {
+    if (progressArc == nullptr) return;
+    const int   clamped  = value < 0 ? 0 : (value > 100 ? 100 : value);
+    const float endAngle = ARC_START_ANGLE + ARC_SPAN * (clamped / 100.0f);
+    lv_arc_set_angles(progressArc,
+                      normalizeAngle(ARC_START_ANGLE),
+                      normalizeAngle(endAngle));
+}
+
+void InitializationScreen::arcAnimExec(void* var, int32_t value) {
+    auto* self = static_cast<InitializationScreen*>(var);
+    if (self == nullptr) return;
+    self->currentArcValue = static_cast<int>(value);
+    self->applyArcValue(static_cast<int>(value));
 }
 
 void InitializationScreen::setProgress(int progress) {
-    previousProgress = progressValue;
-    progressValue = constrain(progress, 0, 100);
-    ESP_LOGI(TAG, "Progress updated: %d", progress);
+    const int clamped = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
+    ESP_LOGI(TAG, "Progress: %d", clamped);
 
-    // Calculate new target angle based on progress
-    float prevAngle = targetProgressAngle;
-    targetProgressAngle = mapValue(static_cast<float>(progressValue), 0, 100, 0.0f, PROGRESS_ARC_SPAN);
+    if (clamped == targetArcValue) return;
+    targetArcValue = clamped;
 
-    // If this is a significant progress change, update animation start time
-    if (std::abs(targetProgressAngle - prevAngle) > 1) {
-        animationStartTime = millis();
-        startProgressAngle = animatedProgressAngle;
-    }
+    if (!lvglReady || progressArc == nullptr) return;
 
-    updateScreen();
-}
+    lv_anim_del(this, arcAnimExec);
+    if (currentArcValue == targetArcValue) return;
 
-void InitializationScreen::setMQTTStatus(bool isConnected) {
-    mqttConnected = isConnected;
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, this);
+    lv_anim_set_values(&anim, currentArcValue, targetArcValue);
+    lv_anim_set_time(&anim, ANIMATION_DURATION);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&anim, arcAnimExec);
+    lv_anim_start(&anim);
 }
 
 void InitializationScreen::updateScreen() {
-    int centerX = gfx->width() / 2;
-    int centerY = gfx->height() / 2;
-    int radius = std::min(centerX, centerY) - std::max(2, gfx->width() / 32);
+    ensureUi();
+    if (!lvglReady) return;
 
     if (!screenInitialized) {
-        gfx->fillScreen(TFT_BLACK);
-        gfx->drawCircle(centerX, centerY, radius, gfx->color565(24, 30, 40));
-
-        drawBackgroundArc(centerX, centerY, radius);
-
-        animatedProgressAngle = 0;
-        startProgressAngle = 0;
-        targetProgressAngle = 0;
-        lastRenderedProgressAngle = 0;
-        animationStartTime = millis();
-
+        // Render while dark to avoid visible LVGL band rendering
+        gfx->setBrightness(0);
+        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+        for (int b = 0; b <= 255; b += 15) {
+            gfx->setBrightness(b);
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        gfx->setBrightness(255);
         screenInitialized = true;
-        drawQNOBText(centerX, centerY, radius);
+
+        // Start the progress animation now that LVGL is live
+        if (targetArcValue > 0) {
+            setProgress(targetArcValue);
+        }
     }
 
-    int64_t currentMillis = millis();
-    if (currentMillis - lastAnimationUpdateTime >= 16) {  // ~60fps update rate
-        updateAnimation();
-        lastAnimationUpdateTime = currentMillis;
-        drawProgressArc(centerX, centerY, radius);
-    }
+    LvglDisplay::taskHandler();
 }
 
-void InitializationScreen::updateAnimation() {
-    int64_t currentMillis = millis();
-
-    // Calculate animation progress (0.0 to 1.0)
-    float progress = constrain(static_cast<float>(currentMillis - animationStartTime) / ANIMATION_DURATION, 0.0f, 1.0f);
-
-    // Use easing function for smoother animation (ease-out cubic)
-    float easedProgress = 1.0f - std::pow(1.0f - progress, 3);
-
-    // Interpolate between start and target angles
-    animatedProgressAngle = startProgressAngle + (targetProgressAngle - startProgressAngle) * easedProgress;
+void InitializationScreen::setWiFiStatus(bool /*connected*/, int /*strength*/) {
+    // Reserved for future WiFi indicator
 }
 
-void InitializationScreen::fillArcWrapped(int centerX, int centerY, int outerRadius, int innerRadius,
-                                          float startAngle, float endAngle, uint16_t color) {
-    while (startAngle < 0.0f) {
-        startAngle += 360.0f;
-    }
-    while (endAngle < 0.0f) {
-        endAngle += 360.0f;
-    }
-    while (startAngle >= 360.0f) {
-        startAngle -= 360.0f;
-    }
-    while (endAngle >= 360.0f) {
-        endAngle -= 360.0f;
-    }
-
-    if (endAngle >= startAngle) {
-        gfx->fillArc(centerX, centerY, outerRadius, innerRadius, startAngle, endAngle, color);
-    } else {
-        gfx->fillArc(centerX, centerY, outerRadius, innerRadius, startAngle, 360.0f, color);
-        gfx->fillArc(centerX, centerY, outerRadius, innerRadius, 0.0f, endAngle, color);
-    }
-}
-
-void InitializationScreen::drawBackgroundArc(int centerX, int centerY, int radius) {
-    int arcThickness = std::max(12, (14 * gfx->width()) / 240);
-    int outerRadius = radius;
-    int innerRadius = radius - arcThickness;
-    int midRadius = (outerRadius + innerRadius) / 2;
-    int capRadius = std::max(2, arcThickness / 2);
-
-    uint16_t bgColor = gfx->color565(18, 26, 42);
-    fillArcWrapped(centerX, centerY, outerRadius, innerRadius,
-                   PROGRESS_START_ANGLE, PROGRESS_START_ANGLE + PROGRESS_ARC_SPAN, bgColor);
-
-    float startRad = PROGRESS_START_ANGLE * M_PI / 180.0f;
-    float endRad = (PROGRESS_START_ANGLE + PROGRESS_ARC_SPAN) * M_PI / 180.0f;
-    int startX = centerX + static_cast<int>(std::round(midRadius * std::cos(startRad)));
-    int startY = centerY + static_cast<int>(std::round(midRadius * std::sin(startRad)));
-    int endX = centerX + static_cast<int>(std::round(midRadius * std::cos(endRad)));
-    int endY = centerY + static_cast<int>(std::round(midRadius * std::sin(endRad)));
-    gfx->fillCircle(startX, startY, capRadius, bgColor);
-    gfx->fillCircle(endX, endY, capRadius, bgColor);
-}
-
-void InitializationScreen::drawProgressArc(int centerX, int centerY, int radius) {
-    if (animatedProgressAngle <= lastRenderedProgressAngle + 0.05f) {
-        return;
-    }
-
-    int arcThickness = std::max(12, (14 * gfx->width()) / 240);
-    int outerRadius = radius;
-    int innerRadius = radius - arcThickness;
-    int midRadius = (outerRadius + innerRadius) / 2;
-    int capRadius = std::max(2, arcThickness / 2);
-
-    uint16_t progressColor = gfx->color565(255, 72, 88);
-    float start = PROGRESS_START_ANGLE + lastRenderedProgressAngle;
-    float end = PROGRESS_START_ANGLE + animatedProgressAngle;
-    fillArcWrapped(centerX, centerY, outerRadius, innerRadius, start, end, progressColor);
-
-    if (animatedProgressAngle > 0.2f) {
-        float startRad = PROGRESS_START_ANGLE * M_PI / 180.0f;
-        float endRad = (PROGRESS_START_ANGLE + animatedProgressAngle) * M_PI / 180.0f;
-        int startX = centerX + static_cast<int>(std::round(midRadius * std::cos(startRad)));
-        int startY = centerY + static_cast<int>(std::round(midRadius * std::sin(startRad)));
-        int endX = centerX + static_cast<int>(std::round(midRadius * std::cos(endRad)));
-        int endY = centerY + static_cast<int>(std::round(midRadius * std::sin(endRad)));
-        gfx->fillCircle(startX, startY, capRadius, progressColor);
-        gfx->fillCircle(endX, endY, capRadius, progressColor);
-    }
-
-    lastRenderedProgressAngle = animatedProgressAngle;
-}
-
-void InitializationScreen::drawQNOBText(int centerX, int centerY, int radius) {
-    // Clear the center area for QNOB text
-    gfx->fillCircle(centerX, centerY, radius * 0.6f, TFT_BLACK);
-
-    // Keep the logo readable without overwhelming the center disc.
-    int textScale = std::max(2, gfx->width() / 120);  // ~2 for 240px, ~3 for 466px
-    gfx->setTextSize(textScale);
-
-    // Calculate text dimensions for proper centering
-    // For LovyanGFX, we use textWidth instead of getTextBounds
-    int qWidth = gfx->textWidth("Q");
-    int qnobWidth = gfx->textWidth("QNOB");
-    int textHeight = gfx->fontHeight();
-
-    // Calculate starting position to center "QNOB"
-    int startX = centerX - (qnobWidth / 2);
-    int textY = centerY - (textHeight / 2);
-
-    // First draw the "Q" in red
-    gfx->setTextColor(TFT_RED);
-    gfx->setCursor(startX, textY);
-    gfx->print("Q");
-
-    // Then draw "NOB" in white right after Q
-    gfx->setTextColor(TFT_WHITE);
-    gfx->setCursor(startX + qWidth, textY);
-    gfx->print("NOB");
-
-    qnobTextDrawn = true;
-}
-
-void InitializationScreen::setWiFiStatus(bool connected, int strength) {
-    wifiConnected = connected;
-    wifiStrength = constrain(strength, 0, 3);
+void InitializationScreen::setMQTTStatus(bool /*isConnected*/) {
+    // Reserved for future MQTT indicator
 }
 
 void InitializationScreen::reset() {
-    progressValue = 0;
-    previousProgress = 0;
-    wifiConnected = false;
-    wifiStrength = 0;
-    mqttConnected = false;
     screenInitialized = false;
-    qnobTextDrawn = false;
-    animatedProgressAngle = 0;
-    targetProgressAngle = 0;
-    startProgressAngle = 0;
-    lastRenderedProgressAngle = 0;
-    animationStartTime = millis();
+    currentArcValue   = 0;
+    targetArcValue    = 0;
+
+    if (!lvglReady) return;
+
+    if (progressArc != nullptr) {
+        lv_anim_del(this, arcAnimExec);
+        applyArcValue(0);
+    }
+    if (root != nullptr) {
+        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void InitializationScreen::hideScreen() {
+    if (lvglReady && root != nullptr) {
+        lv_anim_del(this, arcAnimExec);
+        lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+    }
 }

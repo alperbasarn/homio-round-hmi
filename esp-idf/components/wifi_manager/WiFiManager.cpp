@@ -205,6 +205,9 @@ esp_err_t WiFiManager::initialize()
             if (portal_ota_action_callback) {
                 setup_portal->setOtaActionCallback(portal_ota_action_callback);
             }
+            if (portal_device_info_status_callback) {
+                setup_portal->setDeviceInfoStatusCallback(portal_device_info_status_callback);
+            }
             setup_portal->start();
         }
     }
@@ -585,6 +588,14 @@ void WiFiManager::setSetupPortalOtaActionCallback(std::function<esp_err_t(const 
     portal_ota_action_callback = std::move(callback);
     if (setup_portal != nullptr) {
         setup_portal->setOtaActionCallback(portal_ota_action_callback);
+    }
+}
+
+void WiFiManager::setSetupPortalDeviceInfoStatusCallback(std::function<std::string(void)> callback)
+{
+    portal_device_info_status_callback = std::move(callback);
+    if (setup_portal != nullptr) {
+        setup_portal->setDeviceInfoStatusCallback(portal_device_info_status_callback);
     }
 }
 

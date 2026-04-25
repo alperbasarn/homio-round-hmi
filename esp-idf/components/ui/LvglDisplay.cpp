@@ -212,3 +212,73 @@ void LvglDisplay::tickCallback(void* arg) {
     (void)arg;
     lv_tick_inc(LVGL_TICK_PERIOD_MS);
 }
+
+// ── DrawAPI ──────────────────────────────────────────────────────────────────
+
+int LvglDisplay::getWidth()  { return s_gfx ? s_gfx->width()  : 0; }
+int LvglDisplay::getHeight() { return s_gfx ? s_gfx->height() : 0; }
+void LvglDisplay::setBrightness(uint8_t b) { if (s_gfx) s_gfx->setBrightness(b); }
+
+static inline uint32_t toNative(uint32_t rgb888) { return rgb888; }
+
+void LvglDisplay::fillScreen(uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillScreen(s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::fillRect(int x, int y, int w, int h, uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillRect(x, y, w, h, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::fillCircle(int cx, int cy, int r, uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillCircle(cx, cy, r, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::drawCircle(int cx, int cy, int r, uint32_t rgb888) {
+    if (s_gfx) s_gfx->drawCircle(cx, cy, r, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillTriangle(x0, y0, x1, y1, x2, y2, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::drawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t rgb888) {
+    if (s_gfx) s_gfx->drawTriangle(x0, y0, x1, y1, x2, y2, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::drawLine(int x0, int y0, int x1, int y1, uint32_t rgb888) {
+    if (s_gfx) s_gfx->drawLine(x0, y0, x1, y1, s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::fillArc(int cx, int cy, int outerR, int innerR,
+                           float startAngle, float endAngle, uint32_t rgb888) {
+    if (s_gfx) s_gfx->fillArc(cx, cy, outerR, innerR, startAngle, endAngle,
+        s_gfx->color888((rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::drawArc(int cx, int cy, int outerR, int innerR,
+                           float startAngle, float endAngle, uint32_t rgb888) {
+    if (s_gfx) s_gfx->drawArc(cx, cy, outerR, innerR, startAngle, endAngle,
+        s_gfx->color888((rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::setTextSize(int scale) {
+    if (s_gfx) s_gfx->setTextSize(scale);
+}
+void LvglDisplay::setTextColor(uint32_t rgb888) {
+    if (s_gfx) s_gfx->setTextColor(s_gfx->color888(
+        (rgb888 >> 16) & 0xFF, (rgb888 >> 8) & 0xFF, rgb888 & 0xFF));
+}
+void LvglDisplay::setCursor(int x, int y) {
+    if (s_gfx) s_gfx->setCursor(x, y);
+}
+void LvglDisplay::print(const char* text) {
+    if (s_gfx) s_gfx->print(text);
+}
+int LvglDisplay::textWidth(const char* text) {
+    return s_gfx ? static_cast<int>(s_gfx->textWidth(text)) : 0;
+}
+int LvglDisplay::fontHeight() {
+    return s_gfx ? static_cast<int>(s_gfx->fontHeight()) : 0;
+}
+uint16_t LvglDisplay::color565(uint8_t r, uint8_t g, uint8_t b) {
+    return s_gfx ? s_gfx->color565(r, g, b)
+                 : static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}

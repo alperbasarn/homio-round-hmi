@@ -11,6 +11,7 @@
 #include "NVSManager.h"
 
 #include "esp_http_server.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -18,7 +19,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
-#include "lwip/ip4_addr.h"
 #include "lwip/sockets.h"
 
 namespace {
@@ -58,6 +58,10 @@ void SetupPortal::setOtaActionCallback(std::function<esp_err_t(const std::string
     otaActionCallback = std::move(callback);
 }
 
+void SetupPortal::setDeviceInfoStatusCallback(std::function<std::string(void)> callback) {
+    deviceInfoStatusCallback = std::move(callback);
+}
+
 esp_err_t SetupPortal::start() {
     esp_err_t err = startHttpServer();
     if (err != ESP_OK) {
@@ -79,7 +83,7 @@ esp_err_t SetupPortal::startHttpServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_PORT;
     config.ctrl_port = HTTP_PORT + 1;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 30;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     if (httpd_start(&httpServer, &config) != ESP_OK) {
@@ -101,6 +105,20 @@ esp_err_t SetupPortal::startHttpServer() {
     status.handler = statusGetHandler;
     status.user_ctx = this;
     httpd_register_uri_handler(httpServer, &status);
+
+    httpd_uri_t deviceInfoPage = {};
+    deviceInfoPage.uri = "/device-info";
+    deviceInfoPage.method = HTTP_GET;
+    deviceInfoPage.handler = deviceInfoPageGetHandler;
+    deviceInfoPage.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &deviceInfoPage);
+
+    httpd_uri_t deviceInfoStatus = {};
+    deviceInfoStatus.uri = "/api/device-info";
+    deviceInfoStatus.method = HTTP_GET;
+    deviceInfoStatus.handler = deviceInfoStatusGetHandler;
+    deviceInfoStatus.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &deviceInfoStatus);
 
     httpd_uri_t scan = {};
     scan.uri = "/api/scan";
@@ -164,6 +182,13 @@ esp_err_t SetupPortal::startHttpServer() {
     timePost.handler = timePostHandler;
     timePost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &timePost);
+
+    httpd_uri_t resetPost = {};
+    resetPost.uri = "/api/reset";
+    resetPost.method = HTTP_POST;
+    resetPost.handler = resetPostHandler;
+    resetPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &resetPost);
 
     const char* captiveUris[] = {
         "/generate_204",
@@ -295,50 +320,65 @@ bool SetupPortal::sendDnsResponse(const uint8_t* request,
         return false;
     }
 
-    size_t questionEnd = 12;
-    while (questionEnd < reqLen && request[questionEnd] != 0) {
-        questionEnd += static_cast<size_t>(request[questionEnd]) + 1;
+    // Walk the question name labels to find where QTYPE/QCLASS sit.
+    size_t nameEnd = 12;
+    while (nameEnd < reqLen && request[nameEnd] != 0) {
+        nameEnd += static_cast<size_t>(request[nameEnd]) + 1;
     }
-    if (questionEnd + 5 >= reqLen) {
+    // nameEnd now points at the null label; we need 4 more bytes (QTYPE + QCLASS).
+    if (nameEnd + 4 >= reqLen) {
         return false;
     }
-    questionEnd += 5;
+
+    // Only answer A-record queries (type 1).  For everything else (AAAA, MX, …)
+    // return NOERROR with zero answers so the client falls back to IPv4.
+    const uint16_t qtype = static_cast<uint16_t>((request[nameEnd + 1] << 8) | request[nameEnd + 2]);
+    const size_t questionEnd = nameEnd + 5;  // null label + QTYPE(2) + QCLASS(2)
 
     uint8_t response[512] = {0};
+
+    // Common header fields for both paths.
+    response[0] = request[0];   // transaction ID
+    response[1] = request[1];
+    response[2] = 0x81;         // QR=1, OPCODE=0, AA=1, TC=0, RD=1
+    response[3] = 0x80;         // RA=1, RCODE=0 (NOERROR)
+    response[4] = request[4];   // QDCOUNT (echo)
+    response[5] = request[5];
+    // Copy question section verbatim.
+    if (questionEnd > 12 && questionEnd <= sizeof(response)) {
+        memcpy(response + 12, request + 12, questionEnd - 12);
+    }
+
+    if (qtype != 1 /* A */) {
+        // NOERROR, ANCOUNT=0 — tells the client there is no such record type.
+        response[6] = 0x00;
+        response[7] = 0x00;
+        sendto(dnsSocket,
+               reinterpret_cast<const char*>(response),
+               static_cast<int>(questionEnd),
+               0,
+               reinterpret_cast<const sockaddr*>(&clientAddr),
+               clientLen);
+        return true;
+    }
+
+    // A-record answer: resolve every hostname to the AP's IP.
+    response[6] = 0x00;
+    response[7] = 0x01;  // ANCOUNT = 1
+
     if (questionEnd + 16 > sizeof(response)) {
         return false;
     }
 
-    response[0] = request[0];
-    response[1] = request[1];
-    response[2] = 0x81;
-    response[3] = 0x80;
-    response[4] = request[4];
-    response[5] = request[5];
-    response[6] = 0x00;
-    response[7] = 0x01;
-
-    memcpy(response + 12, request + 12, questionEnd - 12);
     size_t pos = questionEnd;
-
-    response[pos++] = 0xC0;
-    response[pos++] = 0x0C;
-    response[pos++] = 0x00;
-    response[pos++] = 0x01;
-    response[pos++] = 0x00;
-    response[pos++] = 0x01;
-    response[pos++] = 0x00;
-    response[pos++] = 0x00;
-    response[pos++] = 0x00;
-    response[pos++] = 0x3C;
-    response[pos++] = 0x00;
-    response[pos++] = 0x04;
+    response[pos++] = 0xC0; response[pos++] = 0x0C;  // name pointer → offset 12
+    response[pos++] = 0x00; response[pos++] = 0x01;  // type A
+    response[pos++] = 0x00; response[pos++] = 0x01;  // class IN
+    response[pos++] = 0x00; response[pos++] = 0x00;
+    response[pos++] = 0x00; response[pos++] = 0x3C;  // TTL 60 s
+    response[pos++] = 0x00; response[pos++] = 0x04;  // RDLENGTH 4
 
     const std::string apIp = wifiManager != nullptr ? wifiManager->getAPIPAddress() : "192.168.4.1";
-    ip4_addr_t ip = {};
-    if (!ip4addr_aton(apIp.c_str(), &ip)) {
-        ip4addr_aton("192.168.4.1", &ip);
-    }
     struct in_addr addr = {};
     if (inet_pton(AF_INET, apIp.c_str(), &addr) != 1) {
         inet_pton(AF_INET, "192.168.4.1", &addr);
@@ -371,6 +411,26 @@ esp_err_t SetupPortal::statusGetHandler(httpd_req_t* req) {
         return ESP_FAIL;
     }
     const std::string json = self->renderStatusJson();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json.c_str(), static_cast<ssize_t>(json.size()));
+}
+
+esp_err_t SetupPortal::deviceInfoPageGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+    const std::string html = self->renderDeviceInfoPage();
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, html.c_str(), static_cast<ssize_t>(html.size()));
+}
+
+esp_err_t SetupPortal::deviceInfoStatusGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+    const std::string json = self->renderDeviceInfoStatusJson();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json.c_str(), static_cast<ssize_t>(json.size()));
 }
@@ -457,17 +517,30 @@ esp_err_t SetupPortal::timePostHandler(httpd_req_t* req) {
     return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
 }
 
+esp_err_t SetupPortal::resetPostHandler(httpd_req_t* req) {
+    const char* response = "{\"ok\":true,\"message\":\"Restarting device...\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, response, static_cast<ssize_t>(strlen(response)));
+    // Give TCP time to deliver the response before pulling the rug out.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 esp_err_t SetupPortal::captiveRedirectHandler(httpd_req_t* req) {
     auto* self = static_cast<SetupPortal*>(req->user_ctx);
     if (self == nullptr) {
         return ESP_FAIL;
     }
 
-    const std::string html = self->renderRootPage();
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-    httpd_resp_set_hdr(req, "Pragma", "no-cache");
-    return httpd_resp_send(req, html.c_str(), static_cast<ssize_t>(html.size()));
+    // iOS, Android, and Windows captive portal detection all require an HTTP 302
+    // redirect (not a 200 with HTML) to trigger the "sign in to network" popup.
+    // A 200 response causes most OS captive portal detectors to conclude the
+    // network has internet access and silently skip the captive portal notification.
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    return httpd_resp_send(req, nullptr, 0);
 }
 
 std::string SetupPortal::renderRootPage() const {
@@ -525,6 +598,8 @@ std::string SetupPortal::renderRootPage() const {
      << "<form id='timeForm'><h2>Time</h2><label>Time API Token</label><input name='api_token'>"
      << "<small>NTP is still used for sync; token is stored for external time APIs.</small>"
      << "<button type='submit'>Save Time Token</button></form>"
+    << "<section><h2>Device Info</h2><a href='/device-info' style='color:#9cc7ff;'>Open device info page</a></section>"
+     << "<section><h2>Device Control</h2><button id='resetBtn' type='button' style='background:#600;border-color:#f44;color:#fff;'>Restart Device</button></section>"
      << "</div>"
      << "<div id='controlTab' class='hidden'>"
      << "<div class='subtabs'><button class='active-tab' type='button'>Screens</button></div>"
@@ -554,9 +629,61 @@ std::string SetupPortal::renderRootPage() const {
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
      << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
      << "document.getElementById('timeForm').addEventListener('submit',e=>{e.preventDefault();postForm('timeForm','/api/time');});"
+     << "document.getElementById('resetBtn').addEventListener('click',()=>{if(!confirm('Restart the device?'))return;resultEl.textContent='Restarting...';fetch('/api/reset',{method:'POST'}).then(()=>{resultEl.textContent='Device is restarting. Reconnect in a moment.';}).catch(()=>{resultEl.textContent='Device is restarting. Reconnect in a moment.';});});"
      << "refreshStatus();scan();"
      << "</script></body></html>";
 
+    return html.str();
+}
+
+std::string SetupPortal::renderDeviceInfoPage() const {
+    std::ostringstream html;
+    html << "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+         << "<title>QNOB Device Info</title><style>"
+         << "body{background:#000;color:#fff;font-family:monospace;margin:0;padding:16px;}"
+         << "h1{font-size:20px;margin:0 0 14px;}section{border:1px solid #fff;padding:12px;margin-bottom:12px;}"
+         << ".grid{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:8px 12px;align-items:center;}"
+         << ".k{color:#9ba7b6;}.v{word-break:break-word;}"
+         << "a,button{background:#000;color:#fff;border:1px solid #fff;padding:8px 10px;text-decoration:none;cursor:pointer;}"
+         << "button{width:100%;margin-top:10px;}pre{white-space:pre-wrap;word-break:break-word;border:1px solid #333;padding:10px;}"
+         << "</style></head><body>"
+         << "<h1>QNOB Device Info</h1>"
+         << "<section><div class='grid'>"
+         << "<div class='k'>WiFi</div><div id='wifi' class='v'>-</div>"
+         << "<div class='k'>Internet</div><div id='internet' class='v'>-</div>"
+         << "<div class='k'>MQTT</div><div id='mqtt' class='v'>-</div>"
+         << "<div class='k'>WiFi Strength</div><div id='wifiStrength' class='v'>-</div>"
+         << "<div class='k'>Battery Presence</div><div id='batteryPresence' class='v'>-</div>"
+         << "<div class='k'>Battery Connected</div><div id='batteryConnected' class='v'>-</div>"
+         << "<div class='k'>Battery % Available</div><div id='batteryPctAvailable' class='v'>-</div>"
+         << "<div class='k'>Battery %</div><div id='batteryPct' class='v'>-</div>"
+         << "<div class='k'>Battery Voltage</div><div id='batteryVoltage' class='v'>-</div>"
+         << "<div class='k'>Software Configured</div><div id='swConfigured' class='v'>-</div>"
+         << "<div class='k'>Software Busy</div><div id='swBusy' class='v'>-</div>"
+         << "<div class='k'>Update Available</div><div id='swUpdateAvailable' class='v'>-</div>"
+         << "<div class='k'>Current Version</div><div id='swCurrent' class='v'>-</div>"
+         << "<div class='k'>Available Version</div><div id='swAvailable' class='v'>-</div>"
+         << "<div class='k'>Status</div><div id='swStatus' class='v'>-</div>"
+         << "<div class='k'>Last Update</div><div id='lastUpdate' class='v'>-</div>"
+         << "</div><button id='refreshBtn' type='button'>Refresh</button></section>"
+         << "<section><a href='/'>Back to setup portal</a></section>"
+         << "<pre id='raw'></pre>"
+         << "<script>"
+         << "function yn(v){return v?'ON':'OFF';}"
+         << "function txt(id,v){const e=document.getElementById(id);if(e)e.textContent=(v===undefined||v===null||v==='')?'-':String(v);}"
+         << "async function refresh(){try{const r=await fetch('/api/device-info');const d=await r.json();"
+         << "txt('wifi',yn(d.wifi_connected));txt('internet',yn(d.internet_connected));txt('mqtt',yn(d.mqtt_connected));"
+         << "txt('wifiStrength',String(d.wifi_strength_bars||0)+' bars');txt('batteryPresence',d.battery_presence_known?'Known':'Unknown');"
+         << "txt('batteryConnected',d.battery_connected?'Yes':'No');txt('batteryPctAvailable',d.battery_percentage_available?'Yes':'No');"
+         << "txt('batteryPct',d.battery_percentage_available?(String(d.battery_percentage)+'%'):'N/A');"
+         << "txt('batteryVoltage',d.battery_voltage>=0?(String(d.battery_voltage)+' V'):'N/A');"
+         << "txt('swConfigured',d.software_configured?'Yes':'No');txt('swBusy',d.software_busy?'Yes':'No');"
+         << "txt('swUpdateAvailable',d.software_update_available?'Yes':'No');txt('swCurrent',d.current_version||'-');"
+         << "txt('swAvailable',d.available_version||'-');txt('swStatus',d.status_text||'-');"
+         << "txt('lastUpdate',new Date().toLocaleString());document.getElementById('raw').textContent=JSON.stringify(d,null,2);}"
+         << "catch(e){document.getElementById('raw').textContent=JSON.stringify({ok:false,message:String(e)},null,2);}}"
+         << "document.getElementById('refreshBtn').addEventListener('click',refresh);refresh();setInterval(refresh,5000);"
+         << "</script></body></html>";
     return html.str();
 }
 
@@ -607,6 +734,32 @@ std::string SetupPortal::renderStatusJson() const {
     os << "\"ota_manifest_url\":\"" << jsonEscape(nvsManager ? nvsManager->otaManifestUrl : "") << "\",";
     os << "\"ota_release\":" << (otaStatusCallback ? otaStatusCallback() : "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA unavailable\"}") << ",";
     os << "\"configured_static_ip\":\"" << jsonEscape(nvsManager ? nvsManager->staticIP : "") << "\"";
+    os << "}";
+    return os.str();
+}
+
+std::string SetupPortal::renderDeviceInfoStatusJson() const {
+    if (deviceInfoStatusCallback) {
+        return deviceInfoStatusCallback();
+    }
+
+    std::ostringstream os;
+    os << "{";
+    os << "\"wifi_connected\":" << (wifiManager && wifiManager->isConnected() ? "true" : "false") << ",";
+    os << "\"internet_connected\":false,";
+    os << "\"mqtt_connected\":false,";
+    os << "\"wifi_strength_bars\":" << (wifiManager ? wifiManager->getSignalStrength() : 0) << ",";
+    os << "\"battery_presence_known\":false,";
+    os << "\"battery_connected\":false,";
+    os << "\"battery_percentage_available\":false,";
+    os << "\"battery_percentage\":-1,";
+    os << "\"battery_voltage\":-1,";
+    os << "\"software_configured\":false,";
+    os << "\"software_busy\":false,";
+    os << "\"software_update_available\":false,";
+    os << "\"current_version\":\"unknown\",";
+    os << "\"available_version\":\"\",";
+    os << "\"status_text\":\"Unavailable\"";
     os << "}";
     return os.str();
 }

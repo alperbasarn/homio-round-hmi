@@ -497,7 +497,8 @@ esp_err_t NVSManager::loadAllConfigurations()
     }
 
     readString(NVS_KEY_AP_PASSWORD, accessPointPassword, deviceName);
-    if (accessPointPassword.empty() || accessPointPassword == kLegacyApPassword) {
+    if (accessPointPassword.empty() || accessPointPassword == kLegacyApPassword ||
+        !isValidAccessPointPassword(accessPointPassword)) {
         accessPointPassword = deviceName;
         writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
     }

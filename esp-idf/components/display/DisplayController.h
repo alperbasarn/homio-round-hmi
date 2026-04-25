@@ -1,13 +1,12 @@
 #ifndef DISPLAY_CONTROLLER_H
 #define DISPLAY_CONTROLLER_H
 
-#include "LGFX_Config.hpp"
 #include "TouchPanel.h"
 #include <string>
 #include <atomic>
 #include <cstdint>
 
-// Forward declarations to avoid circular dependencies
+// Forward declarations
 class KnobController;
 class SoundController;
 class LightController;
@@ -19,8 +18,8 @@ class MediaController;
 
 enum Mode {
   INITIALIZATION,
-  INFO,           // EnvironmentInfoScreen (time, weather, temperature)
-  DEVICE_INFO,    // DeviceInfoScreen (WiFi, internet, MQTT, battery)
+  INFO,
+  DEVICE_INFO,
   CALIBRATE_ORIENTATION,
   SOUND,
   LIGHT,
@@ -30,7 +29,6 @@ enum Mode {
 
 class DisplayController {
 private:
-  LGFX* gfx;
   TouchPanel* touchPanel;
   KnobController* knobController;
   SoundController* soundController;
@@ -43,22 +41,21 @@ private:
 
   Mode currentMode;
   int64_t lastActivityTime;
+  int64_t initializationStartTime;
   bool displayIsOn;
   int initializationProgress;
   int64_t initializationCompleteTime;
   std::atomic<int> pendingModeRequest;
-  std::atomic<bool> pendingHomeActivation;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
-  
 
 public:
-  DisplayController(LGFX* graphics, TouchPanel* touch);
+  DisplayController(TouchPanel* touch);
   void init();
   void update();
-  
+
   void setMode(Mode mode);
   Mode getMode() const;
   bool showNamedScreen(const std::string& screenName);
@@ -72,7 +69,7 @@ public:
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
   void registerMediaController(MediaController* media);
-  
+
   void incrementSetpoint();
   void decrementSetpoint();
   void setSetpoint(int setpoint);

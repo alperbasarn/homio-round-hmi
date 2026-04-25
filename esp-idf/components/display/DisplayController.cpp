@@ -8,9 +8,12 @@
 #include "DeviceInfoScreen.h"
 #include "MediaController.h"
 #include "SleepHandler.h"
+#include "LvglDisplay.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "hal_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <algorithm>
 #include <cctype>
 
@@ -23,61 +26,50 @@ namespace {
 
 const char* modeToString(Mode mode) {
     switch (mode) {
-        case INITIALIZATION:
-            return "INITIALIZATION";
-        case INFO:
-            return "INFO";
-        case DEVICE_INFO:
-            return "DEVICE_INFO";
-        case CALIBRATE_ORIENTATION:
-            return "CALIBRATE_ORIENTATION";
-        case SOUND:
-            return "SOUND";
-        case LIGHT:
-            return "LIGHT";
-        case HOME:
-            return "HOME";
-        case SLEEP:
-            return "SLEEP";
-        default:
-            return "UNKNOWN";
+        case INITIALIZATION:       return "INITIALIZATION";
+        case INFO:                 return "INFO";
+        case DEVICE_INFO:          return "DEVICE_INFO";
+        case CALIBRATE_ORIENTATION:return "CALIBRATE_ORIENTATION";
+        case SOUND:                return "SOUND";
+        case LIGHT:                return "LIGHT";
+        case HOME:                 return "HOME";
+        case SLEEP:                return "SLEEP";
+        default:                   return "UNKNOWN";
     }
 }
 
-constexpr const char* SWIPE_LEFT_EFFECT_FILE = "swipe_left";
+constexpr const char* SWIPE_LEFT_EFFECT_FILE  = "swipe_left";
 constexpr const char* SWIPE_RIGHT_EFFECT_FILE = "swipe_right";
-constexpr const char* SWIPE_UP_EFFECT_FILE = "swipe_up";
-constexpr const char* SWIPE_DOWN_EFFECT_FILE = "swipe_down";
+constexpr const char* SWIPE_UP_EFFECT_FILE    = "swipe_up";
+constexpr const char* SWIPE_DOWN_EFFECT_FILE  = "swipe_down";
 
 std::string normalizeScreenName(const std::string& value) {
-    std::string normalized = value;
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+    std::string n = value;
+    std::transform(n.begin(), n.end(), n.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
-    return normalized;
+    return n;
 }
 
 }  // namespace
 
-DisplayController::DisplayController(LGFX* graphics, TouchPanel* touch)
-  : gfx(graphics), touchPanel(touch), knobController(nullptr), soundController(nullptr),
+DisplayController::DisplayController(TouchPanel* touch)
+  : touchPanel(touch), knobController(nullptr), soundController(nullptr),
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
-    infoScreen(nullptr), deviceInfoScreen(nullptr), mediaController(nullptr), currentMode(INITIALIZATION), lastActivityTime(0), displayIsOn(true),
-        initializationProgress(0), initializationCompleteTime(0), pendingModeRequest(-1), pendingHomeActivation(false) {
+    infoScreen(nullptr), deviceInfoScreen(nullptr), mediaController(nullptr),
+    currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
+    displayIsOn(true), initializationProgress(0), initializationCompleteTime(0),
+    pendingModeRequest(-1) {
 }
 
-DisplayController::~DisplayController() {
-    // Note: This class doesn't own the controller pointers, so it doesn't delete them.
-}
+DisplayController::~DisplayController() {}
 
 void DisplayController::init() {
-    gfx->init();
-    gfx->setRotation(0);
-    gfx->setBrightness(255);
-    gfx->fillScreen(TFT_BLACK);
+    LvglDisplay::fillScreen(0x000000);
     initializationProgress = 0;
     initializationCompleteTime = 0;
-    setMode(INITIALIZATION);
+    initializationStartTime = esp_timer_get_time() / 1000;
+    // currentMode is already INITIALIZATION — no setMode() call to avoid re-enter
     if (initializationScreen) {
         initializationScreen->reset();
         initializationScreen->setProgress(0);
@@ -88,14 +80,7 @@ void DisplayController::init() {
 void DisplayController::update() {
     const int pendingMode = pendingModeRequest.exchange(-1);
     if (pendingMode >= 0) {
-        const Mode requested = static_cast<Mode>(pendingMode);
-        if (modeController != nullptr && requested != HOME) {
-            modeController->setActive(false);
-        }
-        setMode(requested);
-        if (requested == HOME && modeController != nullptr && pendingHomeActivation.exchange(false)) {
-            modeController->setActive(true);
-        }
+        setMode(static_cast<Mode>(pendingMode));
     }
 
     bool hasActivityEvent = false;
@@ -110,32 +95,19 @@ void DisplayController::update() {
             hasActivityEvent = true;
             resetActivityTime();
             if (mediaController && touchPanel->getHasNewHoldRelease()) {
-                const int64_t holdMs = touchPanel->getLastPressDurationMs();
-                if (holdMs <= SHORT_HOLD_SOUND_MAX_MS) {
+                if (touchPanel->getLastPressDurationMs() <= SHORT_HOLD_SOUND_MAX_MS)
                     mediaController->requestTouchReleaseEffect();
-                }
             }
-            if (mediaController && touchPanel->getHasNewRelease()) {
+            if (mediaController && touchPanel->getHasNewRelease())
                 mediaController->requestTouchPressEffect();
-            }
         }
         if (touchPanel->getHasNewGesture() && mediaController) {
-            const touch_gesture_t gesture = touchPanel->getLastGesture();
-            switch (gesture) {
-                case GESTURE_SWIPE_LEFT:
-                    mediaController->requestSoundEffect(SWIPE_LEFT_EFFECT_FILE);
-                    break;
-                case GESTURE_SWIPE_RIGHT:
-                    mediaController->requestSoundEffect(SWIPE_RIGHT_EFFECT_FILE);
-                    break;
-                case GESTURE_SWIPE_UP:
-                    mediaController->requestSoundEffect(SWIPE_UP_EFFECT_FILE);
-                    break;
-                case GESTURE_SWIPE_DOWN:
-                    mediaController->requestSoundEffect(SWIPE_DOWN_EFFECT_FILE);
-                    break;
-                default:
-                    break;
+            switch (touchPanel->getLastGesture()) {
+                case GESTURE_SWIPE_LEFT:  mediaController->requestSoundEffect(SWIPE_LEFT_EFFECT_FILE);  break;
+                case GESTURE_SWIPE_RIGHT: mediaController->requestSoundEffect(SWIPE_RIGHT_EFFECT_FILE); break;
+                case GESTURE_SWIPE_UP:    mediaController->requestSoundEffect(SWIPE_UP_EFFECT_FILE);    break;
+                case GESTURE_SWIPE_DOWN:  mediaController->requestSoundEffect(SWIPE_DOWN_EFFECT_FILE);  break;
+                default: break;
             }
         }
     }
@@ -148,27 +120,22 @@ void DisplayController::update() {
         }
     }
 
-    // Wake from sleep on any user activity.
     if (currentMode == SLEEP && hasActivityEvent) {
         setMode(INFO);
         return;
     }
-    
+
     switch (currentMode) {
         case INITIALIZATION:
             if (initializationScreen) {
                 int64_t now = esp_timer_get_time() / 1000;
-                int64_t elapsed = now - static_cast<int64_t>(lastActivityTime);
-                int progress = static_cast<int>((elapsed * 100) / INIT_SEQUENCE_DURATION_MS);
-                if (progress > 100) {
-                    progress = 100;
-                }
+                int progress = static_cast<int>((now - initializationStartTime) * 100 / INIT_SEQUENCE_DURATION_MS);
+                if (progress > 100) progress = 100;
                 if (progress != initializationProgress) {
                     initializationProgress = progress;
                     initializationScreen->setProgress(initializationProgress);
-                    if (initializationProgress >= 100 && initializationCompleteTime == 0) {
+                    if (initializationProgress >= 100 && initializationCompleteTime == 0)
                         initializationCompleteTime = now;
-                    }
                 }
                 initializationScreen->updateScreen();
             }
@@ -177,18 +144,12 @@ void DisplayController::update() {
         case INFO:
             if (infoScreen) {
                 infoScreen->update();
-                // Check if user wants to go to device info screen (swipe up)
                 if (infoScreen->isDeviceInfoRequested()) {
                     infoScreen->resetDeviceInfoRequest();
                     setMode(DEVICE_INFO);
-                }
-                // Check if user wants to go to mode selection
-                else if (infoScreen->isPageBackRequested()) {
+                } else if (infoScreen->isPageBackRequested()) {
                     infoScreen->resetPageBackRequest();
                     setMode(HOME);
-                    if (modeController) {
-                        modeController->setActive(true);
-                    }
                 }
             }
             break;
@@ -196,7 +157,6 @@ void DisplayController::update() {
         case DEVICE_INFO:
             if (deviceInfoScreen) {
                 deviceInfoScreen->update();
-                // Check if user wants to go back to environment info (swipe down)
                 if (deviceInfoScreen->isPageBackRequested()) {
                     deviceInfoScreen->resetPageBackRequest();
                     setMode(INFO);
@@ -206,22 +166,14 @@ void DisplayController::update() {
 
         case SOUND:
             if (soundController) {
-                // Handle knob rotation
                 if (knobController && knobController->getHasNewMessage()) {
-                    std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") {
-                        soundController->incrementSetpoint();
-                    } else if (cmd == "-") {
-                        soundController->decrementSetpoint();
-                    }
+                    const std::string cmd = knobController->getReceivedCommand();
+                    if (cmd == "+") soundController->incrementSetpoint();
+                    else if (cmd == "-") soundController->decrementSetpoint();
                 }
                 soundController->updateScreen();
-                // Check if user wants to go back to mode selection
                 if (soundController->isPageBackRequested()) {
                     soundController->resetPageBackRequest();
-                    if (modeController) {
-                        modeController->setActive(true);
-                    }
                     setMode(HOME);
                 }
             }
@@ -229,22 +181,14 @@ void DisplayController::update() {
 
         case LIGHT:
             if (lightController) {
-                // Handle knob rotation
                 if (knobController && knobController->getHasNewMessage()) {
-                    std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") {
-                        lightController->incrementSetpoint();
-                    } else if (cmd == "-") {
-                        lightController->decrementSetpoint();
-                    }
+                    const std::string cmd = knobController->getReceivedCommand();
+                    if (cmd == "+") lightController->incrementSetpoint();
+                    else if (cmd == "-") lightController->decrementSetpoint();
                 }
                 lightController->updateScreen();
-                // Check if user wants to go back to mode selection
                 if (lightController->isPageBackRequested()) {
                     lightController->resetPageBackRequest();
-                    if (modeController) {
-                        modeController->setActive(true);
-                    }
                     setMode(HOME);
                 }
             }
@@ -252,42 +196,29 @@ void DisplayController::update() {
 
         case HOME:
             if (modeController) {
-                // Handle knob rotation to switch between modes
                 if (knobController && knobController->getHasNewMessage()) {
-                    std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") {
-                        modeController->nextMode();
-                    } else if (cmd == "-") {
-                        modeController->previousMode();
-                    }
+                    const std::string cmd = knobController->getReceivedCommand();
+                    if (cmd == "+") modeController->nextMode();
+                    else if (cmd == "-") modeController->previousMode();
                 }
                 modeController->updateScreen();
 
-                // Check if user selected a mode
                 if (modeController->isModeSelected()) {
                     modeController->resetModeSelected();
-                    ModeController::Mode selectedMode = modeController->getCurrentMode();
-                    modeController->setActive(false);
-
-                    if (selectedMode == ModeController::MODE_SOUND) {
-                        setMode(SOUND);
-                    } else if (selectedMode == ModeController::MODE_LIGHT) {
-                        setMode(LIGHT);
-                    }
-                    // Temperature mode not yet implemented
+                    const ModeController::Mode sel = modeController->getCurrentMode();
+                    modeController->deactivate();
+                    if (sel == ModeController::MODE_SOUND) setMode(SOUND);
+                    else if (sel == ModeController::MODE_LIGHT) setMode(LIGHT);
                 }
-
-                // Check if user wants to go back to info screen
                 if (modeController->isPageBackRequested()) {
                     modeController->resetPageBackRequest();
-                    modeController->setActive(false);
+                    modeController->deactivate();
                     setMode(INFO);
                 }
             }
             break;
 
         default:
-            // Handle other modes or do nothing
             break;
     }
 
@@ -297,181 +228,119 @@ void DisplayController::update() {
 void DisplayController::setMode(Mode mode) {
     if (currentMode == mode) return;
 
-    ESP_LOGI(TAG, "Changing mode from %s to %s", modeToString(currentMode), modeToString(mode));
+    ESP_LOGI(TAG, "Mode: %s → %s", modeToString(currentMode), modeToString(mode));
+
+    // Hide current LVGL screen before leaving it
+    if (currentMode == INITIALIZATION && initializationScreen)
+        initializationScreen->hideScreen();
+    if (currentMode == INFO && infoScreen)
+        infoScreen->deactivate();
+    if (currentMode == DEVICE_INFO && deviceInfoScreen)
+        deviceInfoScreen->deactivate();
+    if (currentMode == HOME && modeController)
+        modeController->deactivate();
+
     transitionToMode(mode);
     currentMode = mode;
-    if (mode == SLEEP) {
-        turnDisplayOff();
-    }
+
+    if (mode == SLEEP) turnDisplayOff();
+
     if (mode == INITIALIZATION) {
         initializationProgress = 0;
         initializationCompleteTime = 0;
+        initializationStartTime = esp_timer_get_time() / 1000;
         if (initializationScreen) {
             initializationScreen->reset();
             initializationScreen->setProgress(0);
         }
     }
-    if (mode == INFO) {
-        if (infoScreen) {
-            infoScreen->resetScreen();
-        }
-    }
-    if (mode == DEVICE_INFO) {
-        if (deviceInfoScreen) {
-            deviceInfoScreen->resetScreen();
-        }
-    }
-    // Only reset activity when transitioning to an active mode, not when entering SLEEP.
-    // Resetting on SLEEP would immediately wake the display and restore CPU frequency.
-    if (mode != SLEEP) {
-        resetActivityTime();
-    }
+    if (mode == INFO && infoScreen)         infoScreen->resetScreen();
+    if (mode == DEVICE_INFO && deviceInfoScreen) deviceInfoScreen->resetScreen();
+
+    // Always activate home screen when entering HOME mode
+    if (mode == HOME && modeController)     modeController->setActive(true);
+
+    if (mode != SLEEP) resetActivityTime();
 }
 
-Mode DisplayController::getMode() const {
-    return currentMode;
-}
+Mode DisplayController::getMode() const { return currentMode; }
 
 bool DisplayController::showNamedScreen(const std::string& screenName) {
-    const std::string normalized = normalizeScreenName(screenName);
+    const std::string n = normalizeScreenName(screenName);
     Mode target = currentMode;
-    bool activateHome = false;
 
-    if (normalized == "info" || normalized == "infoscreen" || normalized == "environment" || normalized == "environmentinfoscreen") {
+    if (n == "info" || n == "infoscreen" || n == "environment" || n == "environmentinfoscreen")
         target = INFO;
-    } else if (normalized == "deviceinfo" || normalized == "deviceinfoscreen") {
+    else if (n == "deviceinfo" || n == "deviceinfoscreen")
         target = DEVICE_INFO;
-    } else if (normalized == "home") {
+    else if (n == "home")
         target = HOME;
-        activateHome = true;
-    } else if (normalized == "sound" || normalized == "soundcontroller") {
+    else if (n == "sound" || n == "soundcontroller")
         target = SOUND;
-    } else if (normalized == "light" || normalized == "lightcontroller") {
+    else if (n == "light" || n == "lightcontroller")
         target = LIGHT;
-    } else if (normalized == "calibrate" || normalized == "calibrate_orientation" || normalized == "calibrateorientation") {
+    else if (n == "calibrate" || n == "calibrate_orientation" || n == "calibrateorientation")
         target = CALIBRATE_ORIENTATION;
-    } else {
+    else
         return false;
-    }
 
-    pendingHomeActivation.store(activateHome);
     pendingModeRequest.store(static_cast<int>(target));
     return true;
 }
 
 std::string DisplayController::getModeName() const {
     switch (currentMode) {
-        case INFO:
-            return "info";
-        case DEVICE_INFO:
-            return "deviceInfo";
-        case HOME:
-            return "home";
-        case SOUND:
-            return "sound";
-        case LIGHT:
-            return "light";
-        case CALIBRATE_ORIENTATION:
-            return "calibrate";
-        case SLEEP:
-            return "sleep";
+        case INFO:                 return "info";
+        case DEVICE_INFO:          return "deviceInfo";
+        case HOME:                 return "home";
+        case SOUND:                return "sound";
+        case LIGHT:                return "light";
+        case CALIBRATE_ORIENTATION:return "calibrate";
+        case SLEEP:                return "sleep";
         case INITIALIZATION:
-        default:
-            return "initialization";
+        default:                   return "initialization";
     }
 }
 
-void DisplayController::registerKnobController(KnobController* knob) {
-    knobController = knob;
-}
-
-void DisplayController::registerSoundController(SoundController* sound) {
-    soundController = sound;
-}
-
-void DisplayController::registerLightController(LightController* light) {
-    lightController = light;
-}
-
-void DisplayController::registerModeController(ModeController* mode) {
-    modeController = mode;
-}
-
-void DisplayController::registerInitializationScreen(InitializationScreen* init) {
-    initializationScreen = init;
-}
-
-void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info) {
-    infoScreen = info;
-}
-
-void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo) {
-    deviceInfoScreen = deviceInfo;
-}
-
-void DisplayController::registerMediaController(MediaController* media) {
-    mediaController = media;
-}
+void DisplayController::registerKnobController(KnobController* k)      { knobController = k; }
+void DisplayController::registerSoundController(SoundController* s)    { soundController = s; }
+void DisplayController::registerLightController(LightController* l)    { lightController = l; }
+void DisplayController::registerModeController(ModeController* m)      { modeController = m; }
+void DisplayController::registerInitializationScreen(InitializationScreen* i) { initializationScreen = i; }
+void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { infoScreen = info; }
+void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
+void DisplayController::registerMediaController(MediaController* m)    { mediaController = m; }
 
 void DisplayController::incrementSetpoint() {
-    switch (currentMode) {
-        case SOUND:
-            if (soundController) soundController->incrementSetpoint();
-            break;
-        case LIGHT:
-            if (lightController) lightController->incrementSetpoint();
-            break;
-        default:
-            break;
-    }
+    if (currentMode == SOUND && soundController)  soundController->incrementSetpoint();
+    if (currentMode == LIGHT && lightController)  lightController->incrementSetpoint();
 }
-
 void DisplayController::decrementSetpoint() {
-    switch (currentMode) {
-        case SOUND:
-            if (soundController) soundController->decrementSetpoint();
-            break;
-        case LIGHT:
-            if (lightController) lightController->decrementSetpoint();
-            break;
-        default:
-            break;
-    }
+    if (currentMode == SOUND && soundController)  soundController->decrementSetpoint();
+    if (currentMode == LIGHT && lightController)  lightController->decrementSetpoint();
+}
+void DisplayController::setSetpoint(int sp) {
+    if (currentMode == SOUND && soundController)  soundController->updateSetpoint(sp);
+    if (currentMode == LIGHT && lightController)  lightController->setSetpoint(sp);
 }
 
-void DisplayController::setSetpoint(int setpoint) {
-    switch (currentMode) {
-        case SOUND:
-            if (soundController) soundController->updateSetpoint(setpoint);
-            break;
-        case LIGHT:
-            if (lightController) lightController->setSetpoint(setpoint);
-            break;
-        default:
-            break;
-    }
-}
-
-void DisplayController::transitionToMode(Mode newMode, int transitionType) {
-    // LVGL-managed screens (INFO, DEVICE_INFO, COMMISSIONING) have their own
-    // full-screen root with a black background that covers the previous content.
-    // Skipping fillScreen avoids a visible "flash to black then progressive redraw"
-    // caused by LVGL rendering in 50-line bands on the 466px display.
+void DisplayController::transitionToMode(Mode newMode, int /*transitionType*/) {
+    // All screens are LVGL-managed — they clear their own background.
+    // For non-LVGL screens (SOUND, LIGHT) clear via DrawAPI.
     switch (newMode) {
+        case INITIALIZATION:
         case INFO:
         case DEVICE_INFO:
-            // Let LVGL handle the screen transition — its root bg clears the old content.
-            break;
+        case HOME:
+            break;  // LVGL root handles clearing
         default:
-            // Non-LVGL screens: clear via LovyanGFX.
-            gfx->fillScreen(TFT_BLACK);
+            LvglDisplay::fillScreen(0x000000);
             break;
     }
 }
 
 void DisplayController::checkActivityAndAutoSwitch() {
     int64_t now = esp_timer_get_time() / 1000;
-    int64_t inactivity_ms = now - static_cast<int64_t>(lastActivityTime);
 
     if (currentMode == INITIALIZATION) {
         if (initializationProgress >= 100 &&
@@ -482,46 +351,38 @@ void DisplayController::checkActivityAndAutoSwitch() {
         return;
     }
 
-    if (inactivity_ms > INACTIVITY_TIMEOUT_MS) {
-        if (currentMode != SLEEP) {
-            setMode(SLEEP);
-        }
+    if ((now - static_cast<int64_t>(lastActivityTime)) > INACTIVITY_TIMEOUT_MS) {
+        if (currentMode != SLEEP) setMode(SLEEP);
     }
 }
 
 void DisplayController::resetActivityTime() {
     lastActivityTime = esp_timer_get_time() / 1000;
-    if (!displayIsOn) {
-        turnDisplayOn();
-    }
-
-    // Register activity with the sleep handler for power management
-    SleepHandler* sleepHandler = SleepHandler::getInstance();
-    if (sleepHandler) {
-        sleepHandler->registerActivity();
-    }
+    if (!displayIsOn) turnDisplayOn();
+    SleepHandler* sh = SleepHandler::getInstance();
+    if (sh) sh->registerActivity();
 }
 
 void DisplayController::turnDisplayOff() {
     if (!displayIsOn) return;
-    #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
     for (int i = 255; i >= 0; i -= 5) {
-        gfx->setBrightness(i);
+        LvglDisplay::setBrightness(static_cast<uint8_t>(i));
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    #endif
+#endif
     displayIsOn = false;
-    ESP_LOGI(TAG, "Display turned off");
+    ESP_LOGI(TAG, "Display off");
 }
 
 void DisplayController::turnDisplayOn() {
     if (displayIsOn) return;
-    #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
     for (int i = 0; i <= 255; i += 5) {
-        gfx->setBrightness(i);
+        LvglDisplay::setBrightness(static_cast<uint8_t>(i));
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    #endif
+#endif
     displayIsOn = true;
-    ESP_LOGI(TAG, "Display turned on");
+    ESP_LOGI(TAG, "Display on");
 }

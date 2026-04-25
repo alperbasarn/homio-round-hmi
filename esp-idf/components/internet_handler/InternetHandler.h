@@ -6,6 +6,7 @@
 class WiFiManager;
 class TimeHandler;
 class WeatherHandler;
+class NVSManager;
 
 class InternetHandler {
 private:
@@ -25,7 +26,7 @@ private:
     int64_t millis() const;
 
 public:
-    InternetHandler(WiFiManager* wifiManager);
+    InternetHandler(WiFiManager* wifiManager, NVSManager* nvsManager = nullptr);
     ~InternetHandler();
 
     // Connectivity

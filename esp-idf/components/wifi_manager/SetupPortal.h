@@ -23,6 +23,7 @@ public:
     void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
     void setOtaStatusCallback(std::function<std::string(void)> callback);
     void setOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
+    void setDeviceInfoStatusCallback(std::function<std::string(void)> callback);
 
 private:
     WiFiManager* wifiManager;
@@ -36,6 +37,7 @@ private:
     std::function<void(void)> otaConfigUpdatedCallback;
     std::function<std::string(void)> otaStatusCallback;
     std::function<esp_err_t(const std::string&)> otaActionCallback;
+    std::function<std::string(void)> deviceInfoStatusCallback;
 
     static constexpr int HTTP_PORT = 80;
     static constexpr int DNS_PORT = 53;
@@ -50,7 +52,9 @@ private:
     bool sendDnsResponse(const uint8_t* request, size_t reqLen, const sockaddr_in& clientAddr, socklen_t clientLen);
 
     static esp_err_t rootGetHandler(httpd_req_t* req);
+    static esp_err_t deviceInfoPageGetHandler(httpd_req_t* req);
     static esp_err_t statusGetHandler(httpd_req_t* req);
+    static esp_err_t deviceInfoStatusGetHandler(httpd_req_t* req);
     static esp_err_t scanGetHandler(httpd_req_t* req);
     static esp_err_t devicePostHandler(httpd_req_t* req);
     static esp_err_t staticIpPostHandler(httpd_req_t* req);
@@ -60,10 +64,13 @@ private:
     static esp_err_t mqttPostHandler(httpd_req_t* req);
     static esp_err_t weatherPostHandler(httpd_req_t* req);
     static esp_err_t timePostHandler(httpd_req_t* req);
+    static esp_err_t resetPostHandler(httpd_req_t* req);
     static esp_err_t captiveRedirectHandler(httpd_req_t* req);
 
     std::string renderRootPage() const;
+    std::string renderDeviceInfoPage() const;
     std::string renderStatusJson() const;
+    std::string renderDeviceInfoStatusJson() const;
     std::string renderScanJson() const;
 
     static std::string urlDecode(const std::string& value);
