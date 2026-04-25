@@ -14,12 +14,14 @@ class ModeController;
 class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
+class PlaceholderPageScreen;
 class MediaController;
 
 enum Mode {
   INITIALIZATION,
   INFO,
   DEVICE_INFO,
+  MATRIX_PAGE,
   CALIBRATE_ORIENTATION,
   SOUND,
   LIGHT,
@@ -37,6 +39,7 @@ private:
   InitializationScreen* initializationScreen;
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
+  PlaceholderPageScreen* placeholderScreen;
   MediaController* mediaController;
 
   Mode currentMode;
@@ -45,11 +48,17 @@ private:
   bool displayIsOn;
   int initializationProgress;
   int64_t initializationCompleteTime;
+  int currentPageX;
+  int currentPageY;
   std::atomic<int> pendingModeRequest;
+  std::atomic<int> pendingPageRequest;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
+  bool handleMatrixNavigationGesture(touch_gesture_t gesture);
+  bool navigateToMatrixPage(int x, int y);
+  void resetActiveScreen();
 
 public:
   DisplayController(TouchPanel* touch);
@@ -68,6 +77,7 @@ public:
   void registerInitializationScreen(InitializationScreen* init);
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
+  void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
   void registerMediaController(MediaController* media);
 
   void incrementSetpoint();

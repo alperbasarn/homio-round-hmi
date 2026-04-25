@@ -16,6 +16,7 @@
 
 // Display
 #include "DisplayController.h"
+#include "LvglDisplay.h"
 #include "LGFX_Config.hpp"
 
 // Hardware interfaces
@@ -36,6 +37,7 @@
 #include "InitializationScreen.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
+#include "PlaceholderPageScreen.h"
 #include "BatteryHandler.h"
 
 // Media
@@ -93,6 +95,7 @@ static ModeController* modeController = nullptr;
 static InitializationScreen* initializationScreen = nullptr;
 static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
+static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
@@ -482,11 +485,11 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    modeController = new ModeController(gfx, touchPanel);
-    initializationScreen = new InitializationScreen(gfx);
+    modeController = new ModeController(touchPanel);
+    initializationScreen = new InitializationScreen();
 
     // Create EnvironmentInfoScreen (time, weather, temperature)
-    infoScreen = new EnvironmentInfoScreen(gfx, touchPanel);
+    infoScreen = new EnvironmentInfoScreen(touchPanel);
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
         date = internetHandler->getCurrentDate();
         time = internetHandler->getCurrentTime();
@@ -497,7 +500,7 @@ extern "C" void app_main(void) {
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen(gfx, touchPanel);
+    deviceInfoScreen = new DeviceInfoScreen(touchPanel);
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
         wifi = wifiManager->isConnected();
         internet = internetHandler->isInternetAvailable();
@@ -533,28 +536,40 @@ extern "C" void app_main(void) {
         }
     });
 
-    soundController = new SoundController(gfx, touchPanel);
-    lightController = new LightController(gfx, touchPanel);
-    displayController = new DisplayController(gfx, touchPanel);
+    placeholderPageScreen = new PlaceholderPageScreen();
+
+    soundController = new SoundController(touchPanel);
+    lightController = new LightController(touchPanel);
+    displayController = new DisplayController(touchPanel);
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
+    displayController->registerPlaceholderScreen(placeholderPageScreen);
     displayController->registerMediaController(mediaController);
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
     wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
+        if (commandHandler != nullptr) {
+            commandHandler->handleExternalCommand("screen:" + screen);
+            return true;
+        }
         return displayController != nullptr && displayController->showNamedScreen(screen);
     });
     wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
         return displayController != nullptr ? displayController->getModeName() : "unknown";
+    });
+    wifiManager->setSetupPortalCommandCallback([](const std::string& cmd) {
+        if (commandHandler != nullptr) commandHandler->handleExternalCommand(cmd);
     });
 
     // Initialize display hardware here — immediately before the display task starts
     // so the gap between gfx->init() and the first draw is <100 ms.
     gfx->init();
     gfx->setRotation(0);
+    // Provide the hardware driver to LvglDisplay before any draw calls.
+    LvglDisplay::setHardware(static_cast<void*>(gfx));
     gfx->setBrightness(0);
     gfx->fillScreen(TFT_BLACK);
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -609,6 +624,9 @@ extern "C" void app_main(void) {
     commandHandler->registerKnobController(knobController);
     commandHandler->registerMediaController(mediaController);
     commandHandler->registerOTAManager(otaManager);
+    commandHandler->setOtaConfigUpdatedCallback([]() {
+        applyOtaConfigFromNvs();
+    });
     commandHandler->begin();
 
     // Set MQTT callbacks for sound controller

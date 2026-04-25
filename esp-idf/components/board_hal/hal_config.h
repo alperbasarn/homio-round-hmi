@@ -69,6 +69,9 @@
 #define TP_RST_PIN              13
 #define TP_I2C_ADDR             CST816S_I2C_ADDR
 #define TOUCH_WAKEUP_PIN        5
+#define TOUCH_SWAP_XY           0
+#define TOUCH_MIRROR_X          0
+#define TOUCH_MIRROR_Y          0
 
 // ========== IMU (QMI8658) ===========
 #define IMU_SDA_PIN             6
@@ -153,6 +156,10 @@
 #define TP_RST_PIN              40
 #define TP_I2C_ADDR             CST9217_I2C_ADDR
 #define TOUCH_WAKEUP_PIN        11
+// S3 AMOLED 1.75 reports coordinates opposite to display orientation.
+#define TOUCH_SWAP_XY           0
+#define TOUCH_MIRROR_X          1
+#define TOUCH_MIRROR_Y          1
 
 // ========== Shared I2C Devices ===========
 #define IMU_SDA_PIN             15
@@ -249,6 +256,9 @@
 #define TP_RST_PIN              -1
 #define TP_I2C_ADDR             FT6X36_I2C_ADDR
 #define TOUCH_WAKEUP_PIN        1
+#define TOUCH_SWAP_XY           0
+#define TOUCH_MIRROR_X          0
+#define TOUCH_MIRROR_Y          0
 
 // ========== IMU (QMI8658) ===========
 #define IMU_SDA_PIN             6
