@@ -1,4 +1,4 @@
-# TouchPanel Component - CST816S Capacitive Touch Controller
+# TouchPanel Component - CST816S / FT6x36 Capacitive Touch Controllers
 idf_component_register(
     SRCS "TouchPanel.cpp"
     INCLUDE_DIRS "."

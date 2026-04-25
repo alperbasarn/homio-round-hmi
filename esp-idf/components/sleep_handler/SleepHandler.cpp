@@ -12,6 +12,30 @@ static const char *TAG = "SleepHandler";
 // Singleton instance
 static SleepHandler* s_instance = nullptr;
 
+namespace {
+
+void addRtcWakeupPin(uint64_t* wakeupMask, int pin, const char* label)
+{
+    if (wakeupMask == nullptr || pin < 0) {
+        return;
+    }
+
+    const gpio_num_t gpio = static_cast<gpio_num_t>(pin);
+    if (!rtc_gpio_is_valid_gpio(gpio)) {
+        ESP_LOGW(TAG, "%s wakeup pin %d is not RTC-capable, skipping EXT1 wake source", label, pin);
+        return;
+    }
+
+    rtc_gpio_init(gpio);
+    rtc_gpio_set_direction(gpio, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_en(gpio);
+    rtc_gpio_pulldown_dis(gpio);
+    *wakeupMask |= (1ULL << static_cast<uint32_t>(pin));
+    ESP_LOGI(TAG, "%s wakeup pin %d configured", label, pin);
+}
+
+}  // namespace
+
 SleepHandler* SleepHandler::getInstance(SemaphoreHandle_t* mutex)
 {
     if (s_instance == nullptr) {
@@ -246,28 +270,11 @@ void SleepHandler::configureWakeupSources()
     ESP_LOGI(TAG, "Configuring wakeup sources...");
 
 #if CONFIG_IDF_TARGET_ESP32S3
-    // ESP32-S3: Use EXT1 wakeup with RTC GPIO
+    // ESP32-S3 boards: use EXT1 wakeup with whichever board-level GPIOs are valid RTC inputs.
     uint64_t wakeup_pin_mask = 0;
 
-    // Configure touch wakeup pin
-    if (rtc_gpio_is_valid_gpio(WAKEUP_PIN_TOUCH)) {
-        rtc_gpio_init(WAKEUP_PIN_TOUCH);
-        rtc_gpio_set_direction(WAKEUP_PIN_TOUCH, RTC_GPIO_MODE_INPUT_ONLY);
-        rtc_gpio_pullup_en(WAKEUP_PIN_TOUCH);
-        rtc_gpio_pulldown_dis(WAKEUP_PIN_TOUCH);
-        wakeup_pin_mask |= (1ULL << WAKEUP_PIN_TOUCH);
-        ESP_LOGI(TAG, "Touch wakeup pin %d configured", WAKEUP_PIN_TOUCH);
-    }
-
-    // Configure knob UART RX wakeup pin
-    if (rtc_gpio_is_valid_gpio(WAKEUP_PIN_KNOB)) {
-        rtc_gpio_init(WAKEUP_PIN_KNOB);
-        rtc_gpio_set_direction(WAKEUP_PIN_KNOB, RTC_GPIO_MODE_INPUT_ONLY);
-        rtc_gpio_pullup_en(WAKEUP_PIN_KNOB);
-        rtc_gpio_pulldown_dis(WAKEUP_PIN_KNOB);
-        wakeup_pin_mask |= (1ULL << WAKEUP_PIN_KNOB);
-        ESP_LOGI(TAG, "Knob wakeup pin %d configured", WAKEUP_PIN_KNOB);
-    }
+    addRtcWakeupPin(&wakeup_pin_mask, WAKEUP_PIN_TOUCH, "Touch");
+    addRtcWakeupPin(&wakeup_pin_mask, WAKEUP_PIN_KNOB, "Knob");
 
     if (wakeup_pin_mask != 0) {
         esp_sleep_enable_ext1_wakeup(wakeup_pin_mask, ESP_EXT1_WAKEUP_ANY_LOW);
@@ -275,7 +282,7 @@ void SleepHandler::configureWakeupSources()
     }
 
 #elif CONFIG_IDF_TARGET_ESP32C6
-    // ESP32-C6: FT6146 touch INT is routed through TCA9554 I2C expander.
+    // ESP32-C6: FT6x36-compatible touch INT is routed through TCA9554 I2C expander.
     // TCA9554 INT# output is wired to GPIO 1 (EXIO_INT_PIN).
     // Wake sources: GPIO 1 (touch via expander) + GPIO 2 (power button).
 

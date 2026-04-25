@@ -5,17 +5,17 @@
 
 static const char* TAG = "SoundCtrl";
 
-SoundController::SoundController(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics), touchPanel(touch),
+SoundController::SoundController(TouchPanel* touch)
+    : touchPanel(touch),
       setpoint(50), lastSetpoint(-1), lastDrawnSetpoint(-1), lastSentSetpoint(-1),
       externalSetpointChange(false), isPlaying(false),
       colorChange(false), initialized(false), mqttInitialized(false),
       stateReceived(false), pageBackRequested(false),
       controllerState(CONTROLLER_INITIALIZE),
       lastSentTime(0), lastSetpointChangeTime(0), lastSetpointSentTime(0),
-      playButton(graphics, touch), pauseButton(graphics, touch),
-      rewindButton(graphics, touch), forwardButton(graphics, touch),
-      backButton(graphics, touch), volumeArc(graphics),
+      playButton(touch), pauseButton(touch),
+      rewindButton(touch), forwardButton(touch),
+      backButton(touch), volumeArc(),
       hasPendingMessage(false) {
 }
 
@@ -48,16 +48,14 @@ void SoundController::updateScreen() {
 }
 
 void SoundController::initializeController() {
-    gfx->fillScreen(TFT_BLACK);
-    gfx->setTextColor(TFT_WHITE);
+    LvglDisplay::fillScreen(0x000000);
 
     ESP_LOGI(TAG, "Drawing UI elements in INITIALIZE state");
 
-    // Scale for display size
-    float scale = static_cast<float>(gfx->width()) / 240.0f;
+    float scale = static_cast<float>(LvglDisplay::getWidth()) / 240.0f;
     int buttonSize = static_cast<int>(60 * scale);
-    int centerX = gfx->width() / 2;
-    int centerY = gfx->height() / 2;
+    int centerX = LvglDisplay::getWidth() / 2;
+    int centerY = LvglDisplay::getHeight() / 2;
     int spacing = static_cast<int>(60 * scale);
 
     // Initialize buttons
@@ -69,13 +67,13 @@ void SoundController::initializeController() {
     // Initialize back button
     int backWidth = static_cast<int>(40 * scale);
     int backHeight = static_cast<int>(20 * scale);
-    backButton.initialize(centerX, gfx->height() - static_cast<int>(30 * scale), backWidth, backHeight);
+    backButton.initialize(centerX, LvglDisplay::getHeight() - static_cast<int>(30 * scale), backWidth, backHeight);
 
     // Initialize volume arc
     int arcRadius = static_cast<int>(110 * scale);
     int arcThickness = static_cast<int>(15 * scale);
     volumeArc.initialize(centerX, centerY, arcRadius, arcThickness, 180, 180);
-    volumeArc.setColor(0x07FF);  // Cyan
+    volumeArc.setColor(0x00FFFF);  // Cyan (RGB888)
 
     // Hide both play/pause initially
     playButton.hide();
@@ -308,8 +306,7 @@ void SoundController::checkTouchInput() {
 }
 
 void SoundController::drawStaticVolumeElements() {
-    gfx->fillScreen(TFT_BLACK);
-    gfx->setTextColor(TFT_WHITE);
+    LvglDisplay::fillScreen(0x000000);
 }
 
 void SoundController::incrementSetpoint() {

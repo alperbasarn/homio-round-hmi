@@ -24,6 +24,7 @@ public:
     void registerKnobController(KnobController* kc);
     void registerMediaController(MediaController* mc);
     void registerOTAManager(OTAManager* ota);
+    void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
 
 private:
     using CommandFunction = std::function<void(const std::string& params)>;
@@ -41,6 +42,7 @@ private:
     MQTTManager* mqttManager;
     MediaController* mediaController;
     OTAManager* otaManager;
+    std::function<void(void)> otaConfigUpdatedCallback;
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
@@ -48,6 +50,8 @@ private:
     void registerCommands();
     void processCommand(const std::string& command);
     static std::string trimCommand(const std::string& command);
+    static std::string urlDecode(const std::string& value);
+    static std::string getFormValue(const std::string& body, const std::string& key);
     void publishResponse(const std::string& response);
 
     // Command handlers
@@ -77,6 +81,13 @@ private:
     void cmdOTAUpdate(const std::string& params);
     void cmdOTAInfo(const std::string& params);
     void cmdOTAStatus(const std::string& params);
+    void cmdPortalDevice(const std::string& params);
+    void cmdPortalWifi(const std::string& params);
+    void cmdPortalStaticIpCurrent(const std::string& params);
+    void cmdPortalMqtt(const std::string& params);
+    void cmdPortalWeather(const std::string& params);
+    void cmdPortalTime(const std::string& params);
+    void cmdPortalOta(const std::string& params);
 };
 
 #endif // COMMAND_HANDLER_H

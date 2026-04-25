@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include <sstream>
 
 // HAL and hardware components
 #include "hal_config.h"
@@ -15,6 +16,7 @@
 
 // Display
 #include "DisplayController.h"
+#include "LvglDisplay.h"
 #include "LGFX_Config.hpp"
 
 // Hardware interfaces
@@ -35,6 +37,7 @@
 #include "InitializationScreen.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
+#include "PlaceholderPageScreen.h"
 #include "BatteryHandler.h"
 
 // Media
@@ -49,6 +52,32 @@
 
 
 static const char *TAG = "QNOB_MAIN";
+static constexpr const char* kDefaultOtaManifestBaseUrl = "https://alperbasarn.github.io/homio-round-hmi/ota/latest";
+
+namespace {
+
+BatteryHandler::Config getBatteryHandlerConfig() {
+    BatteryHandler::Config config = {};
+
+#if QNOB_BATTERY_SOURCE == QNOB_BATTERY_SOURCE_ADC
+    config.source = BatteryHandler::TelemetrySource::ADC;
+    config.adcChannel = BAT_ADC_PIN;
+#elif QNOB_BATTERY_SOURCE == QNOB_BATTERY_SOURCE_AXP2101
+    config.source = BatteryHandler::TelemetrySource::AXP2101;
+    config.pmuI2cAddress = PMU_I2C_ADDR;
+#else
+    config.source = BatteryHandler::TelemetrySource::NONE;
+#endif
+
+    return config;
+}
+
+constexpr bool kAudioOutputSupported =
+    (QNOB_AUDIO_OUTPUT_BACKEND != QNOB_AUDIO_OUTPUT_BACKEND_NONE);
+constexpr bool kAudioInputSupported =
+    (QNOB_AUDIO_INPUT_BACKEND != QNOB_AUDIO_INPUT_BACKEND_NONE);
+
+}  // namespace
 
 // Global objects
 static LGFX* gfx = nullptr;
@@ -66,6 +95,7 @@ static ModeController* modeController = nullptr;
 static InitializationScreen* initializationScreen = nullptr;
 static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
+static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
@@ -75,6 +105,38 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+
+static std::string resolveManifestUrl(const std::string& variantId,
+                                      const std::string& configuredManifestUrl) {
+    if (configuredManifestUrl.empty()) {
+        return std::string(kDefaultOtaManifestBaseUrl) + "/" + variantId + ".json";
+    }
+
+    const std::string placeholder = "{variant}";
+    const size_t pos = configuredManifestUrl.find(placeholder);
+    if (pos == std::string::npos) {
+        return configuredManifestUrl;
+    }
+
+    std::string expanded = configuredManifestUrl;
+    expanded.replace(pos, placeholder.size(), variantId);
+    return expanded;
+}
+
+static void applyOtaConfigFromNvs() {
+    if (otaManager == nullptr || nvsManager == nullptr) {
+        return;
+    }
+
+    const std::string variantId = nvsManager->otaVariantId.empty()
+        ? std::string(QNOB_OTA_VARIANT_ID)
+        : nvsManager->otaVariantId;
+    const std::string manifestUrl = resolveManifestUrl(variantId, nvsManager->otaManifestUrl);
+
+    otaManager->setDeviceVariantId(variantId);
+    otaManager->setManifestUrl(manifestUrl);
+    ESP_LOGI(TAG, "OTA config applied: variant=%s, manifest=%s", variantId.c_str(), manifestUrl.c_str());
+}
 
 
 // Task handles
@@ -108,7 +170,7 @@ void displayTask(void* parameter) {
 #endif
 
         if (batteryHandler && batteryHandler->isInitialized()) {
-            batteryHandler->update();
+            batteryHandler->analyze();
         }
         displayController->update();
 
@@ -199,7 +261,7 @@ extern "C" void app_main(void) {
     // Initialize Battery Handler
     ESP_LOGI(TAG, "Initializing battery handler...");
     batteryHandler = new BatteryHandler();
-    if (batteryHandler->initialize() != ESP_OK) {
+    if (batteryHandler->initialize(getBatteryHandlerConfig()) != ESP_OK) {
         ESP_LOGW(TAG, "Battery handler init failed - battery monitoring disabled");
     }
 
@@ -208,28 +270,12 @@ extern "C" void app_main(void) {
     nvsManager = new NVSManager();
     ESP_ERROR_CHECK(nvsManager->begin());
 
-    // Initialize Display
+    // Create display object early so the pointer is valid, but defer hardware init
+    // until just before the display task starts (after WiFi init) to avoid a 7+
+    // second idle gap between gfx->init() and the first actual draw call, which
+    // causes the CO5300 AMOLED to drop subsequent pixel commands (blank screen).
     ESP_LOGI(TAG, "Initializing display...");
-
     gfx = new LGFX();
-
-    // Initialize with brightness at 0 to prevent showing garbage during startup
-    gfx->init();
-    gfx->setRotation(0);
-    gfx->setBrightness(0);
-
-    // Clear screen while brightness is off
-    gfx->fillScreen(TFT_BLACK);
-
-    // Small delay for display to stabilize after init commands
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    // Now bring up brightness smoothly
-    for (int i = 0; i <= 255; i += 15) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    gfx->setBrightness(255);
 
     // Initialize Touch Panel
     ESP_LOGI(TAG, "Initializing touch panel...");
@@ -259,29 +305,58 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "  %s", sdCard->getRecordingsDir().c_str());
     }
 
-    // Initialize audio/media classes (available for controllers)
-    speaker = new Speaker();
-    microphone = new Microphone();
-    soundPlayer = new SoundPlayer(sdCard, speaker);
-    soundRecorder = new SoundRecorder(sdCard, microphone);
-    mediaController = new MediaController(soundRecorder, soundPlayer);
     bool startupChimeReady = false;
-    if (soundPlayer->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "SoundPlayer initialization failed");
+
+    // Initialize audio/media classes only when the selected board exposes audio.
+    if (!kAudioOutputSupported && !kAudioInputSupported) {
+        ESP_LOGI(TAG, "Audio is not supported on %s - media features disabled", QNOB_BOARD_NAME);
     } else {
-        startupChimeReady = true;
-    }
-    if (soundRecorder->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "SoundRecorder initialization failed");
-    }
-    if (mediaController->initialize() != ESP_OK) {
-        ESP_LOGW(TAG, "MediaController initialization failed");
+        ESP_LOGI(TAG, "Initializing audio/media classes...");
+
+        if (kAudioOutputSupported) {
+            speaker = new Speaker();
+            soundPlayer = new SoundPlayer(sdCard, speaker);
+            if (soundPlayer->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "SoundPlayer initialization failed");
+            } else {
+                startupChimeReady = true;
+            }
+        } else {
+            ESP_LOGI(TAG, "Audio output disabled for %s", QNOB_BOARD_NAME);
+        }
+
+        if (kAudioInputSupported) {
+            microphone = new Microphone();
+            soundRecorder = new SoundRecorder(sdCard, microphone);
+            if (soundRecorder->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "SoundRecorder initialization failed");
+            }
+        } else {
+            ESP_LOGI(TAG, "Audio input disabled for %s", QNOB_BOARD_NAME);
+        }
+
+        if (soundPlayer != nullptr) {
+            mediaController = new MediaController(soundRecorder, soundPlayer);
+            if (mediaController->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "MediaController initialization failed");
+            }
+        } else if (soundRecorder != nullptr) {
+            ESP_LOGW(TAG, "Audio input is present but no playback path is configured; media controller disabled");
+        }
     }
 
     // Initialize Knob Controller
+#if (KNOB_TX_PIN >= 0) && (KNOB_RX_PIN >= 0)
     ESP_LOGI(TAG, "Initializing knob controller...");
     knobController = new KnobController(KNOB_TX_PIN, KNOB_RX_PIN, KNOB_UART_NUM);
-    knobController->begin(KNOB_BAUD_RATE);
+    if (knobController->begin(KNOB_BAUD_RATE) != ESP_OK) {
+        ESP_LOGW(TAG, "Knob controller init failed - continuing without UART knob");
+        delete knobController;
+        knobController = nullptr;
+    }
+#else
+    ESP_LOGI(TAG, "Knob UART is not mapped for %s - skipping knob controller init", QNOB_BOARD_NAME);
+#endif
 
     // Initialize networking
     ESP_LOGI(TAG, "Initializing networking...");
@@ -291,17 +366,130 @@ extern "C" void app_main(void) {
     if (mqttManager->initialize() != ESP_OK) {
         ESP_LOGW(TAG, "MQTT not configured yet (init skipped)");
     }
-    internetHandler = new InternetHandler(wifiManager);
+    internetHandler = new InternetHandler(wifiManager, nvsManager);
     wifiManager->connectToWiFi();
     otaManager = new OTAManager(wifiManager);
+    applyOtaConfigFromNvs();
+    wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
+        applyOtaConfigFromNvs();
+    });
+    wifiManager->setSetupPortalOtaStatusCallback([]() -> std::string {
+        if (otaManager == nullptr) {
+            return "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA manager unavailable\"}";
+        }
+
+        const OtaReleaseInfo info = otaManager->getReleaseInfo();
+        auto escape = [](const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            for (char c : value) {
+                if (c == '\\' || c == '"') {
+                    out.push_back('\\');
+                }
+                out.push_back(c);
+            }
+            return out;
+        };
+
+        std::ostringstream os;
+        os << "{";
+        os << "\"configured\":" << (info.configured ? "true" : "false") << ",";
+        os << "\"busy\":" << (info.busy ? "true" : "false") << ",";
+        os << "\"update_available\":" << (info.updateAvailable ? "true" : "false") << ",";
+        os << "\"current_version\":\"" << escape(info.currentVersion) << "\",";
+        os << "\"available_version\":\"" << escape(info.availableVersion) << "\",";
+        os << "\"status_message\":\"" << escape(info.statusMessage) << "\"";
+        os << "}";
+        return os.str();
+    });
+    wifiManager->setSetupPortalOtaActionCallback([](const std::string& action) -> esp_err_t {
+        if (otaManager == nullptr) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (action == "check") {
+            return otaManager->checkForReleaseUpdate();
+        }
+        if (action == "update") {
+            return otaManager->startReleaseUpdate(true);
+        }
+        return ESP_ERR_INVALID_ARG;
+    });
+    wifiManager->setSetupPortalDeviceInfoStatusCallback([]() -> std::string {
+        auto escape = [](const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            for (char c : value) {
+                if (c == '\\' || c == '"') {
+                    out.push_back('\\');
+                }
+                out.push_back(c);
+            }
+            return out;
+        };
+
+        bool wifi = wifiManager != nullptr && wifiManager->isConnected();
+        bool internet = internetHandler != nullptr && internetHandler->isInternetAvailable();
+        bool mqtt = mqttManager != nullptr && mqttManager->isConnected();
+        int strength = wifiManager != nullptr ? wifiManager->getSignalStrength() : 0;
+
+        bool batteryPresenceKnown = false;
+        bool batteryConnected = false;
+        bool batteryPercentageAvailable = false;
+        float batteryPercentage = -1.0f;
+        float batteryVoltage = -1.0f;
+        if (batteryHandler != nullptr && batteryHandler->isInitialized()) {
+            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
+            batteryConnected = batteryHandler->isBatteryConnected();
+            batteryPercentage = telemetry.percentage;
+            batteryPercentageAvailable = telemetry.percentage >= 0.0f;
+            batteryVoltage = telemetry.voltageVolts;
+        }
+
+        bool softwareConfigured = false;
+        bool softwareBusy = false;
+        bool softwareUpdateAvailable = false;
+        std::string currentVersion = "unknown";
+        std::string availableVersion;
+        std::string statusText = "OTA unavailable";
+        if (otaManager != nullptr) {
+            const OtaReleaseInfo info = otaManager->getReleaseInfo();
+            softwareConfigured = info.configured;
+            softwareBusy = info.busy;
+            softwareUpdateAvailable = info.updateAvailable;
+            currentVersion = info.currentVersion;
+            availableVersion = info.availableVersion;
+            statusText = info.statusMessage;
+        }
+
+        std::ostringstream os;
+        os << "{";
+        os << "\"wifi_connected\":" << (wifi ? "true" : "false") << ",";
+        os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
+        os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
+        os << "\"wifi_strength_bars\":" << strength << ",";
+        os << "\"battery_presence_known\":" << (batteryPresenceKnown ? "true" : "false") << ",";
+        os << "\"battery_connected\":" << (batteryConnected ? "true" : "false") << ",";
+        os << "\"battery_percentage_available\":" << (batteryPercentageAvailable ? "true" : "false") << ",";
+        os << "\"battery_percentage\":" << batteryPercentage << ",";
+        os << "\"battery_voltage\":" << batteryVoltage << ",";
+        os << "\"software_configured\":" << (softwareConfigured ? "true" : "false") << ",";
+        os << "\"software_busy\":" << (softwareBusy ? "true" : "false") << ",";
+        os << "\"software_update_available\":" << (softwareUpdateAvailable ? "true" : "false") << ",";
+        os << "\"current_version\":\"" << escape(currentVersion) << "\",";
+        os << "\"available_version\":\"" << escape(availableVersion) << "\",";
+        os << "\"status_text\":\"" << escape(statusText) << "\"";
+        os << "}";
+        return os.str();
+    });
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    modeController = new ModeController(gfx, touchPanel);
-    initializationScreen = new InitializationScreen(gfx);
+    modeController = new ModeController(touchPanel);
+    initializationScreen = new InitializationScreen();
 
     // Create EnvironmentInfoScreen (time, weather, temperature)
-    infoScreen = new EnvironmentInfoScreen(gfx, touchPanel);
+    infoScreen = new EnvironmentInfoScreen(touchPanel);
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
         date = internetHandler->getCurrentDate();
         time = internetHandler->getCurrentTime();
@@ -312,7 +500,7 @@ extern "C" void app_main(void) {
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen(gfx, touchPanel);
+    deviceInfoScreen = new DeviceInfoScreen(touchPanel);
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
         wifi = wifiManager->isConnected();
         internet = internetHandler->isInternetAvailable();
@@ -321,22 +509,76 @@ extern "C" void app_main(void) {
     });
     deviceInfoScreen->setBatteryCallback([]() -> DeviceBatteryStatus {
         if (batteryHandler && batteryHandler->isInitialized()) {
-            return {false, false, true, batteryHandler->getBatteryPercentage(), batteryHandler->getBatteryVoltage()};
+            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
+            const bool percentageAvailable = telemetry.percentage >= 0.0f;
+            return {false, batteryHandler->isBatteryConnected(), percentageAvailable,
+                    telemetry.percentage, telemetry.voltageVolts};
         }
-        return {false, false, false, 0.0f, 0.0f};
+        return {false, false, false, -1.0f, -1.0f};
+    });
+    deviceInfoScreen->setSoftwareUpdateStatusCallback([]() -> DeviceSoftwareUpdateState {
+        if (otaManager == nullptr) {
+            return {false, false, false, "unknown", "", "OTA manager unavailable"};
+        }
+
+        const OtaReleaseInfo info = otaManager->getReleaseInfo();
+        return {info.configured, info.busy, info.updateAvailable,
+                info.currentVersion, info.availableVersion, info.statusMessage};
+    });
+    deviceInfoScreen->setSoftwareUpdateActionCallback([]() {
+        if (otaManager == nullptr) {
+            return;
+        }
+
+        const esp_err_t err = otaManager->startReleaseUpdate(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to start release OTA update: %s", esp_err_to_name(err));
+        }
     });
 
-    soundController = new SoundController(gfx, touchPanel);
-    lightController = new LightController(gfx, touchPanel);
-    displayController = new DisplayController(gfx, touchPanel);
+    placeholderPageScreen = new PlaceholderPageScreen();
+
+    soundController = new SoundController(touchPanel);
+    lightController = new LightController(touchPanel);
+    displayController = new DisplayController(touchPanel);
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
+    displayController->registerPlaceholderScreen(placeholderPageScreen);
     displayController->registerMediaController(mediaController);
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
+    wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
+        if (commandHandler != nullptr) {
+            commandHandler->handleExternalCommand("screen:" + screen);
+            return true;
+        }
+        return displayController != nullptr && displayController->showNamedScreen(screen);
+    });
+    wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
+        return displayController != nullptr ? displayController->getModeName() : "unknown";
+    });
+    wifiManager->setSetupPortalCommandCallback([](const std::string& cmd) {
+        if (commandHandler != nullptr) commandHandler->handleExternalCommand(cmd);
+    });
+
+    // Initialize display hardware here — immediately before the display task starts
+    // so the gap between gfx->init() and the first draw is <100 ms.
+    gfx->init();
+    gfx->setRotation(0);
+    // Provide the hardware driver to LvglDisplay before any draw calls.
+    LvglDisplay::setHardware(static_cast<void*>(gfx));
+    gfx->setBrightness(0);
+    gfx->fillScreen(TFT_BLACK);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    for (int i = 0; i <= 255; i += 15) {
+        gfx->setBrightness(i);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    gfx->setBrightness(255);
+
     displayController->init();
 
     // Initialize Sleep Handler (power management)
@@ -382,6 +624,9 @@ extern "C" void app_main(void) {
     commandHandler->registerKnobController(knobController);
     commandHandler->registerMediaController(mediaController);
     commandHandler->registerOTAManager(otaManager);
+    commandHandler->setOtaConfigUpdatedCallback([]() {
+        applyOtaConfigFromNvs();
+    });
     commandHandler->begin();
 
     // Set MQTT callbacks for sound controller
@@ -443,7 +688,8 @@ extern "C" void app_main(void) {
 #endif
 
     if (startupChimeReady) {
-        xTaskCreate(startupSoundTask, "StartupSound", 4096, soundPlayer, 2, nullptr);
+        // Startup chime with 16384 byte stack to handle audio codec operations
+        xTaskCreate(startupSoundTask, "StartupSound", 16384, soundPlayer, 2, nullptr);
     }
 
     ESP_LOGI(TAG, "Tasks started.");

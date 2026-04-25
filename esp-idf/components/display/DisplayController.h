@@ -1,11 +1,12 @@
 #ifndef DISPLAY_CONTROLLER_H
 #define DISPLAY_CONTROLLER_H
 
-#include "LGFX_Config.hpp"
 #include "TouchPanel.h"
+#include <string>
+#include <atomic>
 #include <cstdint>
 
-// Forward declarations to avoid circular dependencies
+// Forward declarations
 class KnobController;
 class SoundController;
 class LightController;
@@ -13,12 +14,14 @@ class ModeController;
 class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
+class PlaceholderPageScreen;
 class MediaController;
 
 enum Mode {
   INITIALIZATION,
-  INFO,           // EnvironmentInfoScreen (time, weather, temperature)
-  DEVICE_INFO,    // DeviceInfoScreen (WiFi, internet, MQTT, battery)
+  INFO,
+  DEVICE_INFO,
+  MATRIX_PAGE,
   CALIBRATE_ORIENTATION,
   SOUND,
   LIGHT,
@@ -28,7 +31,6 @@ enum Mode {
 
 class DisplayController {
 private:
-  LGFX* gfx;
   TouchPanel* touchPanel;
   KnobController* knobController;
   SoundController* soundController;
@@ -37,26 +39,36 @@ private:
   InitializationScreen* initializationScreen;
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
+  PlaceholderPageScreen* placeholderScreen;
   MediaController* mediaController;
 
   Mode currentMode;
   int64_t lastActivityTime;
+  int64_t initializationStartTime;
   bool displayIsOn;
   int initializationProgress;
   int64_t initializationCompleteTime;
+  int currentPageX;
+  int currentPageY;
+  std::atomic<int> pendingModeRequest;
+  std::atomic<int> pendingPageRequest;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
-  
+  bool handleMatrixNavigationGesture(touch_gesture_t gesture);
+  bool navigateToMatrixPage(int x, int y);
+  void resetActiveScreen();
 
 public:
-  DisplayController(LGFX* graphics, TouchPanel* touch);
+  DisplayController(TouchPanel* touch);
   void init();
   void update();
-  
+
   void setMode(Mode mode);
   Mode getMode() const;
+  bool showNamedScreen(const std::string& screenName);
+  std::string getModeName() const;
 
   void registerKnobController(KnobController* knob);
   void registerSoundController(SoundController* sound);
@@ -65,8 +77,9 @@ public:
   void registerInitializationScreen(InitializationScreen* init);
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
+  void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
   void registerMediaController(MediaController* media);
-  
+
   void incrementSetpoint();
   void decrementSetpoint();
   void setSetpoint(int setpoint);

@@ -40,8 +40,8 @@ namespace lgfx
 
             Panel_CO5300(void)
             {
-              _cfg.memory_width  = _cfg.panel_width  = 502;
-              _cfg.memory_height = _cfg.panel_height = 410;
+              _cfg.memory_width  = _cfg.panel_width  = 466;
+              _cfg.memory_height = _cfg.panel_height = 466;
               _write_depth = color_depth_t::rgb565_2Byte;
               _read_depth = color_depth_t::rgb565_2Byte;
               _cfg.dummy_read_pixel = 1;
@@ -50,18 +50,20 @@ namespace lgfx
             const uint8_t* getInitCommands(uint8_t listno) const override
             {
               static constexpr uint8_t list0[] = {
-                0xFE, 1, 0x00, // {0xFE, {0x00}, 0x01}, //SET PAGE 00H
+                0xFE, 1, 0x20,
+                0x19, 1, 0x10,
+                0x1C, 1, 0xA0,
+                0xFE, 1, 0x00,
                 0xC4, 1, 0x80,
-                0x3A, 1, 0x55, // Interface Pixel Format: 16bit/pixel
-                0x35, 1, 0x00, // TE ON
+                0x3A, 1, 0x55,
+                0x35, 1, 0x00,
                 0x53, 1, 0x20,
+                0x51, 1, 0xFF,
                 0x63, 1, 0xFF,
-                0x2A, 4, 0x00, 0x16, 0x01, 0xAF, // SET COLUMN START ADRESS SC = 0x0016 = 22 and EC = 0x01AF = 431 (410 columns but an 22 offset)
-                0x2B, 4, 0x00, 0x00, 0x01, 0xF5, // SET ROW START ADRESS SP = 0 and EP = 0x1F5 = 501 (502 lines)
+                0x2A, 4, 0x00, 0x06, 0x01, 0xD7,
+                0x2B, 4, 0x00, 0x00, 0x01, 0xD1,
                 0x11, 0x80, 0, // Sleep out
-                0x51, 1, 0x01, // display brightness dark
                 0x29, 0x80, 0, // display on
-                0x51, 1, 0x80, // display brightness (max = 0xff)
                 0xff, 0xff // end
               };
               switch (listno) {

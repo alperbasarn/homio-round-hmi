@@ -1,9 +1,8 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -15,13 +14,14 @@ using TemperatureCallback = std::function<float()>;
 
 class EnvironmentInfoScreen {
 private:
-    LGFX* gfx;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
     bool pageBackRequested;
     bool deviceInfoRequested;
     bool lvglReady;
+    bool ignoreNextRelease;
+    int64_t activatedAtMs;
 
     // Date and time
     std::string currentDate;
@@ -51,32 +51,30 @@ private:
     // Arc configuration
     static constexpr float ARC_START_ANGLE = 120.0f;
     static constexpr float ARC_LENGTH = 300.0f;
-    static constexpr size_t OUTDOOR_SEGMENT_COUNT = 4;
     static constexpr int ARC_RANGE_MAX = 1000;
-    static constexpr int64_t ANIMATION_DURATION = 700;
+    static constexpr int64_t ANIMATION_DURATION = 950;
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
+    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
 
 
     // LVGL widgets (text + center disc + tracks only during animation)
     lv_obj_t* root;
     lv_obj_t* outdoorTrackArc;
+    lv_obj_t* outdoorArc;
     lv_obj_t* indoorArc;
-    std::array<lv_obj_t*, OUTDOOR_SEGMENT_COUNT> outdoorSegmentArcs;
     lv_obj_t* centerDisc;
     lv_obj_t* timeLabel;
     lv_obj_t* dayLabel;
     lv_obj_t* dateLabel;
     lv_obj_t* indoorTempLabel;
     lv_obj_t* outdoorTempLabel;
-    std::array<float, OUTDOOR_SEGMENT_COUNT + 1> outdoorSegmentStops;
-    std::array<int16_t, OUTDOOR_SEGMENT_COUNT> outdoorSegmentStartAngles;
-    std::array<int16_t, OUTDOOR_SEGMENT_COUNT> outdoorSegmentEndAngles;
 
     int currentIndoorArcValue;
     int currentOutdoorArcValue;
     int targetIndoorArcValue;
     int targetOutdoorArcValue;
+    bool animationPending;
 
     // Callbacks for external data
     DateTimeCallback dateTimeCallback;
@@ -88,11 +86,12 @@ private:
     void updateUi(bool forceFullRefresh);
     void positionTemperatureLabels();
     void applyIndoorArcFromValue(int value);
-    void updateOutdoorSegmentsFromValue(int value);
+    void applyOutdoorArcFromValue(int value);
 
     // Arc animations
-    void startIndoorArcAnimation(int targetValue, bool immediate = false);
-    void startOutdoorArcAnimation(int targetValue, bool immediate = false);
+    void startAnimations();
+    void startIndoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
+    void startOutdoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     static void indoorArcAnimExec(void* var, int32_t value);
     static void outdoorArcAnimExec(void* var, int32_t value);
 
@@ -112,7 +111,9 @@ private:
     }
 
 public:
-    EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch);
+    explicit EnvironmentInfoScreen(TouchPanel* touch);
+    void deactivate();
+    void activate();
 
     // Main update method
     void update();

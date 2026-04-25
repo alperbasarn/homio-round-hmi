@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "Buttons.h"
 #include "Arc.h"
@@ -22,7 +22,6 @@ using MQTTConnectedCallback = std::function<bool()>;
 
 class SoundController {
 private:
-    LGFX* gfx;
     TouchPanel* touchPanel;
 
     // Volume and state tracking
@@ -85,7 +84,7 @@ private:
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    SoundController(LGFX* graphics, TouchPanel* touch);
+    explicit SoundController(TouchPanel* touch);
 
     // Main update method
     void updateScreen();

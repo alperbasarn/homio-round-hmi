@@ -15,14 +15,14 @@
 
 // Wakeup pins - target specific
 #if CONFIG_IDF_TARGET_ESP32S3
-#define WAKEUP_PIN_TOUCH        GPIO_NUM_5   // Touch interrupt (CST816S INT direct to GPIO)
-#define WAKEUP_PIN_KNOB         GPIO_NUM_18  // UART RX from knob
+#define WAKEUP_PIN_TOUCH        TOUCH_WAKEUP_PIN
+#define WAKEUP_PIN_KNOB         KNOB_RX_PIN
 #elif CONFIG_IDF_TARGET_ESP32C6
-// C6 board: FT6146 touch INT goes through TCA9554 I2C expander (EXIO0).
+// C6 board: FT6x36-compatible touch INT goes through TCA9554 I2C expander (EXIO0).
 // TCA9554 INT# output is wired to GPIO 1 - use that as touch wake source.
-#define WAKEUP_PIN_TOUCH        GPIO_NUM_1   // TCA9554 INT# (touch INT via expander)
-#define WAKEUP_PIN_PWR_KEY      GPIO_NUM_2   // Power button (PWR_KEY)
-#define WAKEUP_PIN_KNOB         GPIO_NUM_16  // UART RX from knob
+#define WAKEUP_PIN_TOUCH        TOUCH_WAKEUP_PIN
+#define WAKEUP_PIN_PWR_KEY      PWR_KEY_PIN
+#define WAKEUP_PIN_KNOB         KNOB_RX_PIN
 #endif
 
 // Callbacks

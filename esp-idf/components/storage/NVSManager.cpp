@@ -1,19 +1,80 @@
 #include "NVSManager.h"
 #include "esp_log.h"
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <cstdio>
 
 static const char *TAG = "NVSManager";
+
+namespace {
+
+constexpr const char* kDeviceNamePrefix = "Homio-";
+constexpr const char* kDefaultDeviceSuffix = "0000";
+constexpr const char* kLegacyDeviceName = "ESP32Device";
+constexpr const char* kLegacyApPassword = "knobsetup";
+constexpr size_t kDeviceSuffixLength = 4;
+
+}  // namespace
 
 NVSManager::NVSManager()
     : lastConnectedNetworkIndex(-1),
       soundTCPServerPort(12345), lightTCPServerPort(12345),
       soundMQTTServerPort(8883), lightMQTTServerPort(8883),
-      deviceName("ESP32Device"),
+      weatherApiToken(""), weatherCity("Istanbul"), weatherCountryCode("tr"), timeApiToken(""),
+      deviceName(std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix),
+      accessPointPassword(std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix),
+    otaVariantId(""),
+    otaManifestUrl(""),
       staticIPEnabled(false),
+    staticIPSSID(""),
       staticIP("192.168.4.1"), staticGateway("192.168.4.1"),
       staticSubnet("255.255.255.0"), staticDNS1("8.8.8.8"), staticDNS2("8.8.4.4"),
       nvs_handle(0), initialized(false)
 {
+}
+
+std::string NVSManager::normalizeDeviceSuffix(const std::string& value)
+{
+    std::string normalized;
+    normalized.reserve(kDeviceSuffixLength);
+
+    for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch))) {
+            normalized.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+            if (normalized.size() == kDeviceSuffixLength) {
+                break;
+            }
+        }
+    }
+
+    if (normalized.empty()) {
+        normalized = kDefaultDeviceSuffix;
+    }
+
+    while (normalized.size() < kDeviceSuffixLength) {
+        normalized.push_back('0');
+    }
+
+    return normalized;
+}
+
+std::string NVSManager::extractDeviceSuffix(const std::string& value)
+{
+    if (value.rfind(kDeviceNamePrefix, 0) == 0) {
+        return normalizeDeviceSuffix(value.substr(std::strlen(kDeviceNamePrefix)));
+    }
+    return normalizeDeviceSuffix(value);
+}
+
+std::string NVSManager::formatDeviceName(const std::string& value)
+{
+    return std::string(kDeviceNamePrefix) + extractDeviceSuffix(value);
+}
+
+bool NVSManager::isValidAccessPointPassword(const std::string& value)
+{
+    return value.size() >= 8 && value.size() <= 63;
 }
 
 NVSManager::~NVSManager()
@@ -214,9 +275,18 @@ esp_err_t NVSManager::clearAll()
     lightMQTTUsername = "";
     lightMQTTPassword = "";
 
-    deviceName = "ESP32Device";
+    weatherApiToken = "";
+    weatherCity = "Istanbul";
+    weatherCountryCode = "tr";
+    timeApiToken = "";
+
+    deviceName = std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix;
+    accessPointPassword = deviceName;
+    otaVariantId.clear();
+    otaManifestUrl.clear();
 
     staticIPEnabled = false;
+    staticIPSSID.clear();
     staticIP = "192.168.4.1";
     staticGateway = "192.168.4.1";
     staticSubnet = "255.255.255.0";
@@ -281,18 +351,72 @@ esp_err_t NVSManager::saveLightMQTTServer(const std::string& url, int port,
     return ESP_OK;
 }
 
+esp_err_t NVSManager::saveWeatherConfig(const std::string& apiToken,
+                                        const std::string& city,
+                                        const std::string& countryCode)
+{
+    weatherApiToken = apiToken;
+    weatherCity = city;
+    weatherCountryCode = countryCode;
+
+    writeString(NVS_KEY_WEATHER_API_TOKEN, weatherApiToken);
+    writeString(NVS_KEY_WEATHER_CITY, weatherCity);
+    writeString(NVS_KEY_WEATHER_COUNTRY, weatherCountryCode);
+
+    ESP_LOGI(TAG, "Weather config saved: city=%s, country=%s", weatherCity.c_str(), weatherCountryCode.c_str());
+    return ESP_OK;
+}
+
+esp_err_t NVSManager::saveTimeApiToken(const std::string& apiToken)
+{
+    timeApiToken = apiToken;
+    writeString(NVS_KEY_TIME_API_TOKEN, timeApiToken);
+    ESP_LOGI(TAG, "Time API token saved");
+    return ESP_OK;
+}
+
 esp_err_t NVSManager::saveDeviceName(const std::string& name)
 {
-    deviceName = name;
-    writeString(NVS_KEY_DEVICE_NAME, name);
-    ESP_LOGI(TAG, "Device name saved: %s", name.c_str());
+    deviceName = formatDeviceName(name);
+    accessPointPassword = deviceName;
+    writeString(NVS_KEY_DEVICE_NAME, deviceName);
+    writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
+    ESP_LOGI(TAG, "Device name saved: %s", deviceName.c_str());
+    return ESP_OK;
+}
+
+esp_err_t NVSManager::saveAccessPointPassword(const std::string& password)
+{
+    const std::string nextPassword = password.empty() ? deviceName : password;
+    if (!isValidAccessPointPassword(nextPassword)) {
+        ESP_LOGW(TAG, "Rejected AP password update due to invalid length: %u",
+                 static_cast<unsigned>(nextPassword.size()));
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    accessPointPassword = nextPassword;
+    writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
+    ESP_LOGI(TAG, "Access point password saved");
+    return ESP_OK;
+}
+
+esp_err_t NVSManager::saveOtaConfig(const std::string& variantId, const std::string& manifestUrl)
+{
+    otaVariantId = variantId;
+    otaManifestUrl = manifestUrl;
+    writeString(NVS_KEY_OTA_VARIANT, otaVariantId);
+    writeString(NVS_KEY_OTA_MANIFEST_URL, otaManifestUrl);
+    ESP_LOGI(TAG, "OTA config saved: variant=%s, manifest=%s",
+             otaVariantId.c_str(), otaManifestUrl.c_str());
     return ESP_OK;
 }
 
 esp_err_t NVSManager::saveStaticIPConfig(bool enabled, const std::string& ip, const std::string& gateway,
-                                          const std::string& subnet, const std::string& dns1, const std::string& dns2)
+                                          const std::string& subnet, const std::string& dns1, const std::string& dns2,
+                                          const std::string& ssid)
 {
     staticIPEnabled = enabled;
+    staticIPSSID = ssid;
     staticIP = ip;
     staticGateway = gateway;
     staticSubnet = subnet;
@@ -313,6 +437,7 @@ esp_err_t NVSManager::saveStaticIPConfig(bool enabled, const std::string& ip, co
 esp_err_t NVSManager::loadStaticIPConfig()
 {
     readBool(NVS_KEY_STATIC_ENABLED, staticIPEnabled, false);
+    readString(NVS_KEY_STATIC_SSID, staticIPSSID, "");
     readString(NVS_KEY_STATIC_IP, staticIP, "192.168.4.1");
     readString(NVS_KEY_STATIC_GATEWAY, staticGateway, "192.168.4.1");
     readString(NVS_KEY_STATIC_SUBNET, staticSubnet, "255.255.255.0");
@@ -352,8 +477,35 @@ esp_err_t NVSManager::loadAllConfigurations()
     readString(NVS_KEY_LIGHT_MQTT_USER, lightMQTTUsername, "");
     readString(NVS_KEY_LIGHT_MQTT_PASS, lightMQTTPassword, "");
 
-    // Device name
-    readString(NVS_KEY_DEVICE_NAME, deviceName, "ESP32Device");
+    // Weather and time settings
+    readString(NVS_KEY_WEATHER_API_TOKEN, weatherApiToken, "");
+    readString(NVS_KEY_WEATHER_CITY, weatherCity, "Istanbul");
+    readString(NVS_KEY_WEATHER_COUNTRY, weatherCountryCode, "tr");
+    readString(NVS_KEY_TIME_API_TOKEN, timeApiToken, "");
+
+    // Device name / AP credentials
+    readString(NVS_KEY_DEVICE_NAME, deviceName, std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix);
+    if (deviceName.empty() || deviceName == kLegacyDeviceName) {
+        deviceName = std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix;
+        writeString(NVS_KEY_DEVICE_NAME, deviceName);
+    } else {
+        const std::string normalizedDeviceName = formatDeviceName(deviceName);
+        if (normalizedDeviceName != deviceName) {
+            deviceName = normalizedDeviceName;
+            writeString(NVS_KEY_DEVICE_NAME, deviceName);
+        }
+    }
+
+    readString(NVS_KEY_AP_PASSWORD, accessPointPassword, deviceName);
+    if (accessPointPassword.empty() || accessPointPassword == kLegacyApPassword ||
+        !isValidAccessPointPassword(accessPointPassword)) {
+        accessPointPassword = deviceName;
+        writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
+    }
+
+    // OTA settings
+    readString(NVS_KEY_OTA_VARIANT, otaVariantId, "");
+    readString(NVS_KEY_OTA_MANIFEST_URL, otaManifestUrl, "");
 
     // Static IP
     loadStaticIPConfig();
@@ -367,6 +519,9 @@ std::string NVSManager::getConfigurationInfo()
     std::string info = "=== CONFIGURATION INFO ===\n";
 
     info += "Device Name: " + deviceName + "\n\n";
+    info += "AP Password: ";
+    info += accessPointPassword.empty() ? "Not Set" : "Configured";
+    info += "\n\n";
 
     info += "WiFi Networks:\n";
     for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
@@ -396,6 +551,17 @@ std::string NVSManager::getConfigurationInfo()
     info += "  URL: " + (lightMQTTServerURL.empty() ? "Not Set" : lightMQTTServerURL) + "\n";
     info += "  Port: " + std::to_string(lightMQTTServerPort) + "\n";
     info += "  Username: " + (lightMQTTUsername.empty() ? "Not Set" : lightMQTTUsername) + "\n\n";
+
+    info += "Weather:\n";
+    info += "  City: " + weatherCity + "\n";
+    info += "  Country: " + weatherCountryCode + "\n";
+    info += "  API Token: ";
+    info += (weatherApiToken.empty() ? "Not Set" : "Configured");
+    info += "\n\n";
+
+    info += "Time API Token: ";
+    info += (timeApiToken.empty() ? "Not Set" : "Configured");
+    info += "\n\n";
 
     info += getStaticIPInfo();
 

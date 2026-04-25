@@ -5,8 +5,8 @@
 
 static const char* TAG = "LightCtrl";
 
-LightController::LightController(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics), touchPanel(touch),
+LightController::LightController(TouchPanel* touch)
+    : touchPanel(touch),
       setpoint(50), lastSetpoint(-1), lastSentSetpoint(-1), lastSentColor(0),
       lastSetpointChangeTime(0), lastColorChangeTime(0), lastWaterLevelSentTime(0),
       lastSetPointDrawnTime(0), lastScreenUpdateTime(0), lastSetpointQueryTime(0),
@@ -36,30 +36,31 @@ uint16_t LightController::hsvToRgb565(float hue, float saturation, float value) 
         default: r = g = b = 0; break;
     }
 
-    uint8_t red = static_cast<uint8_t>(r * 255);
+    uint8_t red   = static_cast<uint8_t>(r * 255);
     uint8_t green = static_cast<uint8_t>(g * 255);
-    uint8_t blue = static_cast<uint8_t>(b * 255);
+    uint8_t blue  = static_cast<uint8_t>(b * 255);
 
-    return gfx->color565(red, green, blue);
+    return LvglDisplay::color565(red, green, blue);
 }
 
 void LightController::drawSetPoint() {
-    int height = gfx->height();
-    int width = gfx->width();
-    int waterLevelHeight = (waterLevel * height) / 100;
+    const int h = LvglDisplay::getHeight();
+    const int w = LvglDisplay::getWidth();
+    const int wlh = (waterLevel * h) / 100;
+    const uint16_t color565 = hsvToRgb565(colorHue, 1.0f, 1.0f);
+    const uint32_t color888 = ((static_cast<uint32_t>((color565 >> 11) & 0x1F) * 255 / 31) << 16)
+                            | ((static_cast<uint32_t>((color565 >>  5) & 0x3F) * 255 / 63) <<  8)
+                            |  (static_cast<uint32_t>( color565        & 0x1F) * 255 / 31);
+    const int lastWlh = (lastWaterLevel * h) / 100;
+    const int clearH = std::abs(wlh - lastWlh);
+    const int clearY = h - std::max(wlh, lastWlh);
 
-    uint16_t color = hsvToRgb565(colorHue, 1.0f, 1.0f);
-
-    int lastWaterLevelHeight = (lastWaterLevel * height) / 100;
-    int clearHeight = std::abs(waterLevelHeight - lastWaterLevelHeight);
-    int clearY = height - std::max(waterLevelHeight, lastWaterLevelHeight);
-
-    gfx->fillRect(0, clearY, width, clearHeight, TFT_BLACK);
-    gfx->fillRect(0, height - waterLevelHeight, width, waterLevelHeight, color);
+    LvglDisplay::fillRect(0, clearY, w, clearH, 0x000000);
+    LvglDisplay::fillRect(0, h - wlh, w, wlh, color888);
 
     lastWaterLevel = waterLevel;
-    lastColorHue = colorHue;
-    lastSetpoint = setpoint;
+    lastColorHue   = colorHue;
+    lastSetpoint   = setpoint;
 }
 
 void LightController::incrementSetpoint() {
@@ -115,8 +116,8 @@ void LightController::checkTouchInput() {
     if (touchPanel->isPressed()) {
         int touchX = touchPanel->getTouchX();
         int touchY = touchPanel->getTouchY();
-        int screenWidth = gfx->width();
-        int screenHeight = gfx->height();
+        int screenWidth  = LvglDisplay::getWidth();
+        int screenHeight = LvglDisplay::getHeight();
 
         if (touchPanel->getHasNewPress()) {
             firstTouchX = touchX;
@@ -188,11 +189,7 @@ void LightController::sendSetpointToServer() {
 }
 
 void LightController::drawStaticElements() {
-    if (!gfx) {
-        ESP_LOGE(TAG, "gfx is NULL");
-        return;
-    }
-    gfx->fillScreen(TFT_BLACK);
+    LvglDisplay::fillScreen(0x000000);
     drawSetPoint();
 }
 
@@ -214,36 +211,28 @@ void LightController::resetPageBackRequest() {
 }
 
 void LightController::drawModeText() {
-    int screenWidth = gfx->width();
-    int screenHeight = gfx->height();
-
-    // Scale for display size
-    int textScale = std::max(1, screenWidth / 120);
-    gfx->setTextSize(textScale);
-    gfx->setTextColor(TFT_WHITE);
+    const int sw = LvglDisplay::getWidth();
+    const int sh = LvglDisplay::getHeight();
+    const int textScale = std::max(1, sw / 120);
+    LvglDisplay::setTextSize(textScale);
+    LvglDisplay::setTextColor(0xFFFFFF);
 
     const char* modeText;
     switch (currentMode) {
-        case LED_MODE_STATIC: modeText = "Static"; break;
-        case LED_MODE_GLOW: modeText = "Glow"; break;
+        case LED_MODE_STATIC:  modeText = "Static";  break;
+        case LED_MODE_GLOW:    modeText = "Glow";    break;
         case LED_MODE_RAINBOW: modeText = "Rainbow"; break;
-        default: modeText = "Unknown"; break;
+        default:               modeText = "Unknown"; break;
     }
 
-    int textWidth = gfx->textWidth(modeText);
-    gfx->setCursor((screenWidth - textWidth) / 2, screenHeight - 30 * screenWidth / 240);
-    gfx->print(modeText);
+    int tw = LvglDisplay::textWidth(modeText);
+    LvglDisplay::setCursor((sw - tw) / 2, sh - 30 * sw / 240);
+    LvglDisplay::print(modeText);
 
-    // Draw navigation triangles
-    int triSize = 20 * screenWidth / 240;
-    int triY = screenHeight - 20 * screenWidth / 240;
-
-    // Back triangle (left)
-    gfx->fillTriangle(10, triY, 10 + triSize, triY - triSize, 10 + triSize, triY + triSize / 2, TFT_WHITE);
-
-    // Forward triangle (right)
-    gfx->fillTriangle(screenWidth - 10, triY, screenWidth - 10 - triSize, triY - triSize,
-                      screenWidth - 10 - triSize, triY + triSize / 2, TFT_WHITE);
+    const int triSize = 20 * sw / 240;
+    const int triY    = sh - 20 * sw / 240;
+    LvglDisplay::fillTriangle(10, triY, 10 + triSize, triY - triSize, 10 + triSize, triY + triSize/2, 0xFFFFFF);
+    LvglDisplay::fillTriangle(sw - 10, triY, sw - 10 - triSize, triY - triSize, sw - 10 - triSize, triY + triSize/2, 0xFFFFFF);
 }
 
 void LightController::handleModeChange() {

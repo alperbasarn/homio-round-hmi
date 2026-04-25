@@ -11,12 +11,13 @@ constexpr const char* TAG = "DeviceInfoScreen";
 
 }  // namespace
 
-DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics),
-      touchPanel(touch),
+DeviceInfoScreen::DeviceInfoScreen(TouchPanel* touch)
+    : touchPanel(touch),
       screenInitialized(false),
       pageBackRequested(false),
       lvglReady(false),
+            ignoreNextRelease(false),
+            activatedAtMs(0),
       wifiConnected(false),
       internetConnected(false),
       mqttConnected(false),
@@ -25,9 +26,16 @@ DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
       batteryPresenceKnown(false),
       batteryConnected(false),
       batteryPercentageAvailable(false),
-      batteryPercentage(0.0f),
-      batteryVoltage(0.0f),
+      batteryPercentage(-1.0f),
+      batteryVoltage(-1.0f),
       batteryChanged(true),
+    softwareChanged(true),
+    softwareUpdateConfigured(false),
+    softwareUpdateBusy(false),
+    softwareUpdateAvailable(false),
+    currentSoftwareVersion("unknown"),
+    availableSoftwareVersion(""),
+    softwareStatusText("Ready to check for updates"),
       lastActivityTime(0),
       lastUpdateTime(0),
       root(nullptr),
@@ -42,7 +50,21 @@ DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
       batteryStatusLabel(nullptr),
       batteryPercentIconLabel(nullptr),
       batteryPercentLabel(nullptr),
+    softwareIconLabel(nullptr),
+    softwareVersionLabel(nullptr),
+    updateButton(nullptr),
+    updateButtonLabel(nullptr),
+    softwareStatusLabel(nullptr),
       swipeHintLabel(nullptr) {
+}
+
+void DeviceInfoScreen::activate() {
+    pageBackRequested = false;
+    activatedAtMs = millis();
+    ignoreNextRelease = (touchPanel != nullptr) &&
+                (touchPanel->isPressed() ||
+                 touchPanel->getHasNewRelease() ||
+                 touchPanel->getHasNewHoldRelease());
 }
 
 void DeviceInfoScreen::update() {
@@ -51,6 +73,7 @@ void DeviceInfoScreen::update() {
     // Poll network and battery status periodically
     if (currentMillis - lastUpdateTime >= UPDATE_INTERVAL) {
         updateNetworkStatus();
+        updateSoftwareUpdateState();
 
         if (batteryCallback) {
             const DeviceBatteryStatus newBattery = batteryCallback();
@@ -82,40 +105,17 @@ void DeviceInfoScreen::update() {
         updateUi(forceFullRefresh);
         LvglDisplay::taskHandler();
     }
-
-    // Handle touch gestures
-    if (touchPanel && touchPanel->getHasNewGesture()) {
-        resetLastActivityTime();
-        touch_gesture_t touchGesture = touchPanel->getLastGesture();
-
-        if (touchGesture == GESTURE_SWIPE_DOWN) {
-            pageBackRequested = true;
-            screenInitialized = false;
-            if (root) {
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Swipe down detected, navigating back to environment info");
-        }
-    }
-
-    // Also navigate back on tap
-    if (touchPanel && touchPanel->getHasNewRelease()) {
-        resetLastActivityTime();
-        pageBackRequested = true;
-        screenInitialized = false;
-        if (root) {
-            lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
-        }
-        ESP_LOGI(TAG, "Tap release detected, navigating back");
-    }
 }
 
 void DeviceInfoScreen::ensureUi() {
     if (lvglReady) {
+        if (root == nullptr) {
+            buildUi();
+        }
         return;
     }
 
-    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init()) {
         ESP_LOGE(TAG, "LVGL display init failed");
         return;
     }
@@ -129,8 +129,8 @@ void DeviceInfoScreen::buildUi() {
         return;
     }
 
-    const int displayW = gfx->width();
-    const int displayH = gfx->height();
+    const int displayW = LvglDisplay::getWidth();
+    const int displayH = LvglDisplay::getHeight();
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
     lv_obj_set_size(root, displayW, displayH);
@@ -147,14 +147,36 @@ void DeviceInfoScreen::buildUi() {
     lv_obj_align(titleLabel, LV_ALIGN_TOP_MID, 0, std::max(scalePx(20), displayH / 12));
 
     // Keep text rows responsive for both 240x240 and 466x466 displays.
-    const int rowCount = 5;
-    const int topInset = std::max(scalePx(56), displayH / 7);
-    const int bottomInset = std::max(scalePx(45), displayH / 8);
+    const int rowCount = 6;
+    const int topInset = std::max(scalePx(108), displayH / 4);
+    const int bottomInset = std::max(scalePx(54), displayH / 7);
     const int availableHeight = std::max(1, displayH - topInset - bottomInset);
     const int itemSpacing = std::max(scalePx(24), availableHeight / rowCount);
     const int startY = topInset;
     const int labelX = displayW / 5;
     const int valueX = (displayW * 3) / 5;
+
+    updateButton = lv_btn_create(root);
+    lv_obj_set_size(updateButton, std::max(scalePx(154), displayW / 2), std::max(scalePx(34), displayH / 13));
+    lv_obj_align(updateButton, LV_ALIGN_TOP_MID, 0, std::max(scalePx(42), displayH / 8));
+    lv_obj_set_style_bg_color(updateButton, lv_color_hex(0x2D6CDF), 0);
+    lv_obj_set_style_bg_opa(updateButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(updateButton, scalePx(10), 0);
+    lv_obj_add_event_cb(updateButton, updateButtonEventHandler, LV_EVENT_CLICKED, this);
+    lv_obj_add_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+
+    updateButtonLabel = lv_label_create(updateButton);
+    lv_obj_set_style_text_color(updateButtonLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(updateButtonLabel, "Update Software");
+    lv_obj_center(updateButtonLabel);
+
+    softwareStatusLabel = lv_label_create(root);
+    lv_obj_set_width(softwareStatusLabel, displayW - 2 * std::max(scalePx(18), displayW / 12));
+    lv_obj_set_style_text_align(softwareStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(softwareStatusLabel, lv_color_hex(0x9BA7B6), 0);
+    lv_label_set_text(softwareStatusLabel, "");
+    lv_obj_align_to(softwareStatusLabel, updateButton, LV_ALIGN_OUT_BOTTOM_MID, 0, scalePx(8));
+    lv_obj_add_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
     // WiFi Status
     wifiIconLabel = lv_label_create(root);
@@ -197,7 +219,7 @@ void DeviceInfoScreen::buildUi() {
 
     batteryStatusLabel = lv_label_create(root);
     lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
-    lv_label_set_text(batteryStatusLabel, "Unknown (ADC)");
+    lv_label_set_text(batteryStatusLabel, "Telemetry unavailable");
     lv_obj_set_pos(batteryStatusLabel, valueX, startY + itemSpacing * 3);
 
     batteryPercentIconLabel = lv_label_create(root);
@@ -209,6 +231,17 @@ void DeviceInfoScreen::buildUi() {
     lv_obj_set_style_text_color(batteryPercentLabel, lv_color_hex(0x9BA7B6), 0);
     lv_label_set_text(batteryPercentLabel, "N/A");
     lv_obj_set_pos(batteryPercentLabel, valueX, startY + itemSpacing * 4);
+
+    // Software version
+    softwareIconLabel = lv_label_create(root);
+    lv_obj_set_style_text_color(softwareIconLabel, lv_color_hex(0x8A97A8), 0);
+    lv_label_set_text(softwareIconLabel, "Software");
+    lv_obj_set_pos(softwareIconLabel, labelX, startY + itemSpacing * 5);
+
+    softwareVersionLabel = lv_label_create(root);
+    lv_obj_set_style_text_color(softwareVersionLabel, lv_color_hex(0x9BA7B6), 0);
+    lv_label_set_text(softwareVersionLabel, "unknown");
+    lv_obj_set_pos(softwareVersionLabel, valueX, startY + itemSpacing * 5);
 
     // Swipe hint
     swipeHintLabel = lv_label_create(root);
@@ -229,6 +262,7 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
         screenInitialized = true;
         networkStatusChanged = true;
         batteryChanged = true;
+        softwareChanged = true;
         LvglDisplay::invalidateScreen();
     }
 
@@ -266,9 +300,16 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
     }
 
     if (batteryChanged || forceFullRefresh) {
+        const bool telemetryAvailable = batteryPercentageAvailable || batteryVoltage >= 0.0f;
+
         if (!batteryPresenceKnown) {
-            lv_label_set_text(batteryStatusLabel, "Unknown (ADC)");
-            lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
+            if (telemetryAvailable) {
+                lv_label_set_text(batteryStatusLabel, "Presence unknown");
+                lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0xD7C06E), 0);
+            } else {
+                lv_label_set_text(batteryStatusLabel, "Telemetry unavailable");
+                lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0x9BA7B6), 0);
+            }
         } else if (batteryConnected) {
             lv_label_set_text(batteryStatusLabel, "Connected");
             lv_obj_set_style_text_color(batteryStatusLabel, lv_color_hex(0x7CD97A), 0);
@@ -293,6 +334,45 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
 
         batteryChanged = false;
     }
+
+    if (softwareChanged || forceFullRefresh) {
+        const bool showUpdateAction = softwareUpdateBusy || softwareUpdateAvailable;
+
+        if (softwareUpdateAvailable && !availableSoftwareVersion.empty()) {
+            lv_label_set_text_fmt(softwareVersionLabel, "%s -> %s",
+                                  currentSoftwareVersion.c_str(), availableSoftwareVersion.c_str());
+            lv_obj_set_style_text_color(softwareVersionLabel, lv_color_hex(0x7CD97A), 0);
+        } else {
+            lv_label_set_text(softwareVersionLabel, currentSoftwareVersion.c_str());
+            lv_obj_set_style_text_color(softwareVersionLabel, lv_color_hex(0x9BA7B6), 0);
+        }
+
+        lv_label_set_text(softwareStatusLabel, softwareStatusText.c_str());
+        lv_obj_set_style_text_color(softwareStatusLabel,
+                                    softwareUpdateAvailable ? lv_color_hex(0x7CD97A) : lv_color_hex(0x9BA7B6),
+                                    0);
+
+        if (showUpdateAction) {
+            lv_obj_clear_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(updateButton, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(softwareStatusLabel, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if (softwareUpdateBusy) {
+            lv_obj_add_state(updateButton, LV_STATE_DISABLED);
+            lv_label_set_text(updateButtonLabel, "Updating...");
+        } else if (softwareUpdateAvailable && !availableSoftwareVersion.empty()) {
+            lv_obj_clear_state(updateButton, LV_STATE_DISABLED);
+            lv_label_set_text_fmt(updateButtonLabel, "Update to %s", availableSoftwareVersion.c_str());
+        } else {
+            lv_obj_add_state(updateButton, LV_STATE_DISABLED);
+            lv_label_set_text(updateButtonLabel, "Update Software");
+        }
+
+        softwareChanged = false;
+    }
 }
 
 void DeviceInfoScreen::updateNetworkStatus() {
@@ -316,8 +396,30 @@ void DeviceInfoScreen::updateNetworkStatus() {
     }
 }
 
+void DeviceInfoScreen::updateSoftwareUpdateState() {
+    if (!softwareUpdateStatusCallback) {
+        return;
+    }
+
+    const DeviceSoftwareUpdateState nextState = softwareUpdateStatusCallback();
+    if (nextState.configured != softwareUpdateConfigured ||
+        nextState.busy != softwareUpdateBusy ||
+        nextState.updateAvailable != softwareUpdateAvailable ||
+        nextState.currentVersion != currentSoftwareVersion ||
+        nextState.availableVersion != availableSoftwareVersion ||
+        nextState.statusText != softwareStatusText) {
+        softwareUpdateConfigured = nextState.configured;
+        softwareUpdateBusy = nextState.busy;
+        softwareUpdateAvailable = nextState.updateAvailable;
+        currentSoftwareVersion = nextState.currentVersion;
+        availableSoftwareVersion = nextState.availableVersion;
+        softwareStatusText = nextState.statusText;
+        softwareChanged = true;
+    }
+}
+
 int DeviceInfoScreen::scalePx(int referencePx) const {
-    return std::max(1, (referencePx * gfx->width()) / 240);
+    return std::max(1, (referencePx * LvglDisplay::getWidth()) / 240);
 }
 
 lv_color_t DeviceInfoScreen::getBatteryColor(float percentage) const {
@@ -340,6 +442,22 @@ std::string DeviceInfoScreen::getWifiStrengthBars(int strength) const {
     return "[|||]";
 }
 
+void DeviceInfoScreen::updateButtonEventHandler(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    auto* self = static_cast<DeviceInfoScreen*>(lv_event_get_user_data(event));
+    if (self == nullptr) {
+        return;
+    }
+
+    self->resetLastActivityTime();
+    if (self->softwareUpdateActionCallback) {
+        self->softwareUpdateActionCallback();
+    }
+}
+
 void DeviceInfoScreen::resetLastActivityTime() {
     lastActivityTime = millis();
 }
@@ -352,13 +470,62 @@ void DeviceInfoScreen::resetPageBackRequest() {
     pageBackRequested = false;
 }
 
+void DeviceInfoScreen::deactivate() {
+    screenInitialized = false;
+    if (root != nullptr) {
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+        lv_obj_del(root);
+        root = nullptr;
+        titleLabel = nullptr;
+        wifiIconLabel = nullptr;
+        wifiStatusLabel = nullptr;
+        internetIconLabel = nullptr;
+        internetStatusLabel = nullptr;
+        mqttIconLabel = nullptr;
+        mqttStatusLabel = nullptr;
+        batteryIconLabel = nullptr;
+        batteryStatusLabel = nullptr;
+        batteryPercentIconLabel = nullptr;
+        batteryPercentLabel = nullptr;
+        softwareIconLabel = nullptr;
+        softwareVersionLabel = nullptr;
+        updateButton = nullptr;
+        updateButtonLabel = nullptr;
+        softwareStatusLabel = nullptr;
+        swipeHintLabel = nullptr;
+    }
+}
+
 void DeviceInfoScreen::resetScreen() {
     ESP_LOGI(TAG, "resetScreen called - forcing redraw");
     screenInitialized = false;
     networkStatusChanged = true;
     batteryChanged = true;
+    softwareChanged = true;
+
     if (root != nullptr) {
-        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_del(root);
+        root = nullptr;
+        titleLabel = nullptr;
+        wifiIconLabel = nullptr;
+        wifiStatusLabel = nullptr;
+        internetIconLabel = nullptr;
+        internetStatusLabel = nullptr;
+        mqttIconLabel = nullptr;
+        mqttStatusLabel = nullptr;
+        batteryIconLabel = nullptr;
+        batteryStatusLabel = nullptr;
+        batteryPercentIconLabel = nullptr;
+        batteryPercentLabel = nullptr;
+        softwareIconLabel = nullptr;
+        softwareVersionLabel = nullptr;
+        updateButton = nullptr;
+        updateButtonLabel = nullptr;
+        softwareStatusLabel = nullptr;
+        swipeHintLabel = nullptr;
     }
+
+    activate();
     LvglDisplay::invalidateScreen();
 }

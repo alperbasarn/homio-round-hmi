@@ -1,5 +1,5 @@
 # ESP32-C6 Specific Configuration
-# Target: Waveshare ESP32-C6-Touch-AMOLED-1.43 with RM67162
+# Target: Waveshare ESP32-C6-Touch-AMOLED-1.43 with SH8601-compatible QSPI AMOLED
 
 CONFIG_IDF_TARGET="esp32c6"
 

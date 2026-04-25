@@ -4,6 +4,7 @@
 #include <cmath>
 #include <vector>
 
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -16,7 +17,6 @@ constexpr float MIN_VOLUME = 0.0f;
 constexpr float MAX_VOLUME = 1.0f;
 
 // ES8311 Audio Codec registers
-constexpr uint8_t ES8311_ADDR = 0x18;
 constexpr uint8_t ES8311_REG00_RESET = 0x00;
 constexpr uint8_t ES8311_REG01_CLK_MANAGER = 0x01;
 constexpr uint8_t ES8311_REG02_CLK_MANAGER = 0x02;
@@ -455,7 +455,7 @@ esp_err_t es8311EnsureDevice() {
     // Add ES8311 device to I2C bus
     i2c_device_config_t devCfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ES8311_ADDR,
+        .device_address = static_cast<uint16_t>(AUDIO_CODEC_I2C_ADDR),
         .scl_speed_hz = 100000,
         .scl_wait_us = 0,
         .flags = {
@@ -632,6 +632,11 @@ Speaker::~Speaker() {
 }
 
 esp_err_t Speaker::initialize(uint32_t sampleRate, uint8_t channels, uint8_t bitsPerSample) {
+#if QNOB_AUDIO_OUTPUT_BACKEND == QNOB_AUDIO_OUTPUT_BACKEND_NONE
+    ESP_LOGI(TAG, "Audio output is disabled for this board");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     if (initialized &&
         currentSampleRate == sampleRate &&
         currentChannels == channels &&
@@ -650,17 +655,28 @@ esp_err_t Speaker::initialize(uint32_t sampleRate, uint8_t channels, uint8_t bit
     // Give the clocks a moment to stabilize before touching the codec.
     vTaskDelay(pdMS_TO_TICKS(10));
 
+#if QNOB_AUDIO_CODEC == QNOB_AUDIO_CODEC_ES8311
     err = es8311Configure(sampleRate, bitsPerSample);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "ES8311 codec init failed: %s (continuing without codec)", esp_err_to_name(err));
+        ESP_LOGE(TAG, "ES8311 codec init failed: %s", esp_err_to_name(err));
+        deinitialize();
+        return err;
     }
+#elif QNOB_AUDIO_CODEC != QNOB_AUDIO_CODEC_NONE
+    ESP_LOGE(TAG, "Unsupported audio codec backend: %d", QNOB_AUDIO_CODEC);
+    deinitialize();
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 
+#if QNOB_AUDIO_AMP_BACKEND != QNOB_AUDIO_AMP_BACKEND_NONE
     err = enableAmplifier();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Speaker amplifier enable failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Speaker amplifier enabled");
+        ESP_LOGE(TAG, "Speaker amplifier enable failed: %s", esp_err_to_name(err));
+        deinitialize();
+        return err;
     }
+    ESP_LOGI(TAG, "Speaker amplifier enabled");
+#endif
 
     initialized = true;
     currentSampleRate = sampleRate;
@@ -731,10 +747,32 @@ void Speaker::setSoftwareVolume(float volume) {
 }
 
 esp_err_t Speaker::enableAmplifier() {
+#if QNOB_AUDIO_AMP_BACKEND == QNOB_AUDIO_AMP_BACKEND_GPIO
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << AUDIO_PA_EN_GPIO_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return gpio_set_level(static_cast<gpio_num_t>(AUDIO_PA_EN_GPIO_PIN), 1);
+#elif QNOB_AUDIO_AMP_BACKEND == QNOB_AUDIO_AMP_BACKEND_EXIO
     return hal_exio_set_pin_output_level(AUDIO_PA_EN_EXIO_BIT, true);
+#else
+    return ESP_OK;
+#endif
 }
 
 esp_err_t Speaker::configure(uint32_t sampleRate, uint8_t channels, uint8_t bitsPerSample) {
+#if QNOB_AUDIO_OUTPUT_BACKEND != QNOB_AUDIO_OUTPUT_BACKEND_I2S
+    ESP_LOGE(TAG, "Unsupported audio output backend: %d", QNOB_AUDIO_OUTPUT_BACKEND);
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(AUDIO_I2S_PORT, I2S_ROLE_MASTER);
     chanCfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&chanCfg, &txChannel, nullptr);

@@ -1,5 +1,6 @@
 #include "InternetHandler.h"
 #include "WiFiManager.h"
+#include "NVSManager.h"
 #include "TimeHandler.h"
 #include "WeatherHandler.h"
 #include "esp_log.h"
@@ -9,7 +10,7 @@
 
 static const char* TAG = "InternetHandler";
 
-InternetHandler::InternetHandler(WiFiManager* wifiManager)
+InternetHandler::InternetHandler(WiFiManager* wifiManager, NVSManager* nvsManager)
     : wifiManager(wifiManager),
       timeHandler(nullptr),
       weatherHandler(nullptr),
@@ -21,8 +22,18 @@ InternetHandler::InternetHandler(WiFiManager* wifiManager)
     // Create TimeHandler (default timezone GMT+3 for Turkey)
     timeHandler = new TimeHandler(3);
 
-    // Create WeatherHandler
-    weatherHandler = new WeatherHandler();
+    const std::string weatherToken = (nvsManager != nullptr && !nvsManager->weatherApiToken.empty())
+        ? nvsManager->weatherApiToken
+        : "b105aa78626cfb20db2d2669aaa09cd7";
+    const std::string weatherCity = (nvsManager != nullptr && !nvsManager->weatherCity.empty())
+        ? nvsManager->weatherCity
+        : "Istanbul";
+    const std::string weatherCountry = (nvsManager != nullptr && !nvsManager->weatherCountryCode.empty())
+        ? nvsManager->weatherCountryCode
+        : "tr";
+
+    // Create WeatherHandler from persisted settings
+    weatherHandler = new WeatherHandler(weatherToken, weatherCity, weatherCountry);
 
     // Set up the internet check callback for WeatherHandler
     weatherHandler->setInternetCheckCallback([this]() {
