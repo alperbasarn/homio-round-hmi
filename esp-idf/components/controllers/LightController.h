@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
 #include <cstdint>
@@ -21,7 +21,6 @@ using LightMQTTConfiguredCallback = std::function<bool()>;
 
 class LightController {
 private:
-    LGFX* gfx;
     TouchPanel* touchPanel;
 
     // Setpoint and state
@@ -84,7 +83,7 @@ private:
     }
 
 public:
-    LightController(LGFX* graphics, TouchPanel* touch);
+    explicit LightController(TouchPanel* touch);
 
     // Main update method
     void updateScreen();

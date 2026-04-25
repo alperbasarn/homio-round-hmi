@@ -85,6 +85,37 @@ uint32_t decodeLittleEndianU32(const uint8_t* bytes)
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
+void transformTouchCoordinates(uint16_t* x, uint16_t* y)
+{
+    if (x == nullptr || y == nullptr) {
+        return;
+    }
+
+    uint16_t tx = *x;
+    uint16_t ty = *y;
+
+#if TOUCH_SWAP_XY
+    const uint16_t tmp = tx;
+    tx = ty;
+    ty = tmp;
+#endif
+
+#if TOUCH_MIRROR_X
+    if (tx < DISPLAY_WIDTH) {
+        tx = static_cast<uint16_t>((DISPLAY_WIDTH - 1) - tx);
+    }
+#endif
+
+#if TOUCH_MIRROR_Y
+    if (ty < DISPLAY_HEIGHT) {
+        ty = static_cast<uint16_t>((DISPLAY_HEIGHT - 1) - ty);
+    }
+#endif
+
+    *x = tx;
+    *y = ty;
+}
+
 }  // namespace
 
 TouchPanel::TouchPanel(int sda, int scl, int rst, int irq)
@@ -386,6 +417,8 @@ bool TouchPanel::readCst9217TouchData(touch_data_t* data)
     data->y = static_cast<uint16_t>((point[2] << 4) | (point[3] & 0x0F));
     data->gesture = GESTURE_NONE;
 
+    transformTouchCoordinates(&data->x, &data->y);
+
     if (data->x >= DISPLAY_WIDTH) {
         data->x = DISPLAY_WIDTH - 1;
     }
@@ -433,6 +466,9 @@ bool TouchPanel::readTouchData(touch_data_t* data)
     data->fingers = points;
     data->x = ((xy[0] & 0x0F) << 8) | xy[1];
     data->y = ((xy[2] & 0x0F) << 8) | xy[3];
+
+    transformTouchCoordinates(&data->x, &data->y);
+
     if (data->x >= DISPLAY_WIDTH) {
         data->x = DISPLAY_WIDTH - 1;
     }

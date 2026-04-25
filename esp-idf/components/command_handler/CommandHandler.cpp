@@ -63,6 +63,10 @@ void CommandHandler::registerOTAManager(OTAManager* ota) {
     otaManager = ota;
 }
 
+void CommandHandler::setOtaConfigUpdatedCallback(std::function<void(void)> callback) {
+    otaConfigUpdatedCallback = std::move(callback);
+}
+
 void CommandHandler::update() {
     // Process serial commands from console (stdin)
     char data[128];
@@ -161,6 +165,34 @@ std::string CommandHandler::trimCommand(const std::string& command) {
     return result;
 }
 
+std::string CommandHandler::urlDecode(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const char hex[3] = {value[i + 1], value[i + 2], '\0'};
+            out.push_back(static_cast<char>(strtol(hex, nullptr, 16)));
+            i += 2;
+        } else if (value[i] == '+') {
+            out.push_back(' ');
+        } else {
+            out.push_back(value[i]);
+        }
+    }
+    return out;
+}
+
+std::string CommandHandler::getFormValue(const std::string& body, const std::string& key) {
+    const std::string needle = key + "=";
+    size_t pos = body.find(needle);
+    if (pos == std::string::npos) {
+        return "";
+    }
+    pos += needle.size();
+    size_t end = body.find('&', pos);
+    return urlDecode(body.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
+}
+
 void CommandHandler::publishResponse(const std::string& response) {
     if (!mqttManager || !mqttManager->isConnected()) {
         return;
@@ -197,7 +229,20 @@ void CommandHandler::registerCommands() {
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
+    commands["portalDevice"] = {"portalDevice", [this](const std::string& p) { this->cmdPortalDevice(p); }, "Web portal device form"};
+    commands["portalWifi"] = {"portalWifi", [this](const std::string& p) { this->cmdPortalWifi(p); }, "Web portal wifi form"};
+    commands["portalStaticIpCurrent"] = {"portalStaticIpCurrent", [this](const std::string& p) { this->cmdPortalStaticIpCurrent(p); }, "Web portal static IP from current connection"};
+    commands["portalMqtt"] = {"portalMqtt", [this](const std::string& p) { this->cmdPortalMqtt(p); }, "Web portal MQTT form"};
+    commands["portalWeather"] = {"portalWeather", [this](const std::string& p) { this->cmdPortalWeather(p); }, "Web portal weather form"};
+    commands["portalTime"] = {"portalTime", [this](const std::string& p) { this->cmdPortalTime(p); }, "Web portal time form"};
+    commands["portalOta"] = {"portalOta", [this](const std::string& p) { this->cmdPortalOta(p); }, "Web portal OTA form/actions"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
+    commands["screen"] = {"screen", [this](const std::string& p) {
+        if (displayController) {
+            displayController->showNamedScreen(p);
+            ESP_LOGI("CommandHandler", "Screen switch requested: %s", p.c_str());
+        }
+    }, "screen:NAME - Switch to named screen (info, deviceInfo, timer, light, sound, temperature, pc)"};
 }
 
 void CommandHandler::cmdIncrementSetpoint(const std::string& params) {
@@ -612,4 +657,143 @@ void CommandHandler::cmdOTAStatus(const std::string& params) {
     printf("OTA busy: %s\n", busy ? "yes" : "no");
     printf("OTA last error: %s\n", err);
     publishResponse(std::string("otaStatus:busy=") + (busy ? "yes" : "no") + ",last_error=" + err);
+}
+
+void CommandHandler::cmdPortalDevice(const std::string& params) {
+    if (nvsManager == nullptr || wifiManager == nullptr) {
+        ESP_LOGE(TAG, "portalDevice unavailable");
+        return;
+    }
+
+    const std::string suffix = getFormValue(params, "device_suffix");
+    const std::string password = getFormValue(params, "ap_password");
+
+    nvsManager->saveDeviceName(suffix);
+    if (!password.empty()) {
+        esp_err_t passwordErr = nvsManager->saveAccessPointPassword(password);
+        if (passwordErr != ESP_OK) {
+            ESP_LOGW(TAG, "portalDevice AP password rejected: %s", esp_err_to_name(passwordErr));
+            return;
+        }
+    }
+
+    esp_err_t wifiErr = wifiManager->syncAccessPointConfig();
+    if (wifiErr != ESP_OK) {
+        ESP_LOGW(TAG, "portalDevice AP refresh failed: %s", esp_err_to_name(wifiErr));
+    }
+}
+
+void CommandHandler::cmdPortalWifi(const std::string& params) {
+    if (wifiManager == nullptr) {
+        ESP_LOGE(TAG, "portalWifi unavailable");
+        return;
+    }
+
+    const std::string ssid = getFormValue(params, "ssid");
+    const std::string password = getFormValue(params, "password");
+    if (ssid.empty()) {
+        ESP_LOGW(TAG, "portalWifi missing SSID");
+        return;
+    }
+
+    esp_err_t err = wifiManager->connectToNetwork(ssid, password, true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "portalWifi connect failed: %s", esp_err_to_name(err));
+    }
+}
+
+void CommandHandler::cmdPortalStaticIpCurrent(const std::string& params) {
+    (void)params;
+    if (wifiManager == nullptr) {
+        ESP_LOGE(TAG, "portalStaticIpCurrent unavailable");
+        return;
+    }
+
+    esp_err_t err = wifiManager->saveCurrentConnectionAsStaticIP();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "portalStaticIpCurrent failed: %s", esp_err_to_name(err));
+    }
+}
+
+void CommandHandler::cmdPortalMqtt(const std::string& params) {
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "portalMqtt unavailable");
+        return;
+    }
+
+    const std::string url = getFormValue(params, "url");
+    const std::string portStr = getFormValue(params, "port");
+    const std::string username = getFormValue(params, "username");
+    const std::string password = getFormValue(params, "password");
+
+    int port = 8883;
+    if (!portStr.empty()) {
+        port = std::max(1, std::min(65535, atoi(portStr.c_str())));
+    }
+
+    nvsManager->saveSoundMQTTServer(url, port, username, password);
+    nvsManager->saveLightMQTTServer(url, port, username, password);
+}
+
+void CommandHandler::cmdPortalWeather(const std::string& params) {
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "portalWeather unavailable");
+        return;
+    }
+
+    const std::string token = getFormValue(params, "api_token");
+    const std::string city = getFormValue(params, "city");
+    const std::string country = getFormValue(params, "country");
+    nvsManager->saveWeatherConfig(token, city.empty() ? "Istanbul" : city, country.empty() ? "tr" : country);
+}
+
+void CommandHandler::cmdPortalTime(const std::string& params) {
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "portalTime unavailable");
+        return;
+    }
+
+    const std::string token = getFormValue(params, "api_token");
+    nvsManager->saveTimeApiToken(token);
+}
+
+void CommandHandler::cmdPortalOta(const std::string& params) {
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "portalOta unavailable");
+        return;
+    }
+
+    const std::string action = getFormValue(params, "action");
+    if (!action.empty()) {
+        if (otaManager == nullptr) {
+            ESP_LOGE(TAG, "portalOta action unavailable (otaManager null)");
+            return;
+        }
+        if (action == "check") {
+            otaManager->checkForReleaseUpdate();
+            return;
+        }
+        if (action == "update") {
+            otaManager->startReleaseUpdate(true);
+            return;
+        }
+        ESP_LOGW(TAG, "portalOta unknown action: %s", action.c_str());
+        return;
+    }
+
+    std::string variant = getFormValue(params, "variant");
+    std::string manifestUrl = getFormValue(params, "manifest_url");
+    variant.erase(std::remove_if(variant.begin(), variant.end(), [](char c) {
+        return !(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+    }), variant.end());
+
+    if (variant.empty()) {
+        ESP_LOGW(TAG, "portalOta variant is required");
+        return;
+    }
+
+    nvsManager->saveOtaConfig(variant, manifestUrl);
+    if (otaConfigUpdatedCallback) {
+        otaConfigUpdatedCallback();
+    }
 }

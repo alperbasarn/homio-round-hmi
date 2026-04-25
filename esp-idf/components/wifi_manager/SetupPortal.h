@@ -24,6 +24,8 @@ public:
     void setOtaStatusCallback(std::function<std::string(void)> callback);
     void setOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
     void setDeviceInfoStatusCallback(std::function<std::string(void)> callback);
+    // General command routing — forwards commands to CommandHandler
+    void setCommandCallback(std::function<void(const std::string&)> callback);
 
 private:
     WiFiManager* wifiManager;
@@ -38,6 +40,7 @@ private:
     std::function<std::string(void)> otaStatusCallback;
     std::function<esp_err_t(const std::string&)> otaActionCallback;
     std::function<std::string(void)> deviceInfoStatusCallback;
+    std::function<void(const std::string&)> commandCallback;
 
     static constexpr int HTTP_PORT = 80;
     static constexpr int DNS_PORT = 53;

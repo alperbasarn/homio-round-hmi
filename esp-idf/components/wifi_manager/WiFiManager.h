@@ -68,6 +68,7 @@ public:
     void setSetupPortalOtaStatusCallback(std::function<std::string(void)> callback);
     void setSetupPortalOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
     void setSetupPortalDeviceInfoStatusCallback(std::function<std::string(void)> callback);
+    void setSetupPortalCommandCallback(std::function<void(const std::string&)> callback);
 
     // Callbacks
     void setConnectedCallback(WiFiConnectedCallback callback) { on_connected = callback; }
@@ -111,6 +112,7 @@ private:
     std::function<std::string(void)> portal_ota_status_callback;
     std::function<esp_err_t(const std::string&)> portal_ota_action_callback;
     std::function<std::string(void)> portal_device_info_status_callback;
+    std::function<void(const std::string&)> portal_command_callback;
 
     // Event handler
     static void eventHandler(void* arg, esp_event_base_t event_base,

@@ -62,6 +62,10 @@ void SetupPortal::setDeviceInfoStatusCallback(std::function<std::string(void)> c
     deviceInfoStatusCallback = std::move(callback);
 }
 
+void SetupPortal::setCommandCallback(std::function<void(const std::string&)> callback) {
+    commandCallback = std::move(callback);
+}
+
 esp_err_t SetupPortal::start() {
     esp_err_t err = startHttpServer();
     if (err != ESP_OK) {
@@ -189,6 +193,13 @@ esp_err_t SetupPortal::startHttpServer() {
     resetPost.handler = resetPostHandler;
     resetPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &resetPost);
+
+    httpd_uri_t resetGet = {};
+    resetGet.uri = "/api/reset";
+    resetGet.method = HTTP_GET;
+    resetGet.handler = resetPostHandler;
+    resetGet.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &resetGet);
 
     const char* captiveUris[] = {
         "/generate_204",
@@ -518,13 +529,25 @@ esp_err_t SetupPortal::timePostHandler(httpd_req_t* req) {
 }
 
 esp_err_t SetupPortal::resetPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) return ESP_FAIL;
+
     const char* response = "{\"ok\":true,\"message\":\"Restarting device...\"}";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Connection", "close");
-    httpd_resp_send(req, response, static_cast<ssize_t>(strlen(response)));
-    // Give TCP time to deliver the response before pulling the rug out.
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    const esp_err_t sendErr = httpd_resp_send(req, response, static_cast<ssize_t>(strlen(response)));
+    if (sendErr != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to send reset response: %s", esp_err_to_name(sendErr));
+    }
+
+    if (self->commandCallback) {
+        self->commandCallback("reset");
+    } else {
+        // Fallback when command handler is not wired.
+        vTaskDelay(pdMS_TO_TICKS(120));
+        esp_restart();
+    }
+
     return ESP_OK;
 }
 
@@ -599,12 +622,12 @@ std::string SetupPortal::renderRootPage() const {
      << "<small>NTP is still used for sync; token is stored for external time APIs.</small>"
      << "<button type='submit'>Save Time Token</button></form>"
     << "<section><h2>Device Info</h2><a href='/device-info' style='color:#9cc7ff;'>Open device info page</a></section>"
-     << "<section><h2>Device Control</h2><button id='resetBtn' type='button' style='background:#600;border-color:#f44;color:#fff;'>Restart Device</button></section>"
+    << "<section><h2>Device Control</h2><form method='POST' action='/api/reset'><button id='resetBtn' type='submit' style='background:#600;border-color:#f44;color:#fff;'>Restart Device</button></form><small><a href='/api/reset' style='color:#9cc7ff;'>Direct reset link</a></small></section>"
      << "</div>"
      << "<div id='controlTab' class='hidden'>"
      << "<div class='subtabs'><button class='active-tab' type='button'>Screens</button></div>"
          << "<section><h2>Screen Control</h2><div class='overview'><div class='label'>Current Screen</div><div class='value' id='ovCurrentScreen'>-</div><div></div></div><form id='screenForm'><label>Screen</label><select name='screen'>"
-     << "<option value='info'>Info Screen</option><option value='deviceInfo'>Device Info Screen</option><option value='home'>Home</option><option value='sound'>Sound</option><option value='light'>Light</option><option value='calibrate'>Calibrate Orientation</option>"
+    << "<option value='info'>Environment Info</option><option value='deviceInfo'>Device Info</option><option value='timer'>Timer / Chronometer</option><option value='light'>Light Control</option><option value='sound'>Sound Control</option><option value='temperature'>Temperature Control</option><option value='pc'>PC Control</option><option value='calibrate'>Calibrate Orientation</option>"
      << "</select><button type='submit'>Switch Screen</button></form></section></div>"
      << "<pre id='result'></pre>"
      << "<script>"
@@ -629,7 +652,6 @@ std::string SetupPortal::renderRootPage() const {
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
      << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
      << "document.getElementById('timeForm').addEventListener('submit',e=>{e.preventDefault();postForm('timeForm','/api/time');});"
-     << "document.getElementById('resetBtn').addEventListener('click',()=>{if(!confirm('Restart the device?'))return;resultEl.textContent='Restarting...';fetch('/api/reset',{method:'POST'}).then(()=>{resultEl.textContent='Device is restarting. Reconnect in a moment.';}).catch(()=>{resultEl.textContent='Device is restarting. Reconnect in a moment.';});});"
      << "refreshStatus();scan();"
      << "</script></body></html>";
 
@@ -789,77 +811,34 @@ esp_err_t SetupPortal::otaPostHandler(httpd_req_t* req) {
 }
 
 esp_err_t SetupPortal::saveOtaFromForm(const std::string& body, std::string& responseJson) {
-    const std::string action = getFormValue(body, "action");
-    if (!action.empty()) {
-        if (!otaActionCallback) {
-            responseJson = "{\"ok\":false,\"message\":\"OTA action unavailable\"}";
-            return ESP_ERR_INVALID_STATE;
-        }
-        const esp_err_t err = otaActionCallback(action);
-        if (err != ESP_OK) {
-            responseJson = std::string("{\"ok\":false,\"message\":\"OTA ") + jsonEscape(action) + " failed: " + esp_err_to_name(err) + "\"}";
-            return err;
-        }
-        responseJson = std::string("{\"ok\":true,\"message\":\"OTA ") + jsonEscape(action) + " started\"}";
-        return ESP_OK;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    if (nvsManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
-        return ESP_FAIL;
-    }
-
-    std::string variant = getFormValue(body, "variant");
-    std::string manifestUrl = getFormValue(body, "manifest_url");
-
-    // Keep variant compact and safe for manifest matching.
-    variant.erase(std::remove_if(variant.begin(), variant.end(), [](char c) {
-        return !(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
-    }), variant.end());
-
-    if (variant.empty()) {
-        responseJson = "{\"ok\":false,\"message\":\"Variant is required\"}";
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    nvsManager->saveOtaConfig(variant, manifestUrl);
-    if (otaConfigUpdatedCallback) {
-        otaConfigUpdatedCallback();
-    }
-
-    responseJson = std::string("{\"ok\":true,\"variant\":\"") + jsonEscape(nvsManager->otaVariantId) +
-                   "\",\"manifest_url\":\"" + jsonEscape(nvsManager->otaManifestUrl) + "\"}";
+    commandCallback(std::string("portalOta:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"OTA command dispatched\"}";
     return ESP_OK;
 }
 esp_err_t SetupPortal::saveStaticIpFromCurrentConnection(std::string& responseJson) {
-    if (wifiManager == nullptr || nvsManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"Static IP unavailable\"}";
-        return ESP_FAIL;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const esp_err_t err = wifiManager->saveCurrentConnectionAsStaticIP();
-    if (err != ESP_OK) {
-        responseJson = std::string("{\"ok\":false,\"message\":\"Failed to save static IP: ") + esp_err_to_name(err) + "\"}";
-        return err;
-    }
-
-    responseJson = std::string("{\"ok\":true,\"ssid\":\"") + jsonEscape(nvsManager->staticIPSSID) +
-                   "\",\"ip\":\"" + jsonEscape(nvsManager->staticIP) + "\"}";
+    commandCallback("portalStaticIpCurrent");
+    responseJson = "{\"ok\":true,\"message\":\"Static IP command dispatched\"}";
     return ESP_OK;
 }
 
 esp_err_t SetupPortal::saveScreenControlFromForm(const std::string& body, std::string& responseJson) {
     const std::string screen = getFormValue(body, "screen");
-    if (screen.empty() || !screenControlCallback) {
+    if (screen.empty() || !commandCallback) {
         responseJson = "{\"ok\":false,\"message\":\"Screen control unavailable\"}";
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (!screenControlCallback(screen)) {
-        responseJson = "{\"ok\":false,\"message\":\"Unknown screen\"}";
-        return ESP_ERR_INVALID_ARG;
-    }
-
+    commandCallback(std::string("screen:") + screen);
     responseJson = std::string("{\"ok\":true,\"screen\":\"") + jsonEscape(screen) + "\"}";
     return ESP_OK;
 }
@@ -977,101 +956,56 @@ std::string SetupPortal::readBody(httpd_req_t* req) {
 }
 
 esp_err_t SetupPortal::saveDeviceFromForm(const std::string& body, std::string& responseJson) {
-    if (nvsManager == nullptr || wifiManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"Device settings unavailable\"}";
-        return ESP_FAIL;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const std::string suffix = getFormValue(body, "device_suffix");
-    const std::string password = getFormValue(body, "ap_password");
-
-    nvsManager->saveDeviceName(suffix);
-    if (!password.empty()) {
-        const esp_err_t passwordErr = nvsManager->saveAccessPointPassword(password);
-        if (passwordErr != ESP_OK) {
-            responseJson = "{\"ok\":false,\"message\":\"Password must be 8-63 characters\"}";
-            return passwordErr;
-        }
-    }
-
-    const esp_err_t wifiErr = wifiManager->syncAccessPointConfig();
-    if (wifiErr != ESP_OK) {
-        responseJson = std::string("{\"ok\":false,\"message\":\"AP refresh failed: ") + esp_err_to_name(wifiErr) + "\"}";
-        return wifiErr;
-    }
-
-    responseJson = std::string("{\"ok\":true,\"device_name\":\"") +
-                   jsonEscape(nvsManager->deviceName) +
-                   "\",\"ap_password\":\"" +
-                   jsonEscape(nvsManager->accessPointPassword) +
-                   "\"}";
+    commandCallback(std::string("portalDevice:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"Device command dispatched\"}";
     return ESP_OK;
 }
 
 esp_err_t SetupPortal::saveWifiFromForm(const std::string& body, std::string& responseJson) {
-    const std::string ssid = getFormValue(body, "ssid");
-    const std::string password = getFormValue(body, "password");
-
-    if (ssid.empty() || wifiManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"SSID is required\"}";
-        return ESP_ERR_INVALID_ARG;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const esp_err_t err = wifiManager->connectToNetwork(ssid, password, true);
-    if (err == ESP_OK) {
-        responseJson = "{\"ok\":true,\"message\":\"Connected and saved\"}";
-    } else {
-        responseJson = std::string("{\"ok\":false,\"message\":\"Connect failed: ") + esp_err_to_name(err) + "\"}";
-    }
-    return err;
+    commandCallback(std::string("portalWifi:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"WiFi command dispatched\"}";
+    return ESP_OK;
 }
 
 esp_err_t SetupPortal::saveMqttFromForm(const std::string& body, std::string& responseJson) {
-    if (nvsManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
-        return ESP_FAIL;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const std::string url = getFormValue(body, "url");
-    const std::string portStr = getFormValue(body, "port");
-    const std::string username = getFormValue(body, "username");
-    const std::string password = getFormValue(body, "password");
-
-    int port = 8883;
-    if (!portStr.empty()) {
-        port = std::max(1, std::min(65535, atoi(portStr.c_str())));
-    }
-
-    nvsManager->saveSoundMQTTServer(url, port, username, password);
-    nvsManager->saveLightMQTTServer(url, port, username, password);
-
-    responseJson = "{\"ok\":true,\"message\":\"MQTT saved\"}";
+    commandCallback(std::string("portalMqtt:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"MQTT command dispatched\"}";
     return ESP_OK;
 }
 
 esp_err_t SetupPortal::saveWeatherFromForm(const std::string& body, std::string& responseJson) {
-    if (nvsManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
-        return ESP_FAIL;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const std::string token = getFormValue(body, "api_token");
-    const std::string city = getFormValue(body, "city");
-    const std::string country = getFormValue(body, "country");
-
-    nvsManager->saveWeatherConfig(token, city.empty() ? "Istanbul" : city, country.empty() ? "tr" : country);
-    responseJson = "{\"ok\":true,\"message\":\"Weather settings saved\"}";
+    commandCallback(std::string("portalWeather:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"Weather command dispatched\"}";
     return ESP_OK;
 }
 
 esp_err_t SetupPortal::saveTimeFromForm(const std::string& body, std::string& responseJson) {
-    if (nvsManager == nullptr) {
-        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
-        return ESP_FAIL;
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const std::string token = getFormValue(body, "api_token");
-    nvsManager->saveTimeApiToken(token);
-    responseJson = "{\"ok\":true,\"message\":\"Time token saved\"}";
+    commandCallback(std::string("portalTime:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"Time command dispatched\"}";
     return ESP_OK;
 }
