@@ -26,6 +26,7 @@ public:
     void setDeviceInfoStatusCallback(std::function<std::string(void)> callback);
     // General command routing — forwards commands to CommandHandler
     void setCommandCallback(std::function<void(const std::string&)> callback);
+    void setBtScanResultsCallback(std::function<std::string(void)> callback);
 
 private:
     WiFiManager* wifiManager;
@@ -41,6 +42,7 @@ private:
     std::function<esp_err_t(const std::string&)> otaActionCallback;
     std::function<std::string(void)> deviceInfoStatusCallback;
     std::function<void(const std::string&)> commandCallback;
+    std::function<std::string(void)> btScanResultsCallback;
 
     static constexpr int HTTP_PORT = 80;
     static constexpr int DNS_PORT = 53;
@@ -64,6 +66,7 @@ private:
     static esp_err_t screenControlPostHandler(httpd_req_t* req);
     static esp_err_t brightnessControlPostHandler(httpd_req_t* req);
     static esp_err_t bluetoothControlPostHandler(httpd_req_t* req);
+    static esp_err_t bluetoothScanGetHandler(httpd_req_t* req);
     static esp_err_t otaPostHandler(httpd_req_t* req);
     static esp_err_t wifiPostHandler(httpd_req_t* req);
     static esp_err_t mqttPostHandler(httpd_req_t* req);

@@ -84,6 +84,9 @@ private:
     void cmdSetBrightness(const std::string& params);
     void cmdSetBluetooth(const std::string& params);
     void cmdSetBluetoothName(const std::string& params);
+    void cmdRestartBtAdvertising(const std::string& params);
+    void cmdClearBtBonds(const std::string& params);
+    void cmdStartBtScan(const std::string& params);
     void cmdOTAUpdate(const std::string& params);
     void cmdOTAInfo(const std::string& params);
     void cmdOTAStatus(const std::string& params);

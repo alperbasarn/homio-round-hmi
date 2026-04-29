@@ -235,6 +235,9 @@ void CommandHandler::registerCommands() {
     commands["setBrightness"] = {"setBrightness", [this](const std::string& p) { this->cmdSetBrightness(p); }, "setBrightness:0-100 - Set screen brightness percentage"};
     commands["setBluetooth"] = {"setBluetooth", [this](const std::string& p) { this->cmdSetBluetooth(p); }, "setBluetooth:on|off - Enable or disable Bluetooth LE"};
     commands["setBluetoothName"] = {"setBluetoothName", [this](const std::string& p) { this->cmdSetBluetoothName(p); }, "setBluetoothName:name - Set Bluetooth device name (takes effect after restart)"};
+    commands["restartBtAdvertising"] = {"restartBtAdvertising", [this](const std::string& p) { this->cmdRestartBtAdvertising(p); }, "restartBtAdvertising - Restart BLE advertising so new devices can find this device"};
+    commands["clearBtBonds"] = {"clearBtBonds", [this](const std::string& p) { this->cmdClearBtBonds(p); }, "clearBtBonds - Remove all bonded BLE devices so any device can pair"};
+    commands["startBtScan"] = {"startBtScan", [this](const std::string& p) { this->cmdStartBtScan(p); }, "startBtScan[:seconds] - Scan for nearby BLE devices"};
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
@@ -668,6 +671,56 @@ void CommandHandler::cmdSetBluetooth(const std::string& params) {
     }
 
     publishResponse(std::string("setBluetooth:OK:") + (enable ? "on" : "off"));
+}
+
+void CommandHandler::cmdStartBtScan(const std::string& params) {
+    if (bluetoothManager == nullptr) {
+        publishResponse("startBtScan:ERR:bt_not_registered");
+        return;
+    }
+    int duration = 5;
+    if (!params.empty()) {
+        const int parsed = std::atoi(params.c_str());
+        if (parsed > 0 && parsed <= 30) duration = parsed;
+    }
+    const esp_err_t err = bluetoothManager->startScan(duration);
+    if (err != ESP_OK) {
+        publishResponse("startBtScan:ERR:" + std::string(esp_err_to_name(err)));
+        return;
+    }
+    publishResponse("startBtScan:OK:duration=" + std::to_string(duration));
+}
+
+void CommandHandler::cmdRestartBtAdvertising(const std::string& params) {
+    if (bluetoothManager == nullptr) {
+        ESP_LOGE(TAG, "BluetoothManager not registered.");
+        publishResponse("restartBtAdvertising:ERR:bt_not_registered");
+        return;
+    }
+    const esp_err_t err = bluetoothManager->restartAdvertising();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Restart advertising failed: %s", esp_err_to_name(err));
+        publishResponse("restartBtAdvertising:ERR:" + std::string(esp_err_to_name(err)));
+        return;
+    }
+    publishResponse("restartBtAdvertising:OK");
+}
+
+void CommandHandler::cmdClearBtBonds(const std::string& params) {
+    if (bluetoothManager == nullptr) {
+        ESP_LOGE(TAG, "BluetoothManager not registered.");
+        publishResponse("clearBtBonds:ERR:bt_not_registered");
+        return;
+    }
+    const int before = bluetoothManager->getBondedDeviceCount();
+    const esp_err_t err = bluetoothManager->clearBonds();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Clear bonds failed: %s", esp_err_to_name(err));
+        publishResponse("clearBtBonds:ERR:" + std::string(esp_err_to_name(err)));
+        return;
+    }
+    bluetoothManager->restartAdvertising();
+    publishResponse("clearBtBonds:OK:cleared=" + std::to_string(before));
 }
 
 void CommandHandler::cmdSetBluetoothName(const std::string& params) {

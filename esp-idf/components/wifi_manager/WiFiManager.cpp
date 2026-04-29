@@ -211,6 +211,9 @@ esp_err_t WiFiManager::initialize()
             if (portal_command_callback) {
                 setup_portal->setCommandCallback(portal_command_callback);
             }
+            if (portal_bt_scan_results_callback) {
+                setup_portal->setBtScanResultsCallback(portal_bt_scan_results_callback);
+            }
             setup_portal->start();
         }
     }
@@ -623,6 +626,14 @@ void WiFiManager::setSetupPortalCommandCallback(std::function<void(const std::st
     portal_command_callback = std::move(callback);
     if (setup_portal != nullptr) {
         setup_portal->setCommandCallback(portal_command_callback);
+    }
+}
+
+void WiFiManager::setSetupPortalBtScanResultsCallback(std::function<std::string(void)> callback)
+{
+    portal_bt_scan_results_callback = std::move(callback);
+    if (setup_portal != nullptr) {
+        setup_portal->setBtScanResultsCallback(portal_bt_scan_results_callback);
     }
 }
 

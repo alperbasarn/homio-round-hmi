@@ -5,6 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
+
+struct BtScanResult {
+    std::string address;
+    std::string name;
+    int rssi;
+};
 
 class BluetoothManager {
 public:
@@ -20,7 +27,15 @@ public:
     bool isSerialConnected() const { return serialConnected; }
 
     esp_err_t setEnabled(bool enable);
+    esp_err_t restartAdvertising();
+    esp_err_t clearBonds();
+    int getBondedDeviceCount() const;
+    esp_err_t startScan(int durationSec = 5);
+    bool isScanning() const { return scanning; }
+    std::string getScanStatus() const { return scanStatusMsg; }
+    std::vector<BtScanResult> getScanResults() const;
     esp_err_t sendPlayPause();
+    void updateBatteryLevel(bool batteryConnected, float percentage);
     esp_err_t sendSerial(const uint8_t* data, size_t length);
     esp_err_t sendSerialLine(const std::string& line);
 
@@ -43,6 +58,11 @@ private:
     bool enabled = true;
     bool initialized = false;
     bool ready = false;
+    bool scanning = false;
+    bool scanPending = false;
+    int scanDuration = 5;
+    std::string scanStatusMsg;
+    std::vector<BtScanResult> lastScanResults;
     bool hidConnected = false;
     bool hidSecure = false;
     bool hidRemoteKnown = false;
@@ -53,8 +73,12 @@ private:
     esp_bd_addr_t serialRemoteBda = {0};
     uint16_t hidConnId = 0xffff;
     uint16_t serialConnId = 0xffff;
+    bool advDataConfigured = false;
+    bool scanRspConfigured = false;
+    bool scanRspConfigPending = false;
     uint16_t serialMtu = 23;
     uint16_t serialHandles[6] = {};
     int serialGattsIf = 0xff;
+    uint8_t hidBatteryLevel = 0xff;
     std::string name = "Qnob PC Control";
 };

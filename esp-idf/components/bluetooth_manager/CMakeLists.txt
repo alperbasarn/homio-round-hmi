@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS
+        "BluetoothManager.cpp"
+        "esp_hidd_prf_api.c"
+        "hid_dev.c"
+        "hid_device_le_prf.c"
+    INCLUDE_DIRS "."
+    REQUIRES bt nvs_flash esp_coex
+)

@@ -186,6 +186,11 @@ void displayTask(void* parameter) {
 
         if (batteryHandler && batteryHandler->isInitialized()) {
             batteryHandler->analyze();
+            if (bluetoothManager != nullptr) {
+                const auto telemetry = batteryHandler->getBatteryTelemetry();
+                bluetoothManager->updateBatteryLevel(
+                    batteryHandler->isBatteryConnected(), telemetry.percentage);
+            }
         }
         displayController->update();
 
@@ -386,6 +391,20 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Knob UART is not mapped for %s - skipping knob controller init", QNOB_BOARD_NAME);
 #endif
 
+    // Initialize Bluetooth BEFORE WiFi — BT controller must claim its RF
+    // coexistence slot before the WiFi stack starts, otherwise the radio
+    // arbitration is misconfigured and BLE cannot advertise or scan.
+    ESP_LOGI(TAG, "Initializing Bluetooth...");
+    bluetoothManager = &BluetoothManager::instance();
+    {
+        const std::string btName = !nvsManager->bluetoothName.empty()
+            ? nvsManager->bluetoothName : "Qnob PC Control";
+        const esp_err_t btErr = bluetoothManager->begin(btName.c_str());
+        if (btErr != ESP_OK) {
+            ESP_LOGW(TAG, "Bluetooth init failed: %s", esp_err_to_name(btErr));
+        }
+    }
+
     // Initialize networking
     ESP_LOGI(TAG, "Initializing networking...");
     wifiManager = new WiFiManager(nvsManager);
@@ -500,7 +519,9 @@ extern "C" void app_main(void) {
         os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
         os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
         const std::string btName = (nvsManager != nullptr) ? nvsManager->bluetoothName : "Qnob PC Control";
+        const int btBondCount = bluetoothManager != nullptr ? bluetoothManager->getBondedDeviceCount() : 0;
         os << "\"bluetooth_name\":\"" << escape(btName) << "\",";
+        os << "\"bluetooth_bond_count\":" << btBondCount << ",";
         os << "\"bluetooth_enabled\":" << (bluetoothEnabled ? "true" : "false") << ",";
         os << "\"bluetooth_ready\":" << (bluetoothReady ? "true" : "false") << ",";
         os << "\"bluetooth_connected\":" << (bluetoothConnected ? "true" : "false") << ",";
@@ -524,7 +545,6 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    bluetoothManager = &BluetoothManager::instance();
     modeController = new ModeController(touchPanel);
     initializationScreen = new InitializationScreen();
 
@@ -632,6 +652,33 @@ extern "C" void app_main(void) {
     });
     wifiManager->setSetupPortalCommandCallback([](const std::string& cmd) {
         if (commandHandler != nullptr) commandHandler->handleExternalCommand(cmd);
+    });
+    wifiManager->setSetupPortalBtScanResultsCallback([]() -> std::string {
+        auto escape = [](const std::string& v) {
+            std::string out;
+            for (char c : v) { if (c == '\\' || c == '"') out.push_back('\\'); out.push_back(c); }
+            return out;
+        };
+        const bool scanning = bluetoothManager != nullptr && bluetoothManager->isScanning();
+        const bool btReady = bluetoothManager != nullptr && bluetoothManager->isReady();
+        const std::string scanStatus = bluetoothManager != nullptr ? bluetoothManager->getScanStatus() : "unavailable";
+        std::string json = "{\"scanning\":";
+        json += scanning ? "true" : "false";
+        json += ",\"bt_ready\":";
+        json += btReady ? "true" : "false";
+        json += ",\"scan_status\":\"" + escape(scanStatus) + "\"";
+        json += ",\"devices\":[";
+        if (bluetoothManager != nullptr) {
+            const auto results = bluetoothManager->getScanResults();
+            for (size_t i = 0; i < results.size(); ++i) {
+                if (i > 0) json += ",";
+                json += "{\"address\":\"" + escape(results[i].address) + "\",";
+                json += "\"name\":\"" + escape(results[i].name) + "\",";
+                json += "\"rssi\":" + std::to_string(results[i].rssi) + "}";
+            }
+        }
+        json += "]}";
+        return json;
     });
 
     // Initialize display hardware here — immediately before the display task starts
@@ -754,11 +801,9 @@ extern "C" void app_main(void) {
 #if DUAL_CORE_AVAILABLE
     xTaskCreatePinnedToCore(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle, NETWORK_CORE);
     xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle, NETWORK_CORE);
-    xTaskCreatePinnedToCore(bluetoothInitTask, "BluetoothInit", 8192, bluetoothManager, 3, nullptr, NETWORK_CORE);
 #else
     xTaskCreate(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle);
     xTaskCreate(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle);
-    xTaskCreate(bluetoothInitTask, "BluetoothInit", 8192, bluetoothManager, 3, nullptr);
 #endif
 
     if (startupChimeReady) {

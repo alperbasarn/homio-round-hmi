@@ -66,6 +66,10 @@ void SetupPortal::setCommandCallback(std::function<void(const std::string&)> cal
     commandCallback = std::move(callback);
 }
 
+void SetupPortal::setBtScanResultsCallback(std::function<std::string(void)> callback) {
+    btScanResultsCallback = std::move(callback);
+}
+
 esp_err_t SetupPortal::start() {
     esp_err_t err = startHttpServer();
     if (err != ESP_OK) {
@@ -165,6 +169,13 @@ esp_err_t SetupPortal::startHttpServer() {
     bluetoothControlPost.handler = bluetoothControlPostHandler;
     bluetoothControlPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &bluetoothControlPost);
+
+    httpd_uri_t bluetoothScanGet = {};
+    bluetoothScanGet.uri = "/api/bluetooth/scan";
+    bluetoothScanGet.method = HTTP_GET;
+    bluetoothScanGet.handler = bluetoothScanGetHandler;
+    bluetoothScanGet.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &bluetoothScanGet);
 
     httpd_uri_t otaPost = {};
     otaPost.uri = "/api/ota";
@@ -518,6 +529,21 @@ esp_err_t SetupPortal::brightnessControlPostHandler(httpd_req_t* req) {
     return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
 }
 
+esp_err_t SetupPortal::bluetoothScanGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+    std::string response;
+    if (self->btScanResultsCallback) {
+        response = self->btScanResultsCallback();
+    } else {
+        response = "{\"scanning\":false,\"devices\":[]}";
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
 esp_err_t SetupPortal::bluetoothControlPostHandler(httpd_req_t* req) {
     auto* self = static_cast<SetupPortal*>(req->user_ctx);
     if (self == nullptr) {
@@ -668,7 +694,16 @@ std::string SetupPortal::renderRootPage() const {
     << "<option value='info'>Environment Info</option><option value='deviceInfo'>Device Info</option><option value='timer'>Timer / Chronometer</option><option value='light'>Light Control</option><option value='sound'>Sound Control</option><option value='temperature'>Temperature Control</option><option value='pc'>PC Control</option><option value='calibrate'>Calibrate Orientation</option>"
      << "</select><button type='submit'>Switch Screen</button></form></section>"
      << "<section><h2>Screen Brightness</h2><form id='brightnessForm'><label>Brightness: <span id='brightnessValue'>100</span>%</label><input id='brightnessInput' name='percentage' type='range' min='0' max='100' value='100'><button type='submit'>Set Brightness</button></form></section>"
-     << "<section><h2>Bluetooth</h2><form id='bluetoothForm'><label>Status: <span id='bluetoothStatus'>-</span></label><select name='enabled'><option value='on'>Enabled</option><option value='off'>Disabled</option></select><label style='display:block;margin-top:10px;'>Name<input name='bt_name' type='text' maxlength='32' placeholder='Qnob PC Control' style='margin-left:8px;width:220px;'></label><small>Name change takes effect after device restart.</small><button type='submit'>Apply Bluetooth</button></form></section></div>"
+     << "<section><h2>Bluetooth</h2><form id='bluetoothForm'><label>Status: <span id='bluetoothStatus'>-</span></label><select name='enabled'><option value='on'>Enabled</option><option value='off'>Disabled</option></select><label style='display:block;margin-top:10px;'>Name<input name='bt_name' type='text' maxlength='32' placeholder='Qnob PC Control' style='margin-left:8px;width:220px;'></label><small>Name change takes effect after device restart.</small><button type='submit'>Apply Bluetooth</button></form>"
+     << "<div style='margin-top:12px;border-top:1px solid #444;padding-top:10px;'>"
+     << "<div style='margin-bottom:8px;'>Bonded devices: <strong id='btBondCount'>-</strong></div>"
+     << "<button type='button' id='btRestartBtn' style='margin-right:8px;'>Restart Advertising</button>"
+     << "<button type='button' id='btClearBondsBtn' style='background:#400;border-color:#f44;color:#fff;margin-right:8px;'>Clear All Bonds</button>"
+     << "<button type='button' id='btScanBtn'>Scan BLE Devices</button>"
+     << "<small style='display:block;margin-top:6px;'>Clear bonds if the device does not appear on iPhone/PC, then scan for it again in Bluetooth settings.</small>"
+     << "<div id='btScanStatus' style='margin-top:8px;color:#9cc7ff;'></div>"
+     << "<div id='btScanResults' style='margin-top:6px;'></div>"
+     << "</div></section></div>"
      << "<pre id='result'></pre>"
      << "<script>"
      << "const resultEl=document.getElementById('result');const secrets={};const staticIpBtn=document.getElementById('staticIpBtn');"
@@ -678,7 +713,7 @@ std::string SetupPortal::renderRootPage() const {
      << "function toggleSecret(btn){const id=btn.dataset.target;const showing=btn.dataset.showing==='true';setText(id,showing?maskValue(secrets[id]):(secrets[id]||'(not set)'));btn.dataset.showing=showing?'false':'true';btn.textContent=showing?'Show':'Hide';}"
      << "document.querySelectorAll('.toggle').forEach(b=>b.addEventListener('click',()=>toggleSecret(b)));"
      << "document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.remove('active-tab'));btn.classList.add('active-tab');document.getElementById('configureTab').classList.toggle('hidden',btn.dataset.tab!=='configureTab');document.getElementById('controlTab').classList.toggle('hidden',btn.dataset.tab!=='controlTab');}));"
-        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}fetch('/api/device-info').then(r=>r.json()).then(di=>{const bf=document.getElementById('bluetoothForm');if(bf){bf.enabled.value=di.bluetooth_enabled===false?'off':'on';const bnf=bf.querySelector('[name=bt_name]');if(bnf&&di.bluetooth_name)bnf.value=di.bluetooth_name;}setText('bluetoothStatus',di.bluetooth_connected?'Connected':(di.bluetooth_enabled?'Enabled':'Disabled'));}).catch(()=>{});}"
+        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}fetch('/api/device-info').then(r=>r.json()).then(di=>{const bf=document.getElementById('bluetoothForm');if(bf){bf.enabled.value=di.bluetooth_enabled===false?'off':'on';const bnf=bf.querySelector('[name=bt_name]');if(bnf&&di.bluetooth_name)bnf.value=di.bluetooth_name;}setText('bluetoothStatus',di.bluetooth_connected?'Connected':(di.bluetooth_enabled?'Enabled':'Disabled'));setText('btBondCount',di.bluetooth_bond_count!=null?String(di.bluetooth_bond_count):'-');}).catch(()=>{});}"
      << "async function scan(){const s=document.getElementById('scanList');s.innerHTML='';const wait=document.createElement('option');wait.textContent='Scanning...';wait.disabled=true;wait.selected=true;s.appendChild(wait);try{const r=await fetch('/api/scan');const d=await r.json();s.innerHTML='';(d.networks||[]).forEach(n=>{const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+'dBm)';s.appendChild(o);});if(!s.options.length){const o=document.createElement('option');o.textContent='No networks found';o.disabled=true;o.selected=true;s.appendChild(o);}resultEl.textContent=JSON.stringify(d,null,2);}catch(e){s.innerHTML='';const o=document.createElement('option');o.textContent='Scan failed';o.disabled=true;o.selected=true;s.appendChild(o);resultEl.textContent=JSON.stringify({ok:false,message:String(e)},null,2);}}"
      << "function formBody(f){return new URLSearchParams(new FormData(f)).toString();}"
      << "async function postForm(id,url,extra){const f=document.getElementById(id);const data=formBody(f)+(extra||'');const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:data});resultEl.textContent=JSON.stringify(await r.json(),null,2);refreshStatus();}"
@@ -690,6 +725,21 @@ std::string SetupPortal::renderRootPage() const {
      << "document.getElementById('screenForm').addEventListener('submit',e=>{e.preventDefault();postForm('screenForm','/api/control/screen');});"
      << "const brightnessInput=document.getElementById('brightnessInput');const brightnessValue=document.getElementById('brightnessValue');brightnessInput.addEventListener('input',()=>{brightnessValue.textContent=brightnessInput.value;});document.getElementById('brightnessForm').addEventListener('submit',e=>{e.preventDefault();postForm('brightnessForm','/api/control/brightness');});"
      << "document.getElementById('bluetoothForm').addEventListener('submit',e=>{e.preventDefault();postForm('bluetoothForm','/api/control/bluetooth');});"
+     << "document.getElementById('btRestartBtn').addEventListener('click',()=>{fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=restart_advertising'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
+     << "document.getElementById('btClearBondsBtn').addEventListener('click',()=>{fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=clear_bonds'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
+     << "document.getElementById('btScanBtn').addEventListener('click',()=>{"
+     << "const statusEl=document.getElementById('btScanStatus');const resultsEl=document.getElementById('btScanResults');"
+     << "statusEl.textContent='Scanning for 5 seconds...';resultsEl.innerHTML='';"
+     << "fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=start_scan'}).catch(()=>{});"
+     << "setTimeout(()=>{"
+     << "fetch('/api/bluetooth/scan').then(r=>r.json()).then(d=>{"
+     << "statusEl.textContent=(d.scanning?'Still scanning...':'Scan done ['+(d.scan_status||'')+'] — '+(d.devices.length)+' device(s).')+(d.bt_ready===false?' ⚠ BT not ready':'');"
+     << "const unnamedCount=d.devices.filter(v=>!v.name).length;"
+     << "resultsEl.innerHTML=(d.devices.length===0?'<em style=\"color:#888\">No devices found</em>':d.devices.map(dev=>"
+     << "'<div style=\"margin:4px 0;padding:4px 6px;border:1px solid #444;\"><strong>'+(dev.name||'<em style=\"color:#888\">[private]</em>')+'</strong> &nbsp; <span style=\"color:#aaa\">'+dev.address+'</span> &nbsp; <span style=\"color:#9cc7ff;\">'+dev.rssi+'dBm</span></div>').join(''))"
+     << "+(unnamedCount>0?'<small style=\"color:#666\">[private] = iOS/Android/Windows devices with BLE privacy (rotating address, no name broadcast)</small>':'');"
+     << "}).catch(()=>{statusEl.textContent='Scan failed.';});},6000);"
+     << "});"
      << "staticIpBtn.addEventListener('click',()=>{fetch('/api/static-ip/current',{method:'POST'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
      << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
@@ -912,10 +962,32 @@ esp_err_t SetupPortal::saveBrightnessControlFromForm(const std::string& body, st
 }
 
 esp_err_t SetupPortal::saveBluetoothControlFromForm(const std::string& body, std::string& responseJson) {
-    const std::string enabled = getFormValue(body, "enabled");
-    if (enabled.empty() || !commandCallback) {
+    if (!commandCallback) {
         responseJson = "{\"ok\":false,\"message\":\"Bluetooth control unavailable\"}";
         return ESP_ERR_INVALID_STATE;
+    }
+
+    const std::string action = getFormValue(body, "action");
+    if (action == "restart_advertising") {
+        commandCallback("restartBtAdvertising");
+        responseJson = "{\"ok\":true,\"action\":\"restart_advertising\"}";
+        return ESP_OK;
+    }
+    if (action == "clear_bonds") {
+        commandCallback("clearBtBonds");
+        responseJson = "{\"ok\":true,\"action\":\"clear_bonds\"}";
+        return ESP_OK;
+    }
+    if (action == "start_scan") {
+        commandCallback("startBtScan:5");
+        responseJson = "{\"ok\":true,\"action\":\"start_scan\",\"duration\":5}";
+        return ESP_OK;
+    }
+
+    const std::string enabled = getFormValue(body, "enabled");
+    if (enabled.empty()) {
+        responseJson = "{\"ok\":false,\"message\":\"Missing enabled field\"}";
+        return ESP_ERR_INVALID_ARG;
     }
 
     std::string value = enabled;
