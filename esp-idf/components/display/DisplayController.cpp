@@ -22,7 +22,7 @@
 static const char *TAG = "DisplayController";
 static constexpr int64_t INIT_SEQUENCE_DURATION_MS = 2500;
 static constexpr int64_t INIT_COMPLETE_HOLD_MS = 400;
-static constexpr int64_t SHORT_HOLD_SOUND_MAX_MS = 3000;
+static constexpr int64_t TOUCH_SOUND_DEBOUNCE_MS = 80;
 
 namespace {
 
@@ -126,8 +126,10 @@ DisplayController::DisplayController(TouchPanel* touch)
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
     infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr), mediaController(nullptr),
     currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
-    displayIsOn(true), initializationProgress(0), initializationCompleteTime(0),
-    currentPageX(0), currentPageY(0), pendingModeRequest(-1), pendingPageRequest(kNoPageRequest) {
+    displayIsOn(true), brightnessPercent(100), initializationProgress(0), initializationCompleteTime(0),
+    touchSoundCandidateSinceMs(0), currentPageX(0), currentPageY(0),
+    touchSoundPressedState(false), touchSoundCandidateState(false),
+    pendingModeRequest(-1), pendingPageRequest(kNoPageRequest) {
 }
 
 DisplayController::~DisplayController() {}
@@ -161,21 +163,32 @@ void DisplayController::update() {
 
     if (touchPanel) {
         touchPanel->handleTouchPanel();
-        if (touchPanel->getHasNewPress()) {
-            hasActivityEvent = true;
-            resetActivityTime();
+
+        const bool pressedNow = touchPanel->isPressed();
+        const int64_t nowMs = esp_timer_get_time() / 1000;
+        if (pressedNow != touchSoundCandidateState) {
+            touchSoundCandidateState = pressedNow;
+            touchSoundCandidateSinceMs = nowMs;
         }
-        if (touchPanel->getHasNewRelease() || touchPanel->getHasNewHoldRelease()) {
+        if (pressedNow != touchSoundPressedState &&
+            (nowMs - touchSoundCandidateSinceMs) >= TOUCH_SOUND_DEBOUNCE_MS) {
+            touchSoundPressedState = pressedNow;
             hasActivityEvent = true;
             resetActivityTime();
-            if (mediaController && touchPanel->getHasNewHoldRelease()) {
-                if (touchPanel->getLastPressDurationMs() <= SHORT_HOLD_SOUND_MAX_MS) {
+            if (mediaController) {
+                if (touchSoundPressedState) {
+                    mediaController->requestTouchPressEffect();
+                } else {
                     mediaController->requestTouchReleaseEffect();
                 }
             }
-            if (mediaController && touchPanel->getHasNewRelease()) {
-                mediaController->requestTouchPressEffect();
-            }
+        }
+
+        if (touchPanel->getHasNewPress() ||
+            touchPanel->getHasNewRelease() ||
+            touchPanel->getHasNewHoldRelease()) {
+            hasActivityEvent = true;
+            resetActivityTime();
         }
         if (touchPanel->getHasNewGesture() && mediaController) {
             switch (touchPanel->getLastGesture()) {
@@ -202,7 +215,7 @@ void DisplayController::update() {
         return;
     }
 
-    if (touchPanel && touchPanel->getHasNewGesture()) {
+    if (touchPanel && touchPanel->getHasNewGesture() && currentMode != DEVICE_INFO) {
         handleMatrixNavigationGesture(touchPanel->getLastGesture());
     }
 
@@ -255,6 +268,21 @@ void DisplayController::update() {
         case DEVICE_INFO:
             if (deviceInfoScreen) {
                 deviceInfoScreen->update();
+                if (deviceInfoScreen->isPageBackRequested()) {
+                    deviceInfoScreen->resetPageBackRequest();
+                    navigateToMatrixPage(0, 0);
+                    return;
+                }
+                if (deviceInfoScreen->isPageLeftRequested()) {
+                    deviceInfoScreen->resetPageLeftRequest();
+                    navigateToMatrixPage(currentPageX, currentPageY - 1);
+                    return;
+                }
+                if (deviceInfoScreen->isPageRightRequested()) {
+                    deviceInfoScreen->resetPageRightRequest();
+                    navigateToMatrixPage(currentPageX, currentPageY + 1);
+                    return;
+                }
             }
             break;
 
@@ -518,10 +546,13 @@ void DisplayController::resetActivityTime() {
 void DisplayController::turnDisplayOff() {
     if (!displayIsOn) return;
 #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
-    for (int i = 255; i >= 0; i -= 5) {
+    const int currentBrightness = std::clamp((brightnessPercent * 255 + 50) / 100, 0, 255);
+    for (int i = currentBrightness; i >= 0; i -= 5) {
         LvglDisplay::setBrightness(static_cast<uint8_t>(i));
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+#else
+    LvglDisplay::setBrightness(0);
 #endif
     displayIsOn = false;
     ESP_LOGI(TAG, "Display off");
@@ -529,16 +560,33 @@ void DisplayController::turnDisplayOff() {
 
 void DisplayController::turnDisplayOn() {
     if (displayIsOn) return;
+    const int targetBrightness = std::clamp((brightnessPercent * 255 + 50) / 100, 0, 255);
 #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
-    for (int i = 0; i <= 255; i += 5) {
+    for (int i = 0; i <= targetBrightness; i += 5) {
         LvglDisplay::setBrightness(static_cast<uint8_t>(i));
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+    LvglDisplay::setBrightness(static_cast<uint8_t>(targetBrightness));
 #else
-    LvglDisplay::setBrightness(255);
+    LvglDisplay::setBrightness(static_cast<uint8_t>(targetBrightness));
 #endif
     displayIsOn = true;
-    ESP_LOGI(TAG, "Display on");
+    ESP_LOGI(TAG, "Display on (%d%%)", brightnessPercent);
+}
+
+void DisplayController::setBrightnessPercent(int percent) {
+    brightnessPercent = std::clamp(percent, 0, 100);
+    const int brightness = std::clamp((brightnessPercent * 255 + 50) / 100, 0, 255);
+
+    if (displayIsOn) {
+        LvglDisplay::setBrightness(static_cast<uint8_t>(brightness));
+    }
+
+    ESP_LOGI(TAG, "Display brightness set to %d%%", brightnessPercent);
+}
+
+int DisplayController::getBrightnessPercent() const {
+    return brightnessPercent;
 }
 
 bool DisplayController::handleMatrixNavigationGesture(touch_gesture_t gesture) {

@@ -9,8 +9,9 @@ namespace {
 
 constexpr const char* TAG = "LvglDisplay";
 constexpr uint32_t LVGL_TICK_PERIOD_MS = 5;
-constexpr uint32_t DRAW_BUFFER_LINES_DEFAULT = 50;
+constexpr uint32_t DRAW_BUFFER_LINES_DEFAULT = 100;
 constexpr uint32_t DRAW_BUFFER_LINES_MIN = 5;
+constexpr uint32_t PERF_LOG_FRAME_LIMIT = 80;
 
 LGFX* s_gfx = nullptr;
 bool s_initialized = false;
@@ -24,6 +25,11 @@ uint16_t* s_colorConvertBuffer = nullptr;
 size_t s_colorConvertBufferPixels = 0;
 #endif
 esp_timer_handle_t s_tickTimer = nullptr;
+uint32_t s_perfFrameCount = 0;
+uint32_t s_perfFlushChunkCount = 0;
+uint32_t s_perfFlushPixelCount = 0;
+uint32_t s_perfFlushTimeUs = 0;
+uint32_t s_perfTaskLogCount = 0;
 
 }  // namespace
 
@@ -44,7 +50,7 @@ bool LvglDisplay::init() {
 
     const uint32_t width = static_cast<uint32_t>(s_gfx->width());
     uint32_t drawLines = DRAW_BUFFER_LINES_DEFAULT;
-    const uint32_t candidates[] = {50, 40, 30, 20, 10, DRAW_BUFFER_LINES_MIN};
+    const uint32_t candidates[] = {100, 80, 60, 50, 40, 30, 20, 10, DRAW_BUFFER_LINES_MIN};
 
     for (uint32_t lines : candidates) {
         if (lines == 0 || lines > s_gfx->height()) {
@@ -130,7 +136,13 @@ void LvglDisplay::taskHandler() {
         return;
     }
 
+    const int64_t startUs = esp_timer_get_time();
     lv_timer_handler();
+    const int64_t elapsedUs = esp_timer_get_time() - startUs;
+    if (elapsedUs > 5000 && s_perfTaskLogCount < PERF_LOG_FRAME_LIMIT) {
+        ++s_perfTaskLogCount;
+        ESP_LOGI(TAG, "lv_timer_handler took %lld us", static_cast<long long>(elapsedUs));
+    }
 }
 
 void LvglDisplay::invalidateScreen() {
@@ -155,11 +167,12 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
         return;
     }
 
-    s_gfx->startWrite();
+    const int64_t flushStartUs = esp_timer_get_time();
+
 #if LV_COLOR_DEPTH == 16
 #if LV_COLOR_16_SWAP
     // LVGL already stores RGB565 bytes in swapped order.
-    s_gfx->pushImage(
+    s_gfx->pushImageDMA(
         area->x1,
         area->y1,
         width,
@@ -167,7 +180,7 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
         reinterpret_cast<const lgfx::swap565_t*>(colorBuffer));
 #else
     // LVGL stores native RGB565, pass it as plain 16-bit pixels.
-    s_gfx->pushImage(
+    s_gfx->pushImageDMA(
         area->x1,
         area->y1,
         width,
@@ -177,7 +190,6 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
 #else
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (pixelCount > s_colorConvertBufferPixels || s_colorConvertBuffer == nullptr) {
-        s_gfx->endWrite();
         lv_disp_flush_ready(disp);
         return;
     }
@@ -190,14 +202,37 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
             (color32.ch.blue >> 3));
     }
 
-    s_gfx->pushImage(
+    s_gfx->pushImageDMA(
         area->x1,
         area->y1,
         width,
         height,
         reinterpret_cast<lgfx::swap565_t*>(s_colorConvertBuffer));
 #endif
-    s_gfx->endWrite();
+    s_gfx->waitDMA();
+
+    const int64_t flushElapsedUs = esp_timer_get_time() - flushStartUs;
+    if (s_perfFrameCount < PERF_LOG_FRAME_LIMIT) {
+        ++s_perfFlushChunkCount;
+        s_perfFlushPixelCount += static_cast<uint32_t>(width * height);
+        s_perfFlushTimeUs += static_cast<uint32_t>(flushElapsedUs);
+        if (lv_disp_flush_is_last(disp)) {
+            ++s_perfFrameCount;
+            ESP_LOGI(TAG,
+                     "flush frame %u: chunks=%u pixels=%u time=%u us lastArea=%ld,%ld %ldx%ld",
+                     static_cast<unsigned>(s_perfFrameCount),
+                     static_cast<unsigned>(s_perfFlushChunkCount),
+                     static_cast<unsigned>(s_perfFlushPixelCount),
+                     static_cast<unsigned>(s_perfFlushTimeUs),
+                     static_cast<long>(area->x1),
+                     static_cast<long>(area->y1),
+                     static_cast<long>(width),
+                     static_cast<long>(height));
+            s_perfFlushChunkCount = 0;
+            s_perfFlushPixelCount = 0;
+            s_perfFlushTimeUs = 0;
+        }
+    }
 
     lv_disp_flush_ready(disp);
 }

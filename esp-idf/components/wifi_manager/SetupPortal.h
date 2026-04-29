@@ -62,6 +62,8 @@ private:
     static esp_err_t devicePostHandler(httpd_req_t* req);
     static esp_err_t staticIpPostHandler(httpd_req_t* req);
     static esp_err_t screenControlPostHandler(httpd_req_t* req);
+    static esp_err_t brightnessControlPostHandler(httpd_req_t* req);
+    static esp_err_t bluetoothControlPostHandler(httpd_req_t* req);
     static esp_err_t otaPostHandler(httpd_req_t* req);
     static esp_err_t wifiPostHandler(httpd_req_t* req);
     static esp_err_t mqttPostHandler(httpd_req_t* req);
@@ -85,6 +87,8 @@ private:
     esp_err_t saveDeviceFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveStaticIpFromCurrentConnection(std::string& responseJson);
     esp_err_t saveScreenControlFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t saveBrightnessControlFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t saveBluetoothControlFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveOtaFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveWifiFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveMqttFromForm(const std::string& body, std::string& responseJson);

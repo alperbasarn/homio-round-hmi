@@ -35,7 +35,11 @@ public:
       cfg.pin_mosi = LCD_MOSI_PIN;
       cfg.pin_miso = LCD_MISO_PIN;
       cfg.pin_dc   = LCD_DC_PIN;
+#if CONFIG_QNOB_HW_ESP32S3_AMOLED_175
+      cfg.freq_write = 75000000;
+#else
       cfg.freq_write = 40000000;
+#endif
       cfg.freq_read  = 16000000;
       cfg.dma_channel = SPI_DMA_CH_AUTO;
 

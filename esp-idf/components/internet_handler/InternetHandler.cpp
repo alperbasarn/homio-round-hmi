@@ -9,6 +9,9 @@
 #include "lwip/netdb.h"
 
 static const char* TAG = "InternetHandler";
+static constexpr const char* DEFAULT_DATE = "1994/03/11";
+static constexpr const char* DEFAULT_TIME = "04:30";
+static constexpr const char* DEFAULT_DAY_OF_WEEK = "FRI";
 
 InternetHandler::InternetHandler(WiFiManager* wifiManager, NVSManager* nvsManager)
     : wifiManager(wifiManager),
@@ -161,15 +164,15 @@ void InternetHandler::update() {
 }
 
 std::string InternetHandler::getCurrentDate() const {
-    return timeHandler ? timeHandler->getCurrentDate() : "----/--/--";
+    return timeHandler ? timeHandler->getCurrentDate() : DEFAULT_DATE;
 }
 
 std::string InternetHandler::getCurrentTime() const {
-    return timeHandler ? timeHandler->getCurrentTime() : "--:--";
+    return timeHandler ? timeHandler->getCurrentTime() : DEFAULT_TIME;
 }
 
 std::string InternetHandler::getDayOfWeek() const {
-    return timeHandler ? timeHandler->getDayOfWeek() : "---";
+    return timeHandler ? timeHandler->getDayOfWeek() : DEFAULT_DAY_OF_WEEK;
 }
 
 float InternetHandler::getOutdoorTemperature() const {

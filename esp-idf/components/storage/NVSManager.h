@@ -52,6 +52,7 @@
 // Device keys
 #define NVS_KEY_DEVICE_NAME     "device_name"
 #define NVS_KEY_AP_PASSWORD     "ap_password"
+#define NVS_KEY_BT_NAME         "bt_name"
 
 // Static IP keys
 #define NVS_KEY_STATIC_ENABLED  "static_en"
@@ -104,6 +105,7 @@ public:
     // Device name
     std::string deviceName;
     std::string accessPointPassword;
+    std::string bluetoothName;
 
     // OTA settings
     std::string otaVariantId;
@@ -145,6 +147,7 @@ public:
     // Device name
     esp_err_t saveDeviceName(const std::string& name);
     esp_err_t saveAccessPointPassword(const std::string& password);
+    esp_err_t saveBluetoothName(const std::string& name);
     esp_err_t saveOtaConfig(const std::string& variantId, const std::string& manifestUrl);
 
     static std::string normalizeDeviceSuffix(const std::string& value);

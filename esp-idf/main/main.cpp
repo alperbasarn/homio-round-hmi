@@ -39,6 +39,7 @@
 #include "DeviceInfoScreen.h"
 #include "PlaceholderPageScreen.h"
 #include "BatteryHandler.h"
+#include "BluetoothManager.h"
 
 // Media
 #include "SDCard.h"
@@ -97,6 +98,7 @@ static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
 static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
+static BluetoothManager* bluetoothManager = nullptr;
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
 static Microphone* microphone = nullptr;
@@ -136,6 +138,19 @@ static void applyOtaConfigFromNvs() {
     otaManager->setDeviceVariantId(variantId);
     otaManager->setManifestUrl(manifestUrl);
     ESP_LOGI(TAG, "OTA config applied: variant=%s, manifest=%s", variantId.c_str(), manifestUrl.c_str());
+}
+
+void bluetoothInitTask(void* parameter) {
+    auto* manager = static_cast<BluetoothManager*>(parameter);
+    if (manager != nullptr) {
+        const std::string btName = (nvsManager != nullptr && !nvsManager->bluetoothName.empty())
+            ? nvsManager->bluetoothName : "Qnob PC Control";
+        const esp_err_t err = manager->begin(btName.c_str());
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Bluetooth init failed: %s", esp_err_to_name(err));
+        }
+    }
+    vTaskDelete(nullptr);
 }
 
 
@@ -179,9 +194,21 @@ void displayTask(void* parameter) {
             sleepHandler->checkActivity();
         }
 
-        // Drive UI loop at LVGL tick granularity for maximum animation smoothness.
-        vTaskDelay(pdMS_TO_TICKS(5)); // ~200 FPS
+        // Drive rendering at 50 FPS. LVGL keeps its own 5 ms tick for timing.
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
+}
+
+static void startDisplayTaskIfNeeded() {
+    if (displayTaskHandle != nullptr) {
+        return;
+    }
+
+#if DUAL_CORE_AVAILABLE
+    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+#else
+    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+#endif
 }
 
 // Main task for network-related activities
@@ -368,7 +395,6 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "MQTT not configured yet (init skipped)");
     }
     internetHandler = new InternetHandler(wifiManager, nvsManager);
-    wifiManager->connectToWiFi();
     otaManager = new OTAManager(wifiManager);
     applyOtaConfigFromNvs();
     wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
@@ -432,6 +458,11 @@ extern "C" void app_main(void) {
         bool wifi = wifiManager != nullptr && wifiManager->isConnected();
         bool internet = internetHandler != nullptr && internetHandler->isInternetAvailable();
         bool mqtt = mqttManager != nullptr && mqttManager->isConnected();
+        bool bluetoothEnabled = bluetoothManager != nullptr && bluetoothManager->isEnabled();
+        bool bluetoothReady = bluetoothManager != nullptr && bluetoothManager->isReady();
+        bool bluetoothConnected = bluetoothManager != nullptr && bluetoothManager->isConnected();
+        bool bluetoothHidConnected = bluetoothManager != nullptr && bluetoothManager->isHidConnected();
+        bool bluetoothSerialConnected = bluetoothManager != nullptr && bluetoothManager->isSerialConnected();
         int strength = wifiManager != nullptr ? wifiManager->getSignalStrength() : 0;
 
         bool batteryPresenceKnown = false;
@@ -468,6 +499,13 @@ extern "C" void app_main(void) {
         os << "\"wifi_connected\":" << (wifi ? "true" : "false") << ",";
         os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
         os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
+        const std::string btName = (nvsManager != nullptr) ? nvsManager->bluetoothName : "Qnob PC Control";
+        os << "\"bluetooth_name\":\"" << escape(btName) << "\",";
+        os << "\"bluetooth_enabled\":" << (bluetoothEnabled ? "true" : "false") << ",";
+        os << "\"bluetooth_ready\":" << (bluetoothReady ? "true" : "false") << ",";
+        os << "\"bluetooth_connected\":" << (bluetoothConnected ? "true" : "false") << ",";
+        os << "\"bluetooth_hid_connected\":" << (bluetoothHidConnected ? "true" : "false") << ",";
+        os << "\"bluetooth_serial_connected\":" << (bluetoothSerialConnected ? "true" : "false") << ",";
         os << "\"wifi_strength_bars\":" << strength << ",";
         os << "\"battery_presence_known\":" << (batteryPresenceKnown ? "true" : "false") << ",";
         os << "\"battery_connected\":" << (batteryConnected ? "true" : "false") << ",";
@@ -486,6 +524,7 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
+    bluetoothManager = &BluetoothManager::instance();
     modeController = new ModeController(touchPanel);
     initializationScreen = new InitializationScreen();
 
@@ -507,6 +546,13 @@ extern "C" void app_main(void) {
         internet = internetHandler->isInternetAvailable();
         mqtt = mqttManager->isConnected();
         strength = wifiManager->getSignalStrength();
+    });
+    deviceInfoScreen->setNetworkDetailsCallback([](std::string& ssid, std::string& ip) {
+        ssid = wifiManager != nullptr ? wifiManager->getSSID() : "";
+        ip = wifiManager != nullptr ? wifiManager->getIPAddress() : "";
+    });
+    deviceInfoScreen->setBluetoothStatusCallback([]() {
+        return bluetoothManager != nullptr && bluetoothManager->isConnected();
     });
     deviceInfoScreen->setBatteryCallback([]() -> DeviceBatteryStatus {
         if (batteryHandler && batteryHandler->isInitialized()) {
@@ -537,7 +583,12 @@ extern "C" void app_main(void) {
         }
     });
 
-    placeholderPageScreen = new PlaceholderPageScreen();
+    placeholderPageScreen = new PlaceholderPageScreen(touchPanel);
+    placeholderPageScreen->setPlayPauseAction([]() {
+        if (bluetoothManager != nullptr) {
+            bluetoothManager->sendPlayPause();
+        }
+    });
 
     soundController = new SoundController(touchPanel);
     lightController = new LightController(touchPanel);
@@ -551,6 +602,24 @@ extern "C" void app_main(void) {
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
+    deviceInfoScreen->setBrightnessControlCallbacks(
+        []() {
+            return displayController != nullptr ? displayController->getBrightnessPercent() : 100;
+        },
+        [](int percent) {
+            if (displayController != nullptr) {
+                displayController->setBrightnessPercent(percent);
+            }
+        });
+    deviceInfoScreen->setSoundControlCallbacks(
+        []() {
+            return soundController != nullptr ? soundController->getSetpoint() : 50;
+        },
+        [](int percent) {
+            if (soundController != nullptr) {
+                soundController->updateSetpoint(percent);
+            }
+        });
     wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
         if (commandHandler != nullptr) {
             commandHandler->handleExternalCommand("screen:" + screen);
@@ -581,6 +650,8 @@ extern "C" void app_main(void) {
     gfx->setBrightness(255);
 
     displayController->init();
+    startDisplayTaskIfNeeded();
+    wifiManager->connectToWiFi();
 
     // Initialize Sleep Handler (power management)
     ESP_LOGI(TAG, "Initializing sleep handler...");
@@ -625,6 +696,7 @@ extern "C" void app_main(void) {
     commandHandler->registerKnobController(knobController);
     commandHandler->registerMediaController(mediaController);
     commandHandler->registerOTAManager(otaManager);
+    commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() {
         applyOtaConfigFromNvs();
     });
@@ -678,14 +750,15 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Initialization complete. Starting tasks...");
 
     // Start tasks
+    startDisplayTaskIfNeeded();
 #if DUAL_CORE_AVAILABLE
-    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
     xTaskCreatePinnedToCore(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle, NETWORK_CORE);
     xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle, NETWORK_CORE);
+    xTaskCreatePinnedToCore(bluetoothInitTask, "BluetoothInit", 8192, bluetoothManager, 3, nullptr, NETWORK_CORE);
 #else
-    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
     xTaskCreate(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle);
     xTaskCreate(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle);
+    xTaskCreate(bluetoothInitTask, "BluetoothInit", 8192, bluetoothManager, 3, nullptr);
 #endif
 
     if (startupChimeReady) {

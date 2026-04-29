@@ -152,6 +152,20 @@ esp_err_t SetupPortal::startHttpServer() {
     screenControlPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &screenControlPost);
 
+    httpd_uri_t brightnessControlPost = {};
+    brightnessControlPost.uri = "/api/control/brightness";
+    brightnessControlPost.method = HTTP_POST;
+    brightnessControlPost.handler = brightnessControlPostHandler;
+    brightnessControlPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &brightnessControlPost);
+
+    httpd_uri_t bluetoothControlPost = {};
+    bluetoothControlPost.uri = "/api/control/bluetooth";
+    bluetoothControlPost.method = HTTP_POST;
+    bluetoothControlPost.handler = bluetoothControlPostHandler;
+    bluetoothControlPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &bluetoothControlPost);
+
     httpd_uri_t otaPost = {};
     otaPost.uri = "/api/ota";
     otaPost.method = HTTP_POST;
@@ -492,6 +506,30 @@ esp_err_t SetupPortal::screenControlPostHandler(httpd_req_t* req) {
     return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
 }
 
+esp_err_t SetupPortal::brightnessControlPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+
+    std::string response;
+    self->saveBrightnessControlFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::bluetoothControlPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+
+    std::string response;
+    self->saveBluetoothControlFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
 esp_err_t SetupPortal::mqttPostHandler(httpd_req_t* req) {
     auto* self = static_cast<SetupPortal*>(req->user_ctx);
     if (self == nullptr) {
@@ -628,7 +666,9 @@ std::string SetupPortal::renderRootPage() const {
      << "<div class='subtabs'><button class='active-tab' type='button'>Screens</button></div>"
          << "<section><h2>Screen Control</h2><div class='overview'><div class='label'>Current Screen</div><div class='value' id='ovCurrentScreen'>-</div><div></div></div><form id='screenForm'><label>Screen</label><select name='screen'>"
     << "<option value='info'>Environment Info</option><option value='deviceInfo'>Device Info</option><option value='timer'>Timer / Chronometer</option><option value='light'>Light Control</option><option value='sound'>Sound Control</option><option value='temperature'>Temperature Control</option><option value='pc'>PC Control</option><option value='calibrate'>Calibrate Orientation</option>"
-     << "</select><button type='submit'>Switch Screen</button></form></section></div>"
+     << "</select><button type='submit'>Switch Screen</button></form></section>"
+     << "<section><h2>Screen Brightness</h2><form id='brightnessForm'><label>Brightness: <span id='brightnessValue'>100</span>%</label><input id='brightnessInput' name='percentage' type='range' min='0' max='100' value='100'><button type='submit'>Set Brightness</button></form></section>"
+     << "<section><h2>Bluetooth</h2><form id='bluetoothForm'><label>Status: <span id='bluetoothStatus'>-</span></label><select name='enabled'><option value='on'>Enabled</option><option value='off'>Disabled</option></select><label style='display:block;margin-top:10px;'>Name<input name='bt_name' type='text' maxlength='32' placeholder='Qnob PC Control' style='margin-left:8px;width:220px;'></label><small>Name change takes effect after device restart.</small><button type='submit'>Apply Bluetooth</button></form></section></div>"
      << "<pre id='result'></pre>"
      << "<script>"
      << "const resultEl=document.getElementById('result');const secrets={};const staticIpBtn=document.getElementById('staticIpBtn');"
@@ -638,7 +678,7 @@ std::string SetupPortal::renderRootPage() const {
      << "function toggleSecret(btn){const id=btn.dataset.target;const showing=btn.dataset.showing==='true';setText(id,showing?maskValue(secrets[id]):(secrets[id]||'(not set)'));btn.dataset.showing=showing?'false':'true';btn.textContent=showing?'Show':'Hide';}"
      << "document.querySelectorAll('.toggle').forEach(b=>b.addEventListener('click',()=>toggleSecret(b)));"
      << "document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.remove('active-tab'));btn.classList.add('active-tab');document.getElementById('configureTab').classList.toggle('hidden',btn.dataset.tab!=='configureTab');document.getElementById('controlTab').classList.toggle('hidden',btn.dataset.tab!=='controlTab');}));"
-        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}}"
+        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}fetch('/api/device-info').then(r=>r.json()).then(di=>{const bf=document.getElementById('bluetoothForm');if(bf){bf.enabled.value=di.bluetooth_enabled===false?'off':'on';const bnf=bf.querySelector('[name=bt_name]');if(bnf&&di.bluetooth_name)bnf.value=di.bluetooth_name;}setText('bluetoothStatus',di.bluetooth_connected?'Connected':(di.bluetooth_enabled?'Enabled':'Disabled'));}).catch(()=>{});}"
      << "async function scan(){const s=document.getElementById('scanList');s.innerHTML='';const wait=document.createElement('option');wait.textContent='Scanning...';wait.disabled=true;wait.selected=true;s.appendChild(wait);try{const r=await fetch('/api/scan');const d=await r.json();s.innerHTML='';(d.networks||[]).forEach(n=>{const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+'dBm)';s.appendChild(o);});if(!s.options.length){const o=document.createElement('option');o.textContent='No networks found';o.disabled=true;o.selected=true;s.appendChild(o);}resultEl.textContent=JSON.stringify(d,null,2);}catch(e){s.innerHTML='';const o=document.createElement('option');o.textContent='Scan failed';o.disabled=true;o.selected=true;s.appendChild(o);resultEl.textContent=JSON.stringify({ok:false,message:String(e)},null,2);}}"
      << "function formBody(f){return new URLSearchParams(new FormData(f)).toString();}"
      << "async function postForm(id,url,extra){const f=document.getElementById(id);const data=formBody(f)+(extra||'');const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:data});resultEl.textContent=JSON.stringify(await r.json(),null,2);refreshStatus();}"
@@ -648,6 +688,8 @@ std::string SetupPortal::renderRootPage() const {
       << "document.getElementById('otaUpdateBtn').addEventListener('click',()=>{fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('wifiForm').addEventListener('submit',e=>{e.preventDefault();const f=e.target;const selected=document.getElementById('scanList').value;const manual=f.ssid_manual.value.trim();const ssid=manual||selected;if(!ssid||ssid==='No networks found'||ssid==='Scan failed'||ssid==='Scanning...'){resultEl.textContent=JSON.stringify({ok:false,message:'SSID is required'},null,2);return;}const p=new URLSearchParams();p.set('ssid',ssid);p.set('password',f.password.value||'');fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('screenForm').addEventListener('submit',e=>{e.preventDefault();postForm('screenForm','/api/control/screen');});"
+     << "const brightnessInput=document.getElementById('brightnessInput');const brightnessValue=document.getElementById('brightnessValue');brightnessInput.addEventListener('input',()=>{brightnessValue.textContent=brightnessInput.value;});document.getElementById('brightnessForm').addEventListener('submit',e=>{e.preventDefault();postForm('brightnessForm','/api/control/brightness');});"
+     << "document.getElementById('bluetoothForm').addEventListener('submit',e=>{e.preventDefault();postForm('bluetoothForm','/api/control/bluetooth');});"
      << "staticIpBtn.addEventListener('click',()=>{fetch('/api/static-ip/current',{method:'POST'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
      << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
@@ -674,6 +716,7 @@ std::string SetupPortal::renderDeviceInfoPage() const {
          << "<div class='k'>WiFi</div><div id='wifi' class='v'>-</div>"
          << "<div class='k'>Internet</div><div id='internet' class='v'>-</div>"
          << "<div class='k'>MQTT</div><div id='mqtt' class='v'>-</div>"
+         << "<div class='k'>Bluetooth</div><div id='bluetooth' class='v'>-</div>"
          << "<div class='k'>WiFi Strength</div><div id='wifiStrength' class='v'>-</div>"
          << "<div class='k'>Battery Presence</div><div id='batteryPresence' class='v'>-</div>"
          << "<div class='k'>Battery Connected</div><div id='batteryConnected' class='v'>-</div>"
@@ -695,6 +738,7 @@ std::string SetupPortal::renderDeviceInfoPage() const {
          << "function txt(id,v){const e=document.getElementById(id);if(e)e.textContent=(v===undefined||v===null||v==='')?'-':String(v);}"
          << "async function refresh(){try{const r=await fetch('/api/device-info');const d=await r.json();"
          << "txt('wifi',yn(d.wifi_connected));txt('internet',yn(d.internet_connected));txt('mqtt',yn(d.mqtt_connected));"
+         << "txt('bluetooth',d.bluetooth_connected?'Connected':(d.bluetooth_enabled?'Enabled':'Disabled'));"
          << "txt('wifiStrength',String(d.wifi_strength_bars||0)+' bars');txt('batteryPresence',d.battery_presence_known?'Known':'Unknown');"
          << "txt('batteryConnected',d.battery_connected?'Yes':'No');txt('batteryPctAvailable',d.battery_percentage_available?'Yes':'No');"
          << "txt('batteryPct',d.battery_percentage_available?(String(d.battery_percentage)+'%'):'N/A');"
@@ -770,6 +814,10 @@ std::string SetupPortal::renderDeviceInfoStatusJson() const {
     os << "\"wifi_connected\":" << (wifiManager && wifiManager->isConnected() ? "true" : "false") << ",";
     os << "\"internet_connected\":false,";
     os << "\"mqtt_connected\":false,";
+    os << "\"bluetooth_enabled\":false,";
+    os << "\"bluetooth_connected\":false,";
+    os << "\"bluetooth_hid_connected\":false,";
+    os << "\"bluetooth_serial_connected\":false,";
     os << "\"wifi_strength_bars\":" << (wifiManager ? wifiManager->getSignalStrength() : 0) << ",";
     os << "\"battery_presence_known\":false,";
     os << "\"battery_connected\":false,";
@@ -840,6 +888,50 @@ esp_err_t SetupPortal::saveScreenControlFromForm(const std::string& body, std::s
 
     commandCallback(std::string("screen:") + screen);
     responseJson = std::string("{\"ok\":true,\"screen\":\"") + jsonEscape(screen) + "\"}";
+    return ESP_OK;
+}
+
+esp_err_t SetupPortal::saveBrightnessControlFromForm(const std::string& body, std::string& responseJson) {
+    const std::string percent = getFormValue(body, "percentage");
+    if (percent.empty() || !commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Brightness control unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char* end = nullptr;
+    const long parsed = strtol(percent.c_str(), &end, 10);
+    if (end == percent.c_str() || *end != '\0') {
+        responseJson = "{\"ok\":false,\"message\":\"Invalid brightness percentage\"}";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const int clamped = std::max(0, std::min(100, static_cast<int>(parsed)));
+    commandCallback(std::string("setBrightness:") + std::to_string(clamped));
+    responseJson = std::string("{\"ok\":true,\"percentage\":") + std::to_string(clamped) + "}";
+    return ESP_OK;
+}
+
+esp_err_t SetupPortal::saveBluetoothControlFromForm(const std::string& body, std::string& responseJson) {
+    const std::string enabled = getFormValue(body, "enabled");
+    if (enabled.empty() || !commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Bluetooth control unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    std::string value = enabled;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    const bool turnOn = !(value == "off" || value == "disable" || value == "disabled" ||
+                          value == "0" || value == "false");
+    commandCallback(std::string("setBluetooth:") + (turnOn ? "on" : "off"));
+
+    const std::string btName = getFormValue(body, "bt_name");
+    if (!btName.empty()) {
+        commandCallback(std::string("setBluetoothName:") + btName);
+    }
+
+    responseJson = std::string("{\"ok\":true,\"enabled\":") + (turnOn ? "true" : "false") + "}";
     return ESP_OK;
 }
 

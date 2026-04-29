@@ -25,10 +25,10 @@ InfoScreen::InfoScreen(LGFX* graphics, TouchPanel* touch)
       screenInitialized(false),
       pageBackRequested(false),
       lvglReady(false),
-      currentDate("--/--"),
-      currentTime("--:--"),
-      formattedDate("-- ---"),
-      currentDayOfWeek("---"),
+      currentDate("1994/03/11"),
+      currentTime("04:30"),
+      formattedDate("11 MAR"),
+      currentDayOfWeek("FRI"),
       lastFormattedDate(""),
       lastFormattedTime(""),
       colonVisible(true),
@@ -166,11 +166,14 @@ void InfoScreen::buildUi() {
 
     const int framePadding = std::max(scalePx(10), displaySize / 20);
     const int outerDiameter = displaySize - (2 * framePadding);
-    const int outerArcWidth = std::max(scalePx(12), displaySize / 18);
-    const int ringGap = std::max(scalePx(4), displaySize / 58);
-    const int innerArcWidth = std::max(scalePx(9), outerArcWidth - scalePx(8));
+    const int outerArcWidth = std::max(scalePx(14), displaySize / 13);
+    const int baseInnerArcWidth = std::max(scalePx(11), static_cast<int>(outerArcWidth * 0.75f));
+    const int ringGap = std::max(scalePx(2), outerArcWidth / 12);
     const int innerDiameter = std::max(scalePx(120), outerDiameter - 2 * (outerArcWidth + ringGap));
-    const int centerDiameter = std::max(scalePx(90), innerDiameter - 2 * (innerArcWidth + scalePx(8)));
+    const int centerGap = std::max(scalePx(1), baseInnerArcWidth / 10);
+    const int baseCenterDiameter = std::max(scalePx(90), innerDiameter - 2 * (baseInnerArcWidth + centerGap));
+    const int centerDiameter = std::max(scalePx(81), static_cast<int>(std::lround(baseCenterDiameter * 0.90f)));
+    const int innerArcWidth = std::max(baseInnerArcWidth, ((innerDiameter - centerDiameter) / 2) - centerGap);
 
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
@@ -249,20 +252,37 @@ void InfoScreen::buildUi() {
     lv_obj_set_style_shadow_opa(centerDisc, LV_OPA_60, 0);
     lv_obj_clear_flag(centerDisc, LV_OBJ_FLAG_SCROLLABLE);
 
-    timeLabel = lv_label_create(centerDisc);
+    const int labelStackOffset = std::min(scalePx(52), centerDiameter / 3);
+
+    timeLabel = lv_label_create(root);
     lv_obj_set_style_text_color(timeLabel, lv_color_white(), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_48)
+    lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_48, 0);
+#elif defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    lv_obj_set_style_text_font(timeLabel, &lv_font_montserrat_32, 0);
+#endif
     lv_label_set_text(timeLabel, "--:--");
-    lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, -scalePx(20));
+    lv_obj_align(timeLabel, LV_ALIGN_CENTER, 0, 0);
 
-    dayLabel = lv_label_create(centerDisc);
+    dayLabel = lv_label_create(root);
     lv_obj_set_style_text_color(dayLabel, lv_color_hex(0x9AA8BA), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    lv_obj_set_style_text_font(dayLabel, &lv_font_montserrat_32, 0);
+#elif defined(CONFIG_LV_FONT_MONTSERRAT_28)
+    lv_obj_set_style_text_font(dayLabel, &lv_font_montserrat_28, 0);
+#endif
     lv_label_set_text(dayLabel, "---");
-    lv_obj_align(dayLabel, LV_ALIGN_CENTER, 0, scalePx(4));
+    lv_obj_align(dayLabel, LV_ALIGN_CENTER, 0, -labelStackOffset);
 
-    dateLabel = lv_label_create(centerDisc);
+    dateLabel = lv_label_create(root);
     lv_obj_set_style_text_color(dateLabel, lv_color_hex(0xC7D0DD), 0);
+#if defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    lv_obj_set_style_text_font(dateLabel, &lv_font_montserrat_32, 0);
+#elif defined(CONFIG_LV_FONT_MONTSERRAT_28)
+    lv_obj_set_style_text_font(dateLabel, &lv_font_montserrat_28, 0);
+#endif
     lv_label_set_text(dateLabel, "-- ---");
-    lv_obj_align(dateLabel, LV_ALIGN_CENTER, 0, scalePx(22));
+    lv_obj_align(dateLabel, LV_ALIGN_CENTER, 0, labelStackOffset);
 
     indoorTempLabel = lv_label_create(root);
     lv_obj_set_style_text_color(indoorTempLabel, lv_color_hex(0xA0FF8C), 0);

@@ -375,6 +375,17 @@ esp_err_t NVSManager::saveTimeApiToken(const std::string& apiToken)
     return ESP_OK;
 }
 
+esp_err_t NVSManager::saveBluetoothName(const std::string& name)
+{
+    if (name.empty()) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bluetoothName = name;
+    writeString(NVS_KEY_BT_NAME, bluetoothName);
+    ESP_LOGI(TAG, "Bluetooth name saved: %s", bluetoothName.c_str());
+    return ESP_OK;
+}
+
 esp_err_t NVSManager::saveDeviceName(const std::string& name)
 {
     deviceName = formatDeviceName(name);
@@ -501,6 +512,12 @@ esp_err_t NVSManager::loadAllConfigurations()
         !isValidAccessPointPassword(accessPointPassword)) {
         accessPointPassword = deviceName;
         writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
+    }
+
+    // Bluetooth name
+    readString(NVS_KEY_BT_NAME, bluetoothName, "Qnob PC Control");
+    if (bluetoothName.empty()) {
+        bluetoothName = "Qnob PC Control";
     }
 
     // OTA settings

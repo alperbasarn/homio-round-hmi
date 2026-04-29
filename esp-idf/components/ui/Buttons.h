@@ -35,6 +35,7 @@ public:
 class PlayButton : public Button {
 public:
     PlayButton(TouchPanel* touch);
+    using Button::initialize;
     void initialize(int centerX, int centerY, int buttonSize);
     void draw() override;
 };
@@ -42,6 +43,7 @@ public:
 class PauseButton : public Button {
 public:
     PauseButton(TouchPanel* touch);
+    using Button::initialize;
     void initialize(int centerX, int centerY, int buttonSize);
     void draw() override;
 };
@@ -49,6 +51,7 @@ public:
 class RewindButton : public Button {
 public:
     RewindButton(TouchPanel* touch);
+    using Button::initialize;
     void initialize(int centerX, int centerY, int buttonSize);
     void draw() override;
 };
@@ -56,6 +59,7 @@ public:
 class ForwardButton : public Button {
 public:
     ForwardButton(TouchPanel* touch);
+    using Button::initialize;
     void initialize(int centerX, int centerY, int buttonSize);
     void draw() override;
 };

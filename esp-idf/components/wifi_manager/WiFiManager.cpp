@@ -233,31 +233,45 @@ std::string WiFiManager::generateAPName()
 esp_err_t WiFiManager::startAPMode()
 {
     std::string ap_name = generateAPName();
+    if (ap_name.empty()) {
+        ap_name = "Homio-0000";
+    }
+    if (ap_name.size() > 32) {
+        ap_name.resize(32);
+    }
+
     std::string ap_password = (nvs_manager && !nvs_manager->accessPointPassword.empty())
         ? nvs_manager->accessPointPassword
         : ap_name;
-    if (ap_password.size() < 8) {
+    if ((ap_password.size() < 8 || ap_password.size() > 63) &&
+        ap_name.size() >= 8 && ap_name.size() <= 63) {
         ap_password = ap_name;
     }
 
+    const bool use_password = ap_password.size() >= 8 && ap_password.size() <= 63;
+    const int ap_channel = (wifi_channel >= 1 && wifi_channel <= 13) ? wifi_channel : WIFI_AP_CHANNEL;
+    wifi_channel = ap_channel;
+
     wifi_config_t ap_config = {};
     strncpy((char*)ap_config.ap.ssid, ap_name.c_str(), sizeof(ap_config.ap.ssid) - 1);
-    strncpy((char*)ap_config.ap.password, ap_password.c_str(), sizeof(ap_config.ap.password) - 1);
+    if (use_password) {
+        strncpy((char*)ap_config.ap.password, ap_password.c_str(), sizeof(ap_config.ap.password) - 1);
+    }
     ap_config.ap.ssid_len = ap_name.length();
-    ap_config.ap.channel = wifi_channel;
+    ap_config.ap.channel = ap_channel;
     ap_config.ap.max_connection = WIFI_AP_MAX_CONNECTIONS;
-    ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap_config.ap.authmode = use_password ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
-    if (ap_password.empty()) {
-        ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure AP %s: %s", ap_name.c_str(), esp_err_to_name(err));
+        return err;
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
-
-    ESP_LOGI(TAG, "AP started: %s (channel %d)", ap_name.c_str(), wifi_channel);
+    ESP_LOGI(TAG, "AP started: %s (channel %d)", ap_name.c_str(), ap_channel);
     ap_mode_active = true;
     current_ap_ssid = ap_name;
-    current_ap_password = ap_password;
+    current_ap_password = use_password ? ap_password : "";
 
     esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap_netif != nullptr) {
@@ -470,7 +484,9 @@ esp_err_t WiFiManager::connectToWiFi()
 
     // No successful STA connection: keep AP only to avoid repeated STA warning spam.
     esp_wifi_disconnect();
+    wifi_channel = WIFI_AP_CHANNEL;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    startAPMode();
     ESP_LOGW(TAG, "Failed to connect to any stored network");
     return ESP_ERR_WIFI_NOT_CONNECT;
 }

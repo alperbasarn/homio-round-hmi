@@ -30,9 +30,6 @@ private:
     std::string currentDayOfWeek;
     std::string lastFormattedDate;
     std::string lastFormattedTime;
-    bool colonVisible;
-    int64_t lastColonToggleTime;
-    static constexpr int64_t COLON_BLINK_INTERVAL = 1000;
 
     // Temperature data
     float indoorTemp;
@@ -52,20 +49,23 @@ private:
     static constexpr float ARC_START_ANGLE = 120.0f;
     static constexpr float ARC_LENGTH = 300.0f;
     static constexpr int ARC_RANGE_MAX = 1000;
-    static constexpr int64_t ANIMATION_DURATION = 665;  // 950ms * 0.7 — 30% faster
+    static constexpr int64_t ANIMATION_DURATION = 500;
+    static constexpr int64_t TEXT_INTRO_FADE_DURATION = 500;
+    static constexpr int64_t COLON_FADE_DURATION = 1000;
+    static constexpr int64_t ANIMATION_FRAME_INTERVAL_MS = 20;
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
     static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
 
-
-    // LVGL widgets (text + center disc + tracks only during animation)
+    // LVGL widgets
     lv_obj_t* root;
-    lv_obj_t* outdoorTrackArc;
-    lv_obj_t* indoorTrackArc;
     lv_obj_t* outdoorArc;
     lv_obj_t* indoorArc;
     lv_obj_t* centerDisc;
     lv_obj_t* timeLabel;
+    lv_obj_t* hourLabel;
+    lv_obj_t* colonLabel;
+    lv_obj_t* minuteLabel;
     lv_obj_t* dayLabel;
     lv_obj_t* dateLabel;
     lv_obj_t* indoorTempLabel;
@@ -75,9 +75,9 @@ private:
     int currentOutdoorArcValue;
     int targetIndoorArcValue;
     int targetOutdoorArcValue;
-    int currentIndoorTrackValue;
-    int currentOutdoorTrackValue;
     bool animationPending;
+    bool introAnimationActive;
+    int64_t introAnimationStartedAt;
 
     // Callbacks for external data
     DateTimeCallback dateTimeCallback;
@@ -90,25 +90,30 @@ private:
     void positionTemperatureLabels();
     void applyIndoorArcFromValue(int value);
     void applyOutdoorArcFromValue(int value);
-    void applyIndoorTrackFromValue(int value);
-    void applyOutdoorTrackFromValue(int value);
+    void updateTimeLabels();
+    void positionTimeLabels();
+    void setIntroTextFade(int32_t value);
+    void setColonFade(int32_t value);
+    void setArcGlowEnabled(bool enabled);
+    float easeInOut(float progress) const;
+    void runIntroAnimation(int indoorValue, int outdoorValue);
+    void runOutroAnimation();
+    void startTextIntroFadeAnimation();
+    void startColonFadeAnimation(uint32_t delayMs);
 
     // Arc animations
     void startAnimations();
     void startIndoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     void startOutdoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
-    void startIndoorTrackAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
-    void startOutdoorTrackAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     static void indoorArcAnimExec(void* var, int32_t value);
     static void outdoorArcAnimExec(void* var, int32_t value);
-    static void indoorTrackAnimExec(void* var, int32_t value);
-    static void outdoorTrackAnimExec(void* var, int32_t value);
+    static void textIntroFadeAnimExec(void* var, int32_t value);
+    static void colonFadeAnimExec(void* var, int32_t value);
 
     // Data helpers
     void formatDate();
     std::string getMonthName(int month);
     lv_color_t getTemperatureColor(float temperature, bool isIndoor);
-    std::string getTimeStringForDisplay() const;
     int scalePx(int referencePx) const;
 
     // Helper functions

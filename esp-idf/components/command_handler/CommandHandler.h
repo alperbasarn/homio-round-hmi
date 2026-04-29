@@ -14,6 +14,7 @@ class WiFiManager;
 class MQTTManager;
 class MediaController;
 class OTAManager;
+class BluetoothManager;
 
 class CommandHandler {
 public:
@@ -24,6 +25,7 @@ public:
     void registerKnobController(KnobController* kc);
     void registerMediaController(MediaController* mc);
     void registerOTAManager(OTAManager* ota);
+    void registerBluetoothManager(BluetoothManager* bt);
     void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
 
 private:
@@ -42,6 +44,7 @@ private:
     MQTTManager* mqttManager;
     MediaController* mediaController;
     OTAManager* otaManager;
+    BluetoothManager* bluetoothManager;
     std::function<void(void)> otaConfigUpdatedCallback;
 
     std::map<std::string, Command> commands;
@@ -78,6 +81,9 @@ private:
     void cmdStartSoundRecord(const std::string& params);
     void cmdStopSoundRecord(const std::string& params);
     void cmdPlayLastSoundRecord(const std::string& params);
+    void cmdSetBrightness(const std::string& params);
+    void cmdSetBluetooth(const std::string& params);
+    void cmdSetBluetoothName(const std::string& params);
     void cmdOTAUpdate(const std::string& params);
     void cmdOTAInfo(const std::string& params);
     void cmdOTAStatus(const std::string& params);

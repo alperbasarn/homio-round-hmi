@@ -6,6 +6,7 @@
 #include "MQTTManager.h"
 #include "MediaController.h"
 #include "OTAManager.h"
+#include "BluetoothManager.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -28,7 +29,8 @@ CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManag
       wifiManager(wifi),
       mqttManager(mqtt),
       mediaController(nullptr),
-      otaManager(nullptr) {
+      otaManager(nullptr),
+      bluetoothManager(nullptr) {
 }
 
 void CommandHandler::begin() {
@@ -61,6 +63,10 @@ void CommandHandler::registerMediaController(MediaController* mc) {
 
 void CommandHandler::registerOTAManager(OTAManager* ota) {
     otaManager = ota;
+}
+
+void CommandHandler::registerBluetoothManager(BluetoothManager* bt) {
+    bluetoothManager = bt;
 }
 
 void CommandHandler::setOtaConfigUpdatedCallback(std::function<void(void)> callback) {
@@ -226,6 +232,9 @@ void CommandHandler::registerCommands() {
     commands["startSoundRecord"] = {"startSoundRecord", [this](const std::string& p) { this->cmdStartSoundRecord(p); }, "startSoundRecord[:filename] - Start recording audio to SD"};
     commands["stopSoundRecord"] = {"stopSoundRecord", [this](const std::string& p) { this->cmdStopSoundRecord(p); }, "stopSoundRecord - Stop active audio recording"};
     commands["playLastSoundRecord"] = {"playLastSoundRecord", [this](const std::string& p) { this->cmdPlayLastSoundRecord(p); }, "playLastSoundRecord - Play the most recent recording"};
+    commands["setBrightness"] = {"setBrightness", [this](const std::string& p) { this->cmdSetBrightness(p); }, "setBrightness:0-100 - Set screen brightness percentage"};
+    commands["setBluetooth"] = {"setBluetooth", [this](const std::string& p) { this->cmdSetBluetooth(p); }, "setBluetooth:on|off - Enable or disable Bluetooth LE"};
+    commands["setBluetoothName"] = {"setBluetoothName", [this](const std::string& p) { this->cmdSetBluetoothName(p); }, "setBluetoothName:name - Set Bluetooth device name (takes effect after restart)"};
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
@@ -599,6 +608,82 @@ void CommandHandler::cmdPlayLastSoundRecord(const std::string& params) {
     }
 
     ESP_LOGI(TAG, "Playing last sound recording.");
+}
+
+void CommandHandler::cmdSetBrightness(const std::string& params) {
+    if (displayController == nullptr) {
+        ESP_LOGE(TAG, "DisplayController not registered.");
+        publishResponse("setBrightness:ERR:display_controller_not_registered");
+        return;
+    }
+
+    const std::string value = trimCommand(params);
+    if (value.empty()) {
+        ESP_LOGE(TAG, "Usage: setBrightness:0-100");
+        publishResponse("setBrightness:ERR:missing_percentage");
+        return;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0') {
+        ESP_LOGE(TAG, "Invalid brightness percentage: %s", value.c_str());
+        publishResponse("setBrightness:ERR:invalid_percentage");
+        return;
+    }
+
+    const int percent = std::clamp(static_cast<int>(parsed), 0, 100);
+    displayController->setBrightnessPercent(percent);
+    publishResponse("setBrightness:OK:" + std::to_string(percent));
+}
+
+void CommandHandler::cmdSetBluetooth(const std::string& params) {
+    if (bluetoothManager == nullptr) {
+        ESP_LOGE(TAG, "BluetoothManager not registered.");
+        publishResponse("setBluetooth:ERR:bluetooth_manager_not_registered");
+        return;
+    }
+
+    std::string value = trimCommand(params);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    bool enable = true;
+    if (value == "on" || value == "enable" || value == "enabled" || value == "1" || value == "true") {
+        enable = true;
+    } else if (value == "off" || value == "disable" || value == "disabled" || value == "0" || value == "false") {
+        enable = false;
+    } else {
+        ESP_LOGE(TAG, "Usage: setBluetooth:on|off");
+        publishResponse("setBluetooth:ERR:invalid_value");
+        return;
+    }
+
+    const esp_err_t err = bluetoothManager->setEnabled(enable);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Bluetooth state: %s", esp_err_to_name(err));
+        publishResponse("setBluetooth:ERR:" + std::string(esp_err_to_name(err)));
+        return;
+    }
+
+    publishResponse(std::string("setBluetooth:OK:") + (enable ? "on" : "off"));
+}
+
+void CommandHandler::cmdSetBluetoothName(const std::string& params) {
+    const std::string name = trimCommand(params);
+    if (name.empty()) {
+        ESP_LOGE(TAG, "Usage: setBluetoothName:name");
+        publishResponse("setBluetoothName:ERR:empty_name");
+        return;
+    }
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "NVSManager not available");
+        publishResponse("setBluetoothName:ERR:nvs_unavailable");
+        return;
+    }
+    nvsManager->saveBluetoothName(name);
+    publishResponse("setBluetoothName:OK:restart_required");
 }
 
 void CommandHandler::cmdOTAUpdate(const std::string& params) {

@@ -93,6 +93,7 @@ public:
     void updateSetpoint(int setpoint);
     void incrementSetpoint();
     void decrementSetpoint();
+    int getSetpoint() const { return setpoint; }
 
     // Media control methods
     void togglePlayPause();

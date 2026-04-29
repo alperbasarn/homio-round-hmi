@@ -7,13 +7,16 @@
 #include <cstdio>
 
 static const char* TAG = "TimeHandler";
+static constexpr const char* DEFAULT_DATE = "1994/03/11";
+static constexpr const char* DEFAULT_TIME = "04:30";
+static constexpr const char* DEFAULT_DAY_OF_WEEK = "FRI";
 
 TimeHandler::TimeHandler(int timeZone)
     : timeZone(timeZone), lastNtpSyncTime(0), lastTimeCheckTime(0), timeInitialized(false) {
 
-    currentDate = "----/--/--";
-    currentTime = "--:--";
-    dayOfWeek = "---";
+    currentDate = DEFAULT_DATE;
+    currentTime = DEFAULT_TIME;
+    dayOfWeek = DEFAULT_DAY_OF_WEEK;
 
     // Configure timezone
     char tzStr[32];

@@ -46,10 +46,14 @@ private:
   int64_t lastActivityTime;
   int64_t initializationStartTime;
   bool displayIsOn;
+  int brightnessPercent;
   int initializationProgress;
   int64_t initializationCompleteTime;
+  int64_t touchSoundCandidateSinceMs;
   int currentPageX;
   int currentPageY;
+  bool touchSoundPressedState;
+  bool touchSoundCandidateState;
   std::atomic<int> pendingModeRequest;
   std::atomic<int> pendingPageRequest;
 
@@ -86,6 +90,8 @@ public:
 
   void turnDisplayOff();
   void turnDisplayOn();
+  void setBrightnessPercent(int percent);
+  int getBrightnessPercent() const;
 
   ~DisplayController();
 };
