@@ -87,6 +87,7 @@ private:
     bool initialized;
     bool enabled;
     bool cpu_freq_reduced;
+    bool cpu_freq_reduce_attempted;
     bool power_save_enabled;
     bool light_sleep_enabled;
 

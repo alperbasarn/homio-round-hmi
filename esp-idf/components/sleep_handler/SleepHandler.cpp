@@ -8,6 +8,7 @@
 #include "soc/rtc.h"
 
 static const char *TAG = "SleepHandler";
+static constexpr uint32_t kLightSleepSliceMs = 1000;
 
 // Singleton instance
 static SleepHandler* s_instance = nullptr;
@@ -49,6 +50,7 @@ SleepHandler::SleepHandler(SemaphoreHandle_t* mutex)
       initialized(false),
       enabled(false),
       cpu_freq_reduced(false),
+            cpu_freq_reduce_attempted(false),
       power_save_enabled(false),
       light_sleep_enabled(false),
       last_activity_time(0),
@@ -99,6 +101,7 @@ void SleepHandler::resetActivityTime()
 void SleepHandler::registerActivity()
 {
     resetActivityTime();
+    cpu_freq_reduce_attempted = false;
 
     // Exit light sleep mode if active
     if (light_sleep_enabled) {
@@ -170,7 +173,7 @@ void SleepHandler::checkActivity()
     int64_t inactivity_time = current_time - last_activity_time;
 
     // Stage 0: Reduce CPU frequency to 50% at 20s
-    if (!cpu_freq_reduced && inactivity_time >= cpu_freq_reduce_timeout_ms) {
+    if (!cpu_freq_reduced && !cpu_freq_reduce_attempted && inactivity_time >= cpu_freq_reduce_timeout_ms) {
         ESP_LOGI(TAG, "Stage 0: Reducing CPU frequency to 50%% after %lld ms", inactivity_time);
         reduceCpuFrequency();
     }
@@ -192,8 +195,9 @@ void SleepHandler::checkActivity()
         ESP_LOGI(TAG, "Stage 2: Entering light sleep after %lld ms", inactivity_time);
         light_sleep_enabled = true;
 
-        // Enter light sleep with GPIO wakeup
-        enterLightSleep(0);  // 0 = indefinite, rely on GPIO wakeup
+        // Use short slices instead of indefinite sleep so serial/JTAG and
+        // service tasks recover predictably after wake events.
+        enterLightSleep(kLightSleepSliceMs);
 
         // If we wake up here, reset the light sleep flag
         light_sleep_enabled = false;
@@ -211,6 +215,8 @@ void SleepHandler::reduceCpuFrequency()
     if (cpu_freq_reduced || original_cpu_freq_mhz == 0) {
         return;
     }
+
+    cpu_freq_reduce_attempted = true;
 
     // Calculate target frequency (50% of original)
     uint32_t target_freq_mhz = original_cpu_freq_mhz / 2;
