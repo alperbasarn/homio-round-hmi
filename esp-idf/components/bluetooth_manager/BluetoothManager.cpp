@@ -404,6 +404,10 @@ void BluetoothManager::onHidEvent(int event, void* rawParam) {
                 hidRemoteKnown = true;
                 std::memcpy(hidRemoteBda, param->connect.remote_bda, sizeof(hidRemoteBda));
             }
+            // iOS/iPadOS often reads battery level immediately after HID connect.
+            // Force-refresh BAS value on connect so the host does not keep the
+            // default profile value if early updates happened before BAS ready.
+            esp_hidd_set_battery_level(hidBatteryLevel == 0xff ? 0 : hidBatteryLevel);
             if (!enabled) {
                 disconnectKnownPeers();
             }
