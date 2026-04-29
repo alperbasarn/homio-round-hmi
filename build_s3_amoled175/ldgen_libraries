@@ -39,6 +39,7 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_bootloader_format
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_mm/libesp_mm.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_psram/libesp_psram.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_gdbstub/libesp_gdbstub.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_coex/libesp_coex.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/driver/libdriver.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_driver_pcnt/libesp_driver_pcnt.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_driver_gptimer/libesp_driver_gptimer.a
@@ -67,7 +68,6 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_wifi/libesp_wifi.
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_phy/libesp_phy.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_netif/libesp_netif.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/wpa_supplicant/libwpa_supplicant.a
-C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_coex/libesp_coex.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_https_ota/libesp_https_ota.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_security/libesp_security.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/pthread/libpthread.a
@@ -109,6 +109,7 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_coex/libesp_coex.
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_wifi/libesp_wifi.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_driver_spi/libesp_driver_spi.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_gdbstub/libesp_gdbstub.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/bt/libbt.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/unity/libunity.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/cmock/libcmock.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/unity/libunity.a
@@ -134,6 +135,7 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_psram/libesp_psra
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_driver_touch_sens/libesp_driver_touch_sens.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_eth/libesp_eth.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_hid/libesp_hid.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/bt/libbt.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/tcp_transport/libtcp_transport.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_http_client/libesp_http_client.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_http_server/libesp_http_server.a
@@ -164,18 +166,18 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/json/libjson.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/board_hal/libboard_hal.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/touch_panel/libtouch_panel.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/board_hal/libboard_hal.a
-C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/libLovyanGFX.a
-C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_lcd/libesp_lcd.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/knob_controller/libknob_controller.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/lvgl__lvgl/liblvgl__lvgl.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/libLovyanGFX.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/esp_lcd/libesp_lcd.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/ui/libui.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/display/libdisplay.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/touch_panel/libtouch_panel.a
-C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/libLovyanGFX.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/knob_controller/libknob_controller.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/controllers/libcontrollers.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/ui/libui.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/lvgl__lvgl/liblvgl__lvgl.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/libLovyanGFX.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/media/libmedia.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/fatfs/libfatfs.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/sleep_handler/libsleep_handler.a
@@ -190,9 +192,11 @@ C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/mqtt_manager/libmqtt_
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/mqtt/libmqtt.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/wifi_manager/libwifi_manager.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/ota_manager/libota_manager.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/bluetooth_manager/libbluetooth_manager.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/command_handler/libcommand_handler.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/mqtt_manager/libmqtt_manager.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/ota_manager/libota_manager.a
+C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/bluetooth_manager/libbluetooth_manager.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/time_handler/libtime_handler.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/weather_handler/libweather_handler.a
 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/internet_handler/libinternet_handler.a

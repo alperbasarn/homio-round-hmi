@@ -574,17 +574,17 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/cmake_install.cmake")
-endif()
-
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
   include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/knob_controller/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
   include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/lvgl__lvgl/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/LovyanGFX/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
@@ -630,6 +630,11 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
   include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/ota_manager/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/esp-idf/bluetooth_manager/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
