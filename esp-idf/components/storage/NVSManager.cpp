@@ -389,7 +389,11 @@ esp_err_t NVSManager::saveBluetoothName(const std::string& name)
 esp_err_t NVSManager::saveDeviceName(const std::string& name)
 {
     deviceName = formatDeviceName(name);
-    accessPointPassword = deviceName;
+    // Keep the current AP password unless it is missing or invalid.
+    // This prevents unexpected password changes when only device suffix/name changes.
+    if (!isValidAccessPointPassword(accessPointPassword)) {
+        accessPointPassword = deviceName;
+    }
     writeString(NVS_KEY_DEVICE_NAME, deviceName);
     writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
     ESP_LOGI(TAG, "Device name saved: %s", deviceName.c_str());

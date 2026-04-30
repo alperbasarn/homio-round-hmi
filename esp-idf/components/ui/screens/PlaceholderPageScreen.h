@@ -24,6 +24,7 @@ private:
     lv_obj_t* playPauseIcon;
     bool pcButtonPressed;
     bool pcButtonWasPressed;
+    bool pcActionTriggeredThisPress;
 
     void ensureUi();
     void buildUi();

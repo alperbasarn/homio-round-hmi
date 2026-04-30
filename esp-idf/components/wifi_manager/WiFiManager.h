@@ -89,6 +89,7 @@ private:
     bool initialized;
     bool wifi_connected;
     bool ap_mode_active;
+    bool ap_client_active;
     bool internet_available;
     int scan_result_count;
 

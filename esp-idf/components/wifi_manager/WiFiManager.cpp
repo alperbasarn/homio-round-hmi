@@ -24,6 +24,7 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
       initialized(false),
       wifi_connected(false),
       ap_mode_active(false),
+    ap_client_active(false),
       internet_available(false),
       scan_result_count(0),
       wifi_channel(WIFI_AP_CHANNEL),
@@ -110,12 +111,25 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
         case WIFI_EVENT_AP_STACONNECTED: {
             wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*)event_data;
             ESP_LOGI(TAG, "Station " MACSTR " joined AP", MAC2STR(event->mac));
+            ap_client_active = true;
             break;
         }
 
         case WIFI_EVENT_AP_STADISCONNECTED: {
             wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*)event_data;
             ESP_LOGI(TAG, "Station " MACSTR " left AP", MAC2STR(event->mac));
+
+            wifi_sta_list_t sta_list = {};
+            if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
+                ap_client_active = (sta_list.num > 0);
+            } else {
+                ap_client_active = false;
+            }
+
+            if (!ap_client_active) {
+                ESP_LOGI(TAG, "No AP clients connected, STA reconnect is allowed again");
+                last_connect_attempt = 0;
+            }
             break;
         }
 
@@ -156,23 +170,49 @@ esp_err_t WiFiManager::initialize()
         return ESP_ERR_NO_MEM;
     }
 
-#ifdef CONFIG_ENABLE_WIFI_STATION
-    // When Matter is active, the networking stack (esp_netif, event loop,
-    // WiFi driver) is already initialized by esp_matter::start().
-    // We only register our event handlers on the existing event loop.
-    ESP_LOGI(TAG, "Matter mode: skipping networking stack init (managed by Matter)");
-#else
-    // Non-Matter build: initialize the full networking stack ourselves
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
+    // Initialize networking stack in an idempotent way so AP/portal also work
+    // when another subsystem already performed part of the setup.
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") == nullptr) {
+        esp_netif_create_default_wifi_sta();
+    }
+    if (esp_netif_get_handle_from_ifkey("WIFI_AP_DEF") == nullptr) {
+        esp_netif_create_default_wifi_ap();
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-#endif
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_start();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Keep AP+STA behavior deterministic during provisioning; modem sleep can make
+    // captive portal behavior intermittent under concurrent BLE/Wi-Fi activity.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     // Register event handlers (works on both Matter-managed and standalone stacks)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
@@ -186,6 +226,12 @@ esp_err_t WiFiManager::initialize()
         ? nvs_manager->accessPointPassword
         : current_ap_ssid;
     current_ap_ip = "192.168.4.1";
+
+    err = startAPMode();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start AP mode: %s", esp_err_to_name(err));
+        return err;
+    }
 
     if (setup_portal == nullptr) {
         setup_portal = new SetupPortal(this, nvs_manager);
@@ -214,11 +260,13 @@ esp_err_t WiFiManager::initialize()
             if (portal_bt_scan_results_callback) {
                 setup_portal->setBtScanResultsCallback(portal_bt_scan_results_callback);
             }
-            setup_portal->start();
+            err = setup_portal->start();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to start setup portal: %s", esp_err_to_name(err));
+                return err;
+            }
         }
     }
-
-    startAPMode();
 
     ESP_LOGI(TAG, "WiFi manager initialized");
 
@@ -786,7 +834,7 @@ void WiFiManager::update()
     }
 
     // Periodic tasks
-    if (!wifi_connected && (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
+    if (!wifi_connected && !ap_client_active && (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
         // Try to reconnect
         ESP_LOGI(TAG, "Attempting to reconnect to WiFi...");
         connectToWiFi();

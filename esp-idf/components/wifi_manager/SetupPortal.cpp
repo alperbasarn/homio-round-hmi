@@ -228,9 +228,13 @@ esp_err_t SetupPortal::startHttpServer() {
 
     const char* captiveUris[] = {
         "/generate_204",
+        "/gen_204",
         "/hotspot-detect.html",
+        "/mobile/status.php",
         "/library/test/success.html",
         "/success.txt",
+        "/success.html",
+        "/check_network_status.txt",
         "/canonical.html",
         "/redirect",
         "/connecttest.txt",
@@ -244,6 +248,13 @@ esp_err_t SetupPortal::startHttpServer() {
         redirect.handler = captiveRedirectHandler;
         redirect.user_ctx = this;
         httpd_register_uri_handler(httpServer, &redirect);
+
+        httpd_uri_t redirectHead = {};
+        redirectHead.uri = uri;
+        redirectHead.method = HTTP_HEAD;
+        redirectHead.handler = captiveRedirectHandler;
+        redirectHead.user_ctx = this;
+        httpd_register_uri_handler(httpServer, &redirectHead);
     }
 
     httpd_uri_t catchAll = {};
@@ -252,6 +263,13 @@ esp_err_t SetupPortal::startHttpServer() {
     catchAll.handler = captiveRedirectHandler;
     catchAll.user_ctx = this;
     httpd_register_uri_handler(httpServer, &catchAll);
+
+    httpd_uri_t catchAllHead = {};
+    catchAllHead.uri = "/*";
+    catchAllHead.method = HTTP_HEAD;
+    catchAllHead.handler = captiveRedirectHandler;
+    catchAllHead.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &catchAllHead);
 
     ESP_LOGI(TAG, "Setup portal HTTP server started");
     return ESP_OK;
@@ -621,12 +639,18 @@ esp_err_t SetupPortal::captiveRedirectHandler(httpd_req_t* req) {
         return ESP_FAIL;
     }
 
+    const std::string apIp = (self->wifiManager != nullptr) ? self->wifiManager->getAPIPAddress() : "192.168.4.1";
+    const std::string location = "http://" + (apIp.empty() ? std::string("192.168.4.1") : apIp) + "/";
+
     // iOS, Android, and Windows captive portal detection all require an HTTP 302
     // redirect (not a 200 with HTML) to trigger the "sign in to network" popup.
     // A 200 response causes most OS captive portal detectors to conclude the
     // network has internet access and silently skip the captive portal notification.
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Location", location.c_str());
     return httpd_resp_send(req, nullptr, 0);
 }
 
@@ -671,7 +695,7 @@ std::string SetupPortal::renderRootPage() const {
         << "<label>Manifest URL (optional)</label><input name='manifest_url' placeholder='https://.../latest/{variant}.json'>"
         << "<small>Use {variant} placeholder or leave empty to use default server path.</small>"
         << "<button type='submit'>Save OTA Settings</button><button id='otaCheckBtn' type='button'>Check for Update</button><button id='otaUpdateBtn' type='button' disabled>Update Now</button></form>"
-     << "<form id='wifiForm'><h2>WiFi</h2><label>Scan Results</label><select id='scanList'></select>"
+    << "<form id='wifiForm'><h2>WiFi</h2><label>Scan Results</label><select id='scanList'><option value='' selected disabled>Press Scan WiFi to search</option></select>"
      << "<label>Or SSID</label><input name='ssid_manual' placeholder='SSID'>"
      << "<label>Password</label><input name='password' type='password' placeholder='Password'>"
      << "<button type='button' onclick='scan()'>Scan WiFi</button><button type='submit'>Save & Connect</button></form>"
@@ -744,7 +768,7 @@ std::string SetupPortal::renderRootPage() const {
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
      << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
      << "document.getElementById('timeForm').addEventListener('submit',e=>{e.preventDefault();postForm('timeForm','/api/time');});"
-     << "refreshStatus();scan();"
+    << "refreshStatus();"
      << "</script></body></html>";
 
     return html.str();
@@ -1008,6 +1032,13 @@ esp_err_t SetupPortal::saveBluetoothControlFromForm(const std::string& body, std
 }
 
 std::string SetupPortal::renderScanJson() const {
+    wifi_sta_list_t staList = {};
+    if (esp_wifi_ap_get_sta_list(&staList) == ESP_OK && staList.num > 0) {
+        std::ostringstream busy;
+        busy << "{\"ok\":false,\"message\":\"Scan blocked while device is connected to AP to keep captive portal stable\",\"networks\":[]}";
+        return busy.str();
+    }
+
     esp_wifi_set_mode(WIFI_MODE_APSTA);
 
     wifi_scan_config_t scanConfig = {};
@@ -1032,7 +1063,7 @@ std::string SetupPortal::renderScanJson() const {
     }
 
     std::ostringstream os;
-    os << "{\"networks\":[";
+    os << "{\"ok\":true,\"networks\":[";
     for (size_t i = 0; i < records.size(); ++i) {
         const auto& r = records[i];
         if (i > 0) {

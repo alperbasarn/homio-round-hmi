@@ -22,7 +22,8 @@ PlaceholderPageScreen::PlaceholderPageScreen(TouchPanel* touch)
       playPauseButton(nullptr),
       playPauseIcon(nullptr),
       pcButtonPressed(false),
-      pcButtonWasPressed(false) {
+    pcButtonWasPressed(false),
+    pcActionTriggeredThisPress(false) {
 }
 
 void PlaceholderPageScreen::setContent(const std::string& pageTitle, const std::string& pageSubtitle) {
@@ -148,6 +149,7 @@ void PlaceholderPageScreen::destroyUi() {
     }
     pcButtonPressed = false;
     pcButtonWasPressed = false;
+    pcActionTriggeredThisPress = false;
     screenInitialized = false;
 }
 
@@ -196,6 +198,7 @@ void PlaceholderPageScreen::updatePcControlTouch() {
     if (!isPcControlPage() || touchPanel == nullptr || playPauseButton == nullptr) {
         pcButtonPressed = false;
         pcButtonWasPressed = false;
+        pcActionTriggeredThisPress = false;
         return;
     }
 
@@ -203,8 +206,23 @@ void PlaceholderPageScreen::updatePcControlTouch() {
     pcButtonPressed = touchPanel->isPressed() &&
                       isInsidePlayPauseButton(touchPanel->getTouchX(), touchPanel->getTouchY());
 
-    if (touchPanel->getHasNewRelease() && pcButtonWasPressed && playPauseAction) {
-        playPauseAction();
+    if (touchPanel->getHasNewPress()) {
+        pcActionTriggeredThisPress = false;
+        if (pcButtonPressed && playPauseAction) {
+            playPauseAction();
+            pcActionTriggeredThisPress = true;
+        }
+    }
+
+    if (touchPanel->getHasNewRelease()) {
+        if (!pcActionTriggeredThisPress && pcButtonWasPressed && playPauseAction) {
+            playPauseAction();
+        }
+        pcActionTriggeredThisPress = false;
+    }
+
+    if (!touchPanel->isPressed()) {
+        pcActionTriggeredThisPress = false;
     }
 
     if (pcButtonPressed != pcButtonWasPressed) {

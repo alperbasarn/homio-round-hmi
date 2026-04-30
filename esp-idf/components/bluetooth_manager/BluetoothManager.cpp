@@ -93,6 +93,8 @@ static esp_ble_adv_params_t advParams = {
     .adv_int_max = 0x60,   // 60 ms
     .adv_type = ADV_TYPE_IND,
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .peer_addr = {0},
+    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
@@ -668,9 +670,13 @@ int BluetoothManager::getBondedDeviceCount() const {
 }
 
 esp_err_t BluetoothManager::sendPlayPause() {
-    if (!enabled || !ready || !hidConnected || !hidSecure || hidConnId == 0xffff) {
-        ESP_LOGW(TAG, "play/pause ignored: BLE HID is not paired and connected");
+    if (!enabled || !ready || !hidConnected || hidConnId == 0xffff) {
+        ESP_LOGW(TAG, "play/pause ignored: BLE HID is not connected");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!hidSecure) {
+        ESP_LOGW(TAG, "play/pause: HID link is connected but not marked secure yet; sending anyway");
     }
 
     esp_hidd_send_consumer_value(hidConnId, HID_CONSUMER_PLAY_PAUSE, true);
