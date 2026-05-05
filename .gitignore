@@ -28,3 +28,6 @@ build_s3_amoled175/
 
 # Temporary sdkconfig backups
 esp-idf/sdkconfig.pre-*
+
+# Local helper outputs and tooling state
+helpers/

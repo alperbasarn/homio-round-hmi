@@ -1,0 +1,2 @@
+source C:/repos/p/qnob/homio-round-hmi/esp-idf/build/bootloader/gdbinit/symbols
+source C:/repos/p/qnob/homio-round-hmi/esp-idf/build/bootloader/gdbinit/connect
