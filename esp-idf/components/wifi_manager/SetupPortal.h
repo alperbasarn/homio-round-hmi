@@ -18,6 +18,7 @@ public:
 
     esp_err_t start();
     void stop();
+    void onStaGotIp();
     void setScreenControlCallback(std::function<bool(const std::string&)> callback);
     void setScreenStatusCallback(std::function<std::string(void)> callback);
     void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
@@ -69,15 +70,24 @@ private:
     static esp_err_t bluetoothScanGetHandler(httpd_req_t* req);
     static esp_err_t otaPostHandler(httpd_req_t* req);
     static esp_err_t wifiPostHandler(httpd_req_t* req);
+    static esp_err_t wifiCredentialGetHandler(httpd_req_t* req);
+    static esp_err_t wifiCredentialPostHandler(httpd_req_t* req);
     static esp_err_t mqttPostHandler(httpd_req_t* req);
     static esp_err_t weatherPostHandler(httpd_req_t* req);
     static esp_err_t timePostHandler(httpd_req_t* req);
+    static esp_err_t bluetoothBondedDevicesGetHandler(httpd_req_t* req);
+    static esp_err_t bluetoothBondedDeviceForgetPostHandler(httpd_req_t* req);
+    static esp_err_t bluetoothDisconnectPostHandler(httpd_req_t* req);
     static esp_err_t resetPostHandler(httpd_req_t* req);
+    static esp_err_t factoryResetPostHandler(httpd_req_t* req);
     static esp_err_t captiveRedirectHandler(httpd_req_t* req);
 
     std::string renderRootPage() const;
     std::string renderDeviceInfoPage() const;
+    std::string renderConfigureTabsPage() const;
     std::string renderStatusJson() const;
+    std::string renderWifiCredentialsJson() const;
+    std::string renderBluetoothBondedDevicesJson() const;
     std::string renderDeviceInfoStatusJson() const;
     std::string renderScanJson() const;
 
@@ -97,4 +107,6 @@ private:
     esp_err_t saveMqttFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveWeatherFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveTimeFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t saveWifiCredentialFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t forgetBluetoothDeviceFromForm(const std::string& body, std::string& responseJson);
 };

@@ -19,6 +19,7 @@ constexpr size_t kDeviceSuffixLength = 4;
 
 NVSManager::NVSManager()
     : lastConnectedNetworkIndex(-1),
+      bondedDeviceCount(0),
       soundTCPServerPort(12345), lightTCPServerPort(12345),
       soundMQTTServerPort(8883), lightMQTTServerPort(8883),
       weatherApiToken(""), weatherCity("Istanbul"), weatherCountryCode("tr"), timeApiToken(""),
@@ -206,6 +207,9 @@ esp_err_t NVSManager::saveWiFiCredentials()
 
         snprintf(key, sizeof(key), NVS_KEY_WIFI_REMEMBER, i);
         writeBool(key, wifiCredentials[i].remember);
+
+        snprintf(key, sizeof(key), NVS_KEY_WIFI_SIP, i);
+        writeString(key, wifiCredentials[i].static_ip);
     }
 
     writeInt(NVS_KEY_LAST_WIFI_IDX, lastConnectedNetworkIndex);
@@ -227,6 +231,9 @@ esp_err_t NVSManager::loadWiFiCredentials()
 
         snprintf(key, sizeof(key), NVS_KEY_WIFI_REMEMBER, i);
         readBool(key, wifiCredentials[i].remember, false);
+
+        snprintf(key, sizeof(key), NVS_KEY_WIFI_SIP, i);
+        readString(key, wifiCredentials[i].static_ip, "");
     }
 
     int32_t idx;
@@ -258,6 +265,7 @@ esp_err_t NVSManager::clearAll()
         wifiCredentials[i].ssid = "";
         wifiCredentials[i].password = "";
         wifiCredentials[i].remember = false;
+        wifiCredentials[i].static_ip = "";
     }
     lastConnectedNetworkIndex = -1;
 
@@ -281,7 +289,7 @@ esp_err_t NVSManager::clearAll()
     timeApiToken = "";
 
     deviceName = std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix;
-    accessPointPassword = deviceName;
+    accessPointPassword = ""; // open AP by default
     otaVariantId.clear();
     otaManifestUrl.clear();
 
@@ -292,6 +300,13 @@ esp_err_t NVSManager::clearAll()
     staticSubnet = "255.255.255.0";
     staticDNS1 = "8.8.8.8";
     staticDNS2 = "8.8.4.4";
+
+    // Reset bonded devices
+    bondedDeviceCount = 0;
+    for (int i = 0; i < NUM_BT_BONDED_DEVICES; i++) {
+        bondedDevices[i].address = "";
+        bondedDevices[i].name = "";
+    }
 
     ESP_LOGI(TAG, "NVS cleared and reset to defaults");
     return ESP_OK;
@@ -389,11 +404,7 @@ esp_err_t NVSManager::saveBluetoothName(const std::string& name)
 esp_err_t NVSManager::saveDeviceName(const std::string& name)
 {
     deviceName = formatDeviceName(name);
-    // Keep the current AP password unless it is missing or invalid.
-    // This prevents unexpected password changes when only device suffix/name changes.
-    if (!isValidAccessPointPassword(accessPointPassword)) {
-        accessPointPassword = deviceName;
-    }
+    // Preserve the current AP password unchanged (empty = open AP is valid).
     writeString(NVS_KEY_DEVICE_NAME, deviceName);
     writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
     ESP_LOGI(TAG, "Device name saved: %s", deviceName.c_str());
@@ -402,16 +413,16 @@ esp_err_t NVSManager::saveDeviceName(const std::string& name)
 
 esp_err_t NVSManager::saveAccessPointPassword(const std::string& password)
 {
-    const std::string nextPassword = password.empty() ? deviceName : password;
-    if (!isValidAccessPointPassword(nextPassword)) {
+    // Empty string = open AP; non-empty must be valid WPA2 length (8-63)
+    if (!password.empty() && !isValidAccessPointPassword(password)) {
         ESP_LOGW(TAG, "Rejected AP password update due to invalid length: %u",
-                 static_cast<unsigned>(nextPassword.size()));
+                 static_cast<unsigned>(password.size()));
         return ESP_ERR_INVALID_ARG;
     }
 
-    accessPointPassword = nextPassword;
+    accessPointPassword = password;
     writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
-    ESP_LOGI(TAG, "Access point password saved");
+    ESP_LOGI(TAG, "Access point password saved (%s)", password.empty() ? "open" : "protected");
     return ESP_OK;
 }
 
@@ -463,6 +474,136 @@ esp_err_t NVSManager::loadStaticIPConfig()
     return ESP_OK;
 }
 
+esp_err_t NVSManager::saveBondedDevices()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t ret = writeInt(NVS_KEY_BT_BONDED_COUNT, bondedDeviceCount);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save bonded device count: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    char key[32];
+    for (int i = 0; i < bondedDeviceCount && i < NUM_BT_BONDED_DEVICES; i++) {
+        snprintf(key, sizeof(key), NVS_KEY_BT_BONDED_ADDR, i);
+        writeString(key, bondedDevices[i].address);
+
+        snprintf(key, sizeof(key), NVS_KEY_BT_BONDED_NAME, i);
+        writeString(key, bondedDevices[i].name);
+    }
+
+    ESP_LOGI(TAG, "Bonded devices saved: count=%d", bondedDeviceCount);
+    return ESP_OK;
+}
+
+esp_err_t NVSManager::loadBondedDevices()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+
+    int32_t count = 0;
+    esp_err_t ret = readInt(NVS_KEY_BT_BONDED_COUNT, count, 0);
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to load bonded device count: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    bondedDeviceCount = std::min((int)count, NUM_BT_BONDED_DEVICES);
+
+    char key[32];
+    for (int i = 0; i < bondedDeviceCount; i++) {
+        snprintf(key, sizeof(key), NVS_KEY_BT_BONDED_ADDR, i);
+        readString(key, bondedDevices[i].address, "");
+
+        snprintf(key, sizeof(key), NVS_KEY_BT_BONDED_NAME, i);
+        readString(key, bondedDevices[i].name, "");
+    }
+
+    ESP_LOGI(TAG, "Bonded devices loaded: count=%d", bondedDeviceCount);
+    return ESP_OK;
+}
+
+esp_err_t NVSManager::addBondedDevice(const std::string& address, const std::string& name)
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+
+    // Check if device already exists
+    for (int i = 0; i < bondedDeviceCount; i++) {
+        if (bondedDevices[i].address == address) {
+            // Update existing device
+            bondedDevices[i].name = name;
+            return saveBondedDevices();
+        }
+    }
+
+    // Add new device if there's space
+    if (bondedDeviceCount < NUM_BT_BONDED_DEVICES) {
+        bondedDevices[bondedDeviceCount].address = address;
+        bondedDevices[bondedDeviceCount].name = name;
+        bondedDeviceCount++;
+        return saveBondedDevices();
+    }
+
+    ESP_LOGW(TAG, "Bonded devices list is full (max %d)", NUM_BT_BONDED_DEVICES);
+    return ESP_ERR_NO_MEM;
+}
+
+esp_err_t NVSManager::removeBondedDevice(const std::string& address)
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+
+    for (int i = 0; i < bondedDeviceCount; i++) {
+        if (bondedDevices[i].address == address) {
+            // Shift remaining devices
+            for (int j = i; j < bondedDeviceCount - 1; j++) {
+                bondedDevices[j] = bondedDevices[j + 1];
+            }
+            bondedDeviceCount--;
+            bondedDevices[bondedDeviceCount].address = "";
+            bondedDevices[bondedDeviceCount].name = "";
+            return saveBondedDevices();
+        }
+    }
+
+    ESP_LOGW(TAG, "Bonded device not found: %s", address.c_str());
+    return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t NVSManager::clearAllBondedDevices()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+
+    for (int i = 0; i < NUM_BT_BONDED_DEVICES; i++) {
+        bondedDevices[i].address = "";
+        bondedDevices[i].name = "";
+    }
+    bondedDeviceCount = 0;
+    return saveBondedDevices();
+}
+
+int NVSManager::getBondedDeviceCount() const
+{
+    return bondedDeviceCount;
+}
+
+BondedDevice* NVSManager::getBondedDevice(int index)
+{
+    if (index >= 0 && index < bondedDeviceCount) {
+        return &bondedDevices[index];
+    }
+    return nullptr;
+}
+
+BondedDevice* NVSManager::findBondedDevice(const std::string& address)
+{
+    for (int i = 0; i < bondedDeviceCount; i++) {
+        if (bondedDevices[i].address == address) {
+            return &bondedDevices[i];
+        }
+    }
+    return nullptr;
+}
+
 esp_err_t NVSManager::loadAllConfigurations()
 {
     ESP_LOGI(TAG, "Loading all configurations...");
@@ -511,12 +652,13 @@ esp_err_t NVSManager::loadAllConfigurations()
         }
     }
 
-    readString(NVS_KEY_AP_PASSWORD, accessPointPassword, deviceName);
-    if (accessPointPassword.empty() || accessPointPassword == kLegacyApPassword ||
-        !isValidAccessPointPassword(accessPointPassword)) {
-        accessPointPassword = deviceName;
+    readString(NVS_KEY_AP_PASSWORD, accessPointPassword, "");
+    if (accessPointPassword == kLegacyApPassword) {
+        // Migrate legacy hardcoded password to open AP
+        accessPointPassword = "";
         writeString(NVS_KEY_AP_PASSWORD, accessPointPassword);
     }
+    // Empty string means open AP — do not force a default password
 
     // Bluetooth name
     readString(NVS_KEY_BT_NAME, bluetoothName, "Qnob PC Control");
@@ -530,6 +672,9 @@ esp_err_t NVSManager::loadAllConfigurations()
 
     // Static IP
     loadStaticIPConfig();
+
+    // Bluetooth bonded devices
+    loadBondedDevices();
 
     ESP_LOGI(TAG, "All configurations loaded");
     return ESP_OK;

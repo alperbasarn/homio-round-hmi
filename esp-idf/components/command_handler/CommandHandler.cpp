@@ -10,6 +10,9 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -213,6 +216,7 @@ void CommandHandler::registerCommands() {
     commands["+"] = {"+", [this](const std::string& p) { this->cmdIncrementSetpoint(p); }, "Increment setpoint"};
     commands["-"] = {"-", [this](const std::string& p) { this->cmdDecrementSetpoint(p); }, "Decrement setpoint"};
     commands["reset"] = {"reset", [this](const std::string& p) { this->cmdReset(p); }, "Restart ESP"};
+    commands["factoryReset"] = {"factoryReset", [this](const std::string& p) { this->cmdFactoryReset(p); }, "Wipe NVS and restore defaults, then restart"};
     commands["home"] = {"home", [this](const std::string& p) { this->cmdSwitchToHome(p); }, "Switch to home page"};
     commands["info"] = {"info", [this](const std::string& p) { this->cmdSwitchToInfo(p); }, "Switch to info page"};
     commands["clearNVS"] = {"clearNVS", [this](const std::string& p) { this->cmdClearNVS(p); }, "Remove all saved data from NVS"};
@@ -248,6 +252,8 @@ void CommandHandler::registerCommands() {
     commands["portalWeather"] = {"portalWeather", [this](const std::string& p) { this->cmdPortalWeather(p); }, "Web portal weather form"};
     commands["portalTime"] = {"portalTime", [this](const std::string& p) { this->cmdPortalTime(p); }, "Web portal time form"};
     commands["portalOta"] = {"portalOta", [this](const std::string& p) { this->cmdPortalOta(p); }, "Web portal OTA form/actions"};
+    commands["portalWifiCredential"] = {"portalWifiCredential", [this](const std::string& p) { this->cmdPortalWifiCredential(p); }, "Web portal save wifi credential slot"};
+    commands["forgetBtDevice"] = {"forgetBtDevice", [this](const std::string& p) { this->cmdForgetBtDevice(p); }, "forgetBtDevice:ADDR - Remove bonded BT device"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
     commands["screen"] = {"screen", [this](const std::string& p) {
         if (displayController) {
@@ -269,6 +275,7 @@ void CommandHandler::cmdDecrementSetpoint(const std::string& params) {
 
 void CommandHandler::cmdReset(const std::string& params) {
     ESP_LOGI(TAG, "Restarting ESP...");
+    vTaskDelay(pdMS_TO_TICKS(300)); // allow HTTP response to flush before restart
     esp_restart();
 }
 
@@ -285,6 +292,34 @@ void CommandHandler::cmdSwitchToInfo(const std::string& params) {
 void CommandHandler::cmdClearNVS(const std::string& params) {
     nvsManager->clearAll();
     ESP_LOGI(TAG, "NVS memory cleared.");
+}
+
+void CommandHandler::cmdFactoryReset(const std::string& params) {
+    ESP_LOGW(TAG, "Factory reset requested: wiping full NVS partition");
+
+    // Clear app-managed namespace first (best effort) so in-memory state is reset as well.
+    if (nvsManager != nullptr) {
+        const esp_err_t clearErr = nvsManager->clearAll();
+        if (clearErr != ESP_OK) {
+            ESP_LOGW(TAG, "Factory reset pre-clear warning: %s", esp_err_to_name(clearErr));
+        }
+    }
+
+    nvs_flash_deinit();
+    const esp_err_t eraseErr = nvs_flash_erase();
+    if (eraseErr != ESP_OK) {
+        ESP_LOGE(TAG, "Factory reset failed while erasing NVS partition: %s", esp_err_to_name(eraseErr));
+        return;
+    }
+
+    const esp_err_t initErr = nvs_flash_init();
+    if (initErr != ESP_OK) {
+        ESP_LOGE(TAG, "Factory reset failed while reinitializing NVS: %s", esp_err_to_name(initErr));
+        return;
+    }
+
+    ESP_LOGI(TAG, "Factory reset complete. Defaults on reboot: device=Homio-0000, AP open.");
+    esp_restart();
 }
 
 void CommandHandler::cmdConnectWifi(const std::string& params) {
@@ -805,14 +840,22 @@ void CommandHandler::cmdPortalDevice(const std::string& params) {
 
     const std::string suffix = getFormValue(params, "device_suffix");
     const std::string password = getFormValue(params, "ap_password");
+    const std::string pwEnabled = getFormValue(params, "ap_password_enabled");
 
     nvsManager->saveDeviceName(suffix);
-    if (!password.empty()) {
+
+    if (pwEnabled == "off") {
+        // Explicitly disable password → open AP
+        nvsManager->saveAccessPointPassword("");
+    } else if (pwEnabled == "on" && !password.empty()) {
         esp_err_t passwordErr = nvsManager->saveAccessPointPassword(password);
         if (passwordErr != ESP_OK) {
             ESP_LOGW(TAG, "portalDevice AP password rejected: %s", esp_err_to_name(passwordErr));
             return;
         }
+    } else if (pwEnabled.empty() && !password.empty()) {
+        // Legacy / backward compat: no toggle sent, just a password
+        nvsManager->saveAccessPointPassword(password);
     }
 
     esp_err_t wifiErr = wifiManager->syncAccessPointConfig();
@@ -893,6 +936,52 @@ void CommandHandler::cmdPortalTime(const std::string& params) {
 
     const std::string token = getFormValue(params, "api_token");
     nvsManager->saveTimeApiToken(token);
+}
+
+void CommandHandler::cmdPortalWifiCredential(const std::string& params) {
+    if (nvsManager == nullptr || wifiManager == nullptr) {
+        ESP_LOGE(TAG, "portalWifiCredential unavailable");
+        return;
+    }
+
+    const std::string indexStr = getFormValue(params, "index");
+    const std::string ssid = getFormValue(params, "ssid");
+    const std::string password = getFormValue(params, "password");
+    const std::string staticIp = getFormValue(params, "static_ip");
+
+    char* end = nullptr;
+    int idx = static_cast<int>(strtol(indexStr.c_str(), &end, 10));
+    if (end == indexStr.c_str() || idx < 0 || idx >= NUM_WIFI_CREDENTIALS) {
+        ESP_LOGW(TAG, "portalWifiCredential invalid index: %s", indexStr.c_str());
+        return;
+    }
+
+    nvsManager->wifiCredentials[idx].ssid = ssid;
+    nvsManager->wifiCredentials[idx].password = password;
+    nvsManager->wifiCredentials[idx].remember = !ssid.empty();
+    nvsManager->wifiCredentials[idx].static_ip = staticIp;
+    nvsManager->saveWiFiCredentials();
+    ESP_LOGI(TAG, "portalWifiCredential slot %d saved: ssid=%s", idx, ssid.c_str());
+
+    // If saving to current active slot or connecting a new SSID, trigger connect
+    if (!ssid.empty()) {
+        wifiManager->connectToNetwork(ssid, password, true);
+    }
+}
+
+void CommandHandler::cmdForgetBtDevice(const std::string& params) {
+    if (nvsManager == nullptr) {
+        ESP_LOGE(TAG, "forgetBtDevice unavailable");
+        return;
+    }
+    // params is the MAC address directly
+    const std::string addr = params.empty() ? getFormValue(params, "address") : params;
+    if (addr.empty()) {
+        ESP_LOGW(TAG, "forgetBtDevice missing address");
+        return;
+    }
+    esp_err_t ret = nvsManager->removeBondedDevice(addr);
+    ESP_LOGI(TAG, "forgetBtDevice %s: %s", addr.c_str(), esp_err_to_name(ret));
 }
 
 void CommandHandler::cmdPortalOta(const std::string& params) {
