@@ -9,6 +9,7 @@
 
 #include "WiFiManager.h"
 #include "NVSManager.h"
+#include "BluetoothManager.h"
 
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -83,6 +84,12 @@ void SetupPortal::stop() {
     stopHttpServer();
 }
 
+void SetupPortal::onStaGotIp() {
+    ESP_LOGI(TAG, "STA got IP — restarting HTTP server to bind on STA interface");
+    stopHttpServer();
+    startHttpServer();
+}
+
 esp_err_t SetupPortal::startHttpServer() {
     if (httpServer != nullptr) {
         return ESP_OK;
@@ -91,7 +98,7 @@ esp_err_t SetupPortal::startHttpServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_PORT;
     config.ctrl_port = HTTP_PORT + 1;
-    config.max_uri_handlers = 30;
+    config.max_uri_handlers = 60;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     if (httpd_start(&httpServer, &config) != ESP_OK) {
@@ -212,6 +219,41 @@ esp_err_t SetupPortal::startHttpServer() {
     timePost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &timePost);
 
+    httpd_uri_t wifiCredentialsGet = {};
+    wifiCredentialsGet.uri = "/api/wifi/credentials";
+    wifiCredentialsGet.method = HTTP_GET;
+    wifiCredentialsGet.handler = wifiCredentialGetHandler;
+    wifiCredentialsGet.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &wifiCredentialsGet);
+
+    httpd_uri_t wifiCredentialsPost = {};
+    wifiCredentialsPost.uri = "/api/wifi/credentials";
+    wifiCredentialsPost.method = HTTP_POST;
+    wifiCredentialsPost.handler = wifiCredentialPostHandler;
+    wifiCredentialsPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &wifiCredentialsPost);
+
+    httpd_uri_t bluetoothBondedGet = {};
+    bluetoothBondedGet.uri = "/api/bluetooth/bonded";
+    bluetoothBondedGet.method = HTTP_GET;
+    bluetoothBondedGet.handler = bluetoothBondedDevicesGetHandler;
+    bluetoothBondedGet.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &bluetoothBondedGet);
+
+    httpd_uri_t bluetoothBondedDisconnect = {};
+    bluetoothBondedDisconnect.uri = "/api/bluetooth/disconnect";
+    bluetoothBondedDisconnect.method = HTTP_POST;
+    bluetoothBondedDisconnect.handler = bluetoothDisconnectPostHandler;
+    bluetoothBondedDisconnect.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &bluetoothBondedDisconnect);
+
+    httpd_uri_t bluetoothBondedForget = {};
+    bluetoothBondedForget.uri = "/api/bluetooth/forget";
+    bluetoothBondedForget.method = HTTP_POST;
+    bluetoothBondedForget.handler = bluetoothBondedDeviceForgetPostHandler;
+    bluetoothBondedForget.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &bluetoothBondedForget);
+
     httpd_uri_t resetPost = {};
     resetPost.uri = "/api/reset";
     resetPost.method = HTTP_POST;
@@ -225,6 +267,13 @@ esp_err_t SetupPortal::startHttpServer() {
     resetGet.handler = resetPostHandler;
     resetGet.user_ctx = this;
     httpd_register_uri_handler(httpServer, &resetGet);
+
+    httpd_uri_t factoryResetPost = {};
+    factoryResetPost.uri = "/api/factory-reset";
+    factoryResetPost.method = HTTP_POST;
+    factoryResetPost.handler = factoryResetPostHandler;
+    factoryResetPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &factoryResetPost);
 
     const char* captiveUris[] = {
         "/generate_204",
@@ -454,7 +503,9 @@ esp_err_t SetupPortal::rootGetHandler(httpd_req_t* req) {
     if (self == nullptr) {
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "rootGetHandler called, free heap: %lu", esp_get_free_heap_size());
     const std::string html = self->renderRootPage();
+    ESP_LOGI(TAG, "renderRootPage done, html size: %zu", html.size());
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_send(req, html.c_str(), static_cast<ssize_t>(html.size()));
 }
@@ -633,6 +684,32 @@ esp_err_t SetupPortal::resetPostHandler(httpd_req_t* req) {
     return ESP_OK;
 }
 
+esp_err_t SetupPortal::factoryResetPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) return ESP_FAIL;
+
+    const char* response = "{\"ok\":true,\"message\":\"Factory reset started. Wiping NVS and restarting...\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    const esp_err_t sendErr = httpd_resp_send(req, response, static_cast<ssize_t>(strlen(response)));
+    if (sendErr != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to send factory reset response: %s", esp_err_to_name(sendErr));
+    }
+
+    if (self->commandCallback) {
+        self->commandCallback("factoryReset");
+    } else {
+        ESP_LOGW(TAG, "Factory reset command callback not set; applying fallback reset path");
+        if (self->nvsManager != nullptr) {
+            self->nvsManager->clearAll();
+        }
+        vTaskDelay(pdMS_TO_TICKS(120));
+        esp_restart();
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t SetupPortal::captiveRedirectHandler(httpd_req_t* req) {
     auto* self = static_cast<SetupPortal*>(req->user_ctx);
     if (self == nullptr) {
@@ -658,117 +735,440 @@ std::string SetupPortal::renderRootPage() const {
     std::ostringstream html;
     html << "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
          << "<title>QNOB Setup</title><style>"
-     << "body{background:#000;color:#fff;font-family:monospace;margin:0;padding:16px;}"
-     << "h1{font-size:20px;margin:0 0 16px;}h2{font-size:15px;margin:20px 0 8px;}"
-     << "form,section{border:1px solid #fff;padding:12px;margin-bottom:12px;}"
-     << "label{display:block;margin:8px 0 4px;}input,select,button{width:100%;background:#000;color:#fff;border:1px solid #fff;padding:8px;box-sizing:border-box;}"
-     << "button{cursor:pointer;}small{display:block;margin-top:6px;color:#bbb;}pre{white-space:pre-wrap;word-break:break-word;}"
-     << ".overview{display:grid;grid-template-columns:minmax(110px,auto) 1fr auto;gap:8px 10px;align-items:center;}"
-     << ".overview .label{color:#bbb;}.overview .value{word-break:break-word;}.toggle,.action-inline{width:auto;padding:4px 8px;}"
-     << ".tabs,.subtabs{display:flex;gap:8px;margin-bottom:12px;}.tabs button,.subtabs button{width:auto;padding:8px 12px;}"
-     << ".active-tab{background:#fff;color:#000;}.hidden{display:none;}"
+     << "body{background:#000;color:#fff;font-family:monospace;margin:0;padding:14px;}"
+     << "h1{font-size:19px;margin:0 0 14px;}h2{font-size:14px;margin:14px 0 7px;border-bottom:1px solid #333;padding-bottom:4px;}"
+     << "form,section{border:1px solid #333;padding:10px;margin-bottom:10px;}"
+     << "label{display:block;margin:7px 0 3px;color:#bbb;}"
+     << "input,select{width:100%;background:#111;color:#fff;border:1px solid #555;padding:7px;box-sizing:border-box;margin-bottom:2px;}"
+     << "button{width:100%;background:#000;color:#fff;border:1px solid #fff;padding:8px;cursor:pointer;margin-top:6px;}"
+     << "button:hover{background:#222;}"
+     << "small{display:block;margin-top:4px;color:#666;}pre{white-space:pre-wrap;word-break:break-word;border:1px solid #333;padding:8px;margin-top:10px;}"
+     << ".portalLayout{display:grid;grid-template-columns:120px 130px minmax(0,1fr);gap:8px;align-items:start;}"
+     << ".vtabs{display:flex;flex-direction:column;gap:6px;position:sticky;top:10px;}"
+     << ".vtabs button{width:100%;padding:8px 10px;margin-top:0;text-align:left;}"
+     << ".act{background:#fff!important;color:#000!important;border-color:#fff!important;}"
+     << ".hidden{display:none!important;}"
+     << ".og{display:grid;grid-template-columns:minmax(100px,auto) 1fr;gap:5px 10px;align-items:start;}"
+     << ".og .k{color:#777;padding-top:2px;}.og .v{word-break:break-all;}"
+     << ".slot{border:1px solid #333;padding:9px;margin-bottom:8px;border-radius:2px;}"
+     << ".slot h3{margin:0 0 7px;font-size:12px;color:#888;}"
+     << ".row{display:flex;gap:6px;align-items:center;}"
+     << ".row button{width:auto;flex:1;}"
+     << ".bditem{display:flex;align-items:center;gap:8px;border:1px solid #333;padding:8px;margin-bottom:5px;}"
+     << ".bdinfo{flex:1;min-width:0;}.bdname{font-weight:bold;}.bdaddr{color:#666;font-size:11px;word-break:break-all;}"
+     << ".ibtns{display:flex;gap:5px;}.ibtns button{width:auto;padding:5px 9px;margin-top:0;}"
+     << ".danger{border-color:#a33!important;color:#f88!important;}"
+     << ".pw-wrap{display:flex;gap:4px;align-items:center;margin-bottom:2px;}"
+     << ".pw-wrap input{flex:1;margin:0;}"
+     << ".pw-wrap button{width:auto;padding:5px 9px;margin-top:0;flex-shrink:0;font-size:11px;}"
+     << ".bt-status{font-size:11px;padding:2px 7px;border-radius:2px;margin-left:6px;}"
+     << ".bt-connected{color:#6f6;border:1px solid #6f6;}.bt-available{color:#9cc7ff;border:1px solid #9cc7ff;}"
+     << "@media (max-width:900px){.portalLayout{grid-template-columns:1fr;}.vtabs{position:static;flex-direction:row;flex-wrap:wrap;} .vtabs button{text-align:center;}}"
      << "</style></head><body>"
      << "<h1>QNOB Setup Portal</h1>"
-     << "<div class='tabs'><button id='configureTabBtn' class='active-tab' type='button' data-tab='configureTab'>Configure</button><button id='controlTabBtn' type='button' data-tab='controlTab'>Control</button></div>"
-     << "<div id='configureTab'>"
-     << "<section><h2>Network Info</h2><div id='status' class='overview'>"
-     << "<div class='label'>Device</div><div class='value' id='ovDeviceName'>-</div><div></div>"
-     << "<div class='label'>AP SSID</div><div class='value' id='ovApSsid'>-</div><div></div>"
-     << "<div class='label'>AP Password</div><div class='value' id='ovApPassword'>-</div><button class='toggle' type='button' data-target='ovApPassword'>Show</button>"
-     << "<div class='label'>AP IP</div><div class='value' id='ovApIp'>-</div><div></div>"
-     << "<div class='label'>Configured WiFi</div><div class='value' id='ovConfiguredStaSsid'>-</div><div></div>"
-     << "<div class='label'>Configured Password</div><div class='value' id='ovConfiguredStaPassword'>-</div><button class='toggle' type='button' data-target='ovConfiguredStaPassword'>Show</button>"
-     << "<div class='label'>Connected WiFi</div><div class='value' id='ovStaSsid'>-</div><div></div>"
-     << "<div class='label'>STA IP</div><div class='value' id='ovStaIp'>-</div><button id='staticIpBtn' class='action-inline hidden' type='button'>Set Static IP</button>"
-     << "<div class='label'>Static IP Target</div><div class='value' id='ovStaticIpTarget'>-</div><div></div>"
-    << "<div class='label'>Software Version</div><div class='value' id='ovCurrentVersion'>-</div><div></div>"
-    << "<div class='label'>Available Version</div><div class='value' id='ovAvailableVersion'>-</div><div></div>"
-    << "<div class='label'>OTA Status</div><div class='value' id='ovOtaStatus'>-</div><div></div>"
+     << "<div class='portalLayout'>"
+
+     // ── Primary tabs (left) ─────────────────────────────────────────────
+     << "<div id='primaryTabs' class='vtabs'>"
+     << "<button class='act' type='button' data-tab='tConfigure'>Configure</button>"
+     << "<button type='button' data-tab='tControl'>Control</button>"
+     << "</div>"
+
+     // ── Sub-tabs (middle) ───────────────────────────────────────────────
+     << "<div id='subTabNav'>"
+     << "<div id='cfgTabs' class='vtabs'>"
+     << "<button class='act' type='button' data-ctab='ctGeneral' data-parent='tConfigure'>General</button>"
+     << "<button type='button' data-ctab='ctWifi' data-parent='tConfigure'>Wi-Fi</button>"
+     << "<button type='button' data-ctab='ctBluetooth' data-parent='tConfigure'>Bluetooth</button>"
+     << "<button type='button' data-ctab='ctApi' data-parent='tConfigure'>API</button>"
+     << "</div>"
+     << "<div id='ctrlTabs' class='vtabs hidden'>"
+     << "<button class='act' type='button' data-ctrltab='ctrlScreen' data-parent='tControl'>Screen</button>"
+     << "<button type='button' data-ctrltab='ctrlBrightness' data-parent='tControl'>Brightness</button>"
+     << "</div>"
+     << "</div>"
+
+     // ── Content (right) ─────────────────────────────────────────────────
+     << "<div id='contentPane'>"
+
+     // ════════════════════════════════════════════════════════════════════
+     // CONFIGURE TAB
+     // ════════════════════════════════════════════════════════════════════
+     << "<div id='tConfigure'>"
+
+     // ── General ──────────────────────────────────────────────────────────
+     << "<div id='ctGeneral'>"
+
+     // Status overview
+     << "<section><h2>Status</h2><div class='og'>"
+     << "<div class='k'>Device</div><div class='v' id='ovDeviceName'>-</div>"
+     << "<div class='k'>AP SSID</div><div class='v' id='ovApSsid'>-</div>"
+     << "<div class='k'>AP Password</div><div class='v' id='ovApPassword'>-</div>"
+     << "<div class='k'>AP IP</div><div class='v' id='ovApIp'>-</div>"
+     << "<div class='k'>SW Version</div><div class='v' id='ovCurrentVersion'>-</div>"
+     << "<div class='k'>Available</div><div class='v' id='ovAvailableVersion'>-</div>"
+     << "<div class='k'>OTA Status</div><div class='v' id='ovOtaStatus'>-</div>"
      << "</div></section>"
-     << "<form id='deviceForm'><h2>Device</h2><label>Device Suffix</label><input name='device_suffix' maxlength='4' placeholder='0000'>"
-     << "<small>Device name is always Homio-&lt;suffix&gt; using only A-Z and 0-9.</small>"
-     << "<label>Access Point Password</label><input name='ap_password' type='password' placeholder='Homio-0000'>"
-     << "<small>Leave blank to reset the password to the device name.</small>"
-     << "<button type='submit'>Save Device Settings</button></form>"
-        << "<form id='otaForm'><h2>OTA</h2><label>Variant</label><input name='variant' placeholder='esp32s3_lcd128'>"
-        << "<small>This variant selects which release image your device is allowed to install.</small>"
-        << "<label>Manifest URL (optional)</label><input name='manifest_url' placeholder='https://.../latest/{variant}.json'>"
-        << "<small>Use {variant} placeholder or leave empty to use default server path.</small>"
-        << "<button type='submit'>Save OTA Settings</button><button id='otaCheckBtn' type='button'>Check for Update</button><button id='otaUpdateBtn' type='button' disabled>Update Now</button></form>"
-    << "<form id='wifiForm'><h2>WiFi</h2><label>Scan Results</label><select id='scanList'><option value='' selected disabled>Press Scan WiFi to search</option></select>"
-     << "<label>Or SSID</label><input name='ssid_manual' placeholder='SSID'>"
-     << "<label>Password</label><input name='password' type='password' placeholder='Password'>"
-     << "<button type='button' onclick='scan()'>Scan WiFi</button><button type='submit'>Save & Connect</button></form>"
-     << "<form id='mqttForm'><h2>MQTT</h2><label>Broker URL/IP</label><input name='url'>"
-     << "<label>Port</label><input name='port' value='8883'>"
-     << "<label>Username</label><input name='username'><label>Password</label><input type='password' name='password'>"
-     << "<small>Saved to both sound and light MQTT configs.</small><button type='submit'>Save MQTT</button></form>"
-     << "<form id='weatherForm'><h2>Weather</h2><label>API Token</label><input name='api_token'>"
-     << "<label>City</label><input name='city' value='Istanbul'><label>Country Code</label><input name='country' value='tr'>"
+
+     // Device form
+     << "<form id='deviceForm'><h2>Device</h2>"
+     << "<label>Device Suffix</label><input name='device_suffix' maxlength='4' placeholder='0000'>"
+     << "<small>Device name is always Homio-&lt;suffix&gt; (A-Z and 0-9).</small>"
+     << "<label>AP Password Protection</label><select id='apPwToggle' name='ap_password_enabled'><option value='off'>Disabled (open network)</option><option value='on'>Enabled</option></select>"
+     << "<div id='apPwField' class='hidden'><label>Password (min 8 chars)</label><div class='pw-wrap'><input name='ap_password' id='apPwInput' type='password' placeholder='leave blank to keep current'><button type='button' onclick='pwToggle(this)'>Show</button></div><small>Enter new password or leave blank to keep existing.</small></div>"
+     << "<button type='submit'>Save Device Settings</button>"
+     << "</form>"
+
+     // OTA form
+     << "<form id='otaForm'><h2>OTA Update</h2>"
+     << "<label>Variant</label><input name='variant' placeholder='esp32s3_lcd128'>"
+     << "<small>Which release image this device is allowed to install.</small>"
+     << "<label>Manifest URL (optional)</label><input name='manifest_url' placeholder='https://.../latest/{variant}.json'>"
+     << "<small>Leave empty to use default server path; use {variant} placeholder.</small>"
+     << "<div class='row'>"
+     << "<button type='submit'>Save OTA Settings</button>"
+     << "<button id='otaCheckBtn' type='button'>Check</button>"
+     << "<button id='otaUpdateBtn' type='button' disabled>Update Now</button>"
+     << "</div></form>"
+
+     // Links / reset
+     << "<section><h2>Device Control</h2>"
+     << "<a href='/device-info' style='color:#9cc7ff;display:block;margin-bottom:8px;'>Open device info page</a>"
+     << "<button id='restartBtn' type='button' class='danger'>Restart Device</button>"
+     << "<button id='factoryResetBtn' type='button' class='danger' style='margin-top:8px;'>Factory Reset (Wipe All)</button>"
+     << "</section>"
+     << "</div>" // ctGeneral
+
+     // ── Wi-Fi ─────────────────────────────────────────────────────────────
+     << "<div id='ctWifi' class='hidden'>"
+
+     // Current connection
+     << "<section><h2>Current Connection</h2><div class='og'>"
+     << "<div class='k'>Network</div><div class='v' id='ovStaSsid'>-</div>"
+     << "<div class='k'>Signal</div><div class='v' id='ovSignal'>-</div>"
+     << "<div class='k'>IP Address</div><div class='v' id='ovStaIp'>-</div>"
+     << "</div>"
+     << "</section>"
+
+     // Credential slots (rendered by JS)
+     << "<section><h2>Saved Credentials</h2><div id='wifiSlots'><small>Loading...</small></div></section>"
+
+     // Scan / add
+     << "<form id='wifiScanForm'><h2>Scan &amp; Connect</h2>"
+     << "<label>Scan Results</label>"
+     << "<select id='scanList'><option value='' selected disabled>Press Scan to search</option></select>"
+     << "<label>Or enter SSID manually</label><input id='wifiSsidManual' placeholder='SSID'>"
+     << "<label>Password</label><div class='pw-wrap'><input id='wifiPwInput' type='password' placeholder='Password'><button type='button' onclick='pwToggle(this)'>Show</button></div>"
+     << "<label>Save to slot</label>"
+     << "<select id='wifiSlotSelect'><option value='0'>Slot 1</option><option value='1'>Slot 2</option><option value='2'>Slot 3</option></select>"
+     << "<div class='row'><button type='button' id='wifiScanBtn'>Scan</button><button type='button' id='wifiSaveBtn'>Save to Slot</button><button type='button' id='wifiConnectBtn'>Connect (no save)</button></div>"
+     << "</form>"
+
+     << "</div>" // ctWifi
+
+     // ── Bluetooth ────────────────────────────────────────────────────────
+     << "<div id='ctBluetooth' class='hidden'>"
+
+     // BT settings form
+     << "<form id='btForm'><h2>Bluetooth Settings</h2>"
+     << "<label>Status: <span id='btStatus'>-</span></label>"
+     << "<label>Enabled</label><select name='enabled'><option value='on'>On</option><option value='off'>Off</option></select>"
+     << "<label>Device Name</label><input name='bt_name' maxlength='32' placeholder='Qnob PC Control'>"
+     << "<small>Name change takes effect after restart.</small>"
+     << "<button type='submit'>Apply</button></form>"
+
+     // Bonded devices
+     << "<section><h2>Bonded Devices</h2>"
+     << "<div style='margin-bottom:6px;color:#888;'>Stored bonds: <strong id='btBondCount'>-</strong></div>"
+     << "<div id='btBondedList'><small>Loading...</small></div>"
+     << "<div class='row' style='margin-top:8px;'>"
+     << "<button type='button' id='btRestartBtn'>Restart Adv.</button>"
+     << "<button type='button' id='btClearBondsBtn' class='danger'>Clear All Bonds</button>"
+     << "</div>"
+     << "<small>If device doesn&apos;t appear on iPhone/PC, clear bonds then scan for it again.</small>"
+     << "</section>"
+
+     // BLE scan
+     << "<section><h2>BLE Scan</h2>"
+     << "<button type='button' id='btScanBtn'>Scan BLE Devices (5s)</button>"
+     << "<div id='btScanStatus' style='margin-top:6px;color:#9cc7ff;'></div>"
+     << "<div id='btScanResults' style='margin-top:6px;'></div>"
+     << "</section>"
+
+     << "</div>" // ctBluetooth
+
+     // ── API ───────────────────────────────────────────────────────────────
+     << "<div id='ctApi' class='hidden'>"
+
+     << "<form id='mqttForm'><h2>MQTT</h2>"
+     << "<label>Broker URL / IP</label><input name='url' id='mqttUrl'>"
+     << "<label>Port</label><input name='port' id='mqttPort' value='8883'>"
+     << "<label>Username</label><input name='username' id='mqttUsername'>"
+     << "<label>Password</label><input name='password' type='password'>"
+     << "<small>Saved to both sound and light MQTT configs.</small>"
+     << "<button type='submit'>Save MQTT</button></form>"
+
+     << "<form id='weatherForm'><h2>Weather</h2>"
+     << "<label>City</label><input name='city' id='weatherCity'>"
+     << "<label>Country Code</label><input name='country' id='weatherCountry'>"
+     << "<label>API Token</label><input name='api_token' id='weatherToken'>"
      << "<button type='submit'>Save Weather</button></form>"
-     << "<form id='timeForm'><h2>Time</h2><label>Time API Token</label><input name='api_token'>"
+
+     << "<form id='timeForm'><h2>Time</h2>"
+     << "<label>Time API Token</label><input name='api_token' id='timeToken'>"
      << "<small>NTP is still used for sync; token is stored for external time APIs.</small>"
      << "<button type='submit'>Save Time Token</button></form>"
-    << "<section><h2>Device Info</h2><a href='/device-info' style='color:#9cc7ff;'>Open device info page</a></section>"
-    << "<section><h2>Device Control</h2><form method='POST' action='/api/reset'><button id='resetBtn' type='submit' style='background:#600;border-color:#f44;color:#fff;'>Restart Device</button></form><small><a href='/api/reset' style='color:#9cc7ff;'>Direct reset link</a></small></section>"
-     << "</div>"
-     << "<div id='controlTab' class='hidden'>"
-     << "<div class='subtabs'><button class='active-tab' type='button'>Screens</button></div>"
-         << "<section><h2>Screen Control</h2><div class='overview'><div class='label'>Current Screen</div><div class='value' id='ovCurrentScreen'>-</div><div></div></div><form id='screenForm'><label>Screen</label><select name='screen'>"
-    << "<option value='info'>Environment Info</option><option value='deviceInfo'>Device Info</option><option value='timer'>Timer / Chronometer</option><option value='light'>Light Control</option><option value='sound'>Sound Control</option><option value='temperature'>Temperature Control</option><option value='pc'>PC Control</option><option value='calibrate'>Calibrate Orientation</option>"
+
+     << "</div>" // ctApi
+
+     << "</div>" // tConfigure
+
+     // ════════════════════════════════════════════════════════════════════
+     // CONTROL TAB
+     // ════════════════════════════════════════════════════════════════════
+     << "<div id='tControl' class='hidden'>"
+
+     << "<div id='ctrlScreen'>"
+     << "<section><h2>Screen Control</h2>"
+     << "<div class='og' style='margin-bottom:8px;'><div class='k'>Current</div><div class='v' id='ovCurrentScreen'>-</div></div>"
+     << "<form id='screenForm'><label>Switch to</label><select name='screen'>"
+     << "<option value='info'>Environment Info</option>"
+     << "<option value='deviceInfo'>Device Info</option>"
+     << "<option value='timer'>Timer / Chronometer</option>"
+     << "<option value='light'>Light Control</option>"
+     << "<option value='sound'>Sound Control</option>"
+     << "<option value='temperature'>Temperature Control</option>"
+     << "<option value='pc'>PC Control</option>"
+     << "<option value='calibrate'>Calibrate Orientation</option>"
      << "</select><button type='submit'>Switch Screen</button></form></section>"
-     << "<section><h2>Screen Brightness</h2><form id='brightnessForm'><label>Brightness: <span id='brightnessValue'>100</span>%</label><input id='brightnessInput' name='percentage' type='range' min='0' max='100' value='100'><button type='submit'>Set Brightness</button></form></section>"
-     << "<section><h2>Bluetooth</h2><form id='bluetoothForm'><label>Status: <span id='bluetoothStatus'>-</span></label><select name='enabled'><option value='on'>Enabled</option><option value='off'>Disabled</option></select><label style='display:block;margin-top:10px;'>Name<input name='bt_name' type='text' maxlength='32' placeholder='Qnob PC Control' style='margin-left:8px;width:220px;'></label><small>Name change takes effect after device restart.</small><button type='submit'>Apply Bluetooth</button></form>"
-     << "<div style='margin-top:12px;border-top:1px solid #444;padding-top:10px;'>"
-     << "<div style='margin-bottom:8px;'>Bonded devices: <strong id='btBondCount'>-</strong></div>"
-     << "<button type='button' id='btRestartBtn' style='margin-right:8px;'>Restart Advertising</button>"
-     << "<button type='button' id='btClearBondsBtn' style='background:#400;border-color:#f44;color:#fff;margin-right:8px;'>Clear All Bonds</button>"
-     << "<button type='button' id='btScanBtn'>Scan BLE Devices</button>"
-     << "<small style='display:block;margin-top:6px;'>Clear bonds if the device does not appear on iPhone/PC, then scan for it again in Bluetooth settings.</small>"
-     << "<div id='btScanStatus' style='margin-top:8px;color:#9cc7ff;'></div>"
-     << "<div id='btScanResults' style='margin-top:6px;'></div>"
-     << "</div></section></div>"
+     << "</div>"
+
+     << "<div id='ctrlBrightness' class='hidden'>"
+     << "<section><h2>Brightness</h2>"
+     << "<form id='brightnessForm'><label>Brightness: <span id='brightnessValue'>100</span>%</label>"
+     << "<input id='brightnessInput' name='percentage' type='range' min='0' max='100' value='100'>"
+     << "<button type='submit'>Set Brightness</button></form></section>"
+     << "</div>"
+
+     << "</div>" // tControl
+     << "</div>" // contentPane
+     << "</div>" // portalLayout
+
+     // ── Result / log area ─────────────────────────────────────────────────
      << "<pre id='result'></pre>"
+
+     // ════════════════════════════════════════════════════════════════════
+     // JAVASCRIPT
+     // ════════════════════════════════════════════════════════════════════
      << "<script>"
-     << "const resultEl=document.getElementById('result');const secrets={};const staticIpBtn=document.getElementById('staticIpBtn');"
-     << "function maskValue(v){if(!v)return '(not set)';return '*'.repeat(Math.max(8,Math.min(v.length,16)));}"
-     << "function setText(id,v){const el=document.getElementById(id);if(el)el.textContent=v||'-';}"
-     << "function setSecret(id,v){secrets[id]=v||'';setText(id,maskValue(v));}"
-     << "function toggleSecret(btn){const id=btn.dataset.target;const showing=btn.dataset.showing==='true';setText(id,showing?maskValue(secrets[id]):(secrets[id]||'(not set)'));btn.dataset.showing=showing?'false':'true';btn.textContent=showing?'Show':'Hide';}"
-     << "document.querySelectorAll('.toggle').forEach(b=>b.addEventListener('click',()=>toggleSecret(b)));"
-     << "document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.remove('active-tab'));btn.classList.add('active-tab');document.getElementById('configureTab').classList.toggle('hidden',btn.dataset.tab!=='configureTab');document.getElementById('controlTab').classList.toggle('hidden',btn.dataset.tab!=='controlTab');}));"
-        << "async function refreshStatus(){const r=await fetch('/api/status');const d=await r.json();setText('ovDeviceName',d.device_name||'-');setText('ovApSsid',d.ap_ssid||'-');setSecret('ovApPassword',d.ap_password||'');setText('ovApIp',d.ap_ip||'-');setText('ovConfiguredStaSsid',d.configured_sta_ssid||'(not set)');setSecret('ovConfiguredStaPassword',d.configured_sta_password||'');setText('ovStaSsid',d.sta_ssid||((d.sta_connected&&d.configured_sta_ssid)||'-'));setText('ovStaIp',d.sta_ip||'-');setText('ovStaticIpTarget',d.static_ip_target_ssid||'(not set)');setText('ovCurrentScreen',d.current_screen||'-');const sf=document.getElementById('screenForm');if(sf&&d.current_screen){sf.screen.value=d.current_screen;}staticIpBtn.classList.toggle('hidden',!(d.sta_connected&&d.sta_ip));const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'0000';df.ap_password.placeholder=d.ap_password||'Homio-0000';}const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version||'-');setText('ovAvailableVersion',o.available_version||'-');setText('ovOtaStatus',o.status_message||'-');const ub=document.getElementById('otaUpdateBtn');if(ub){ub.disabled=!(o.update_available===true&&o.busy!==true);}fetch('/api/device-info').then(r=>r.json()).then(di=>{const bf=document.getElementById('bluetoothForm');if(bf){bf.enabled.value=di.bluetooth_enabled===false?'off':'on';const bnf=bf.querySelector('[name=bt_name]');if(bnf&&di.bluetooth_name)bnf.value=di.bluetooth_name;}setText('bluetoothStatus',di.bluetooth_connected?'Connected':(di.bluetooth_enabled?'Enabled':'Disabled'));setText('btBondCount',di.bluetooth_bond_count!=null?String(di.bluetooth_bond_count):'-');}).catch(()=>{});}"
-     << "async function scan(){const s=document.getElementById('scanList');s.innerHTML='';const wait=document.createElement('option');wait.textContent='Scanning...';wait.disabled=true;wait.selected=true;s.appendChild(wait);try{const r=await fetch('/api/scan');const d=await r.json();s.innerHTML='';(d.networks||[]).forEach(n=>{const o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+'dBm)';s.appendChild(o);});if(!s.options.length){const o=document.createElement('option');o.textContent='No networks found';o.disabled=true;o.selected=true;s.appendChild(o);}resultEl.textContent=JSON.stringify(d,null,2);}catch(e){s.innerHTML='';const o=document.createElement('option');o.textContent='Scan failed';o.disabled=true;o.selected=true;s.appendChild(o);resultEl.textContent=JSON.stringify({ok:false,message:String(e)},null,2);}}"
-     << "function formBody(f){return new URLSearchParams(new FormData(f)).toString();}"
-     << "async function postForm(id,url,extra){const f=document.getElementById(id);const data=formBody(f)+(extra||'');const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:data});resultEl.textContent=JSON.stringify(await r.json(),null,2);refreshStatus();}"
-     << "document.getElementById('deviceForm').addEventListener('submit',e=>{e.preventDefault();postForm('deviceForm','/api/device');});"
-        << "document.getElementById('otaForm').addEventListener('submit',e=>{e.preventDefault();postForm('otaForm','/api/ota');});"
-      << "document.getElementById('otaCheckBtn').addEventListener('click',()=>{fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=check'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
-      << "document.getElementById('otaUpdateBtn').addEventListener('click',()=>{fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
-     << "document.getElementById('wifiForm').addEventListener('submit',e=>{e.preventDefault();const f=e.target;const selected=document.getElementById('scanList').value;const manual=f.ssid_manual.value.trim();const ssid=manual||selected;if(!ssid||ssid==='No networks found'||ssid==='Scan failed'||ssid==='Scanning...'){resultEl.textContent=JSON.stringify({ok:false,message:'SSID is required'},null,2);return;}const p=new URLSearchParams();p.set('ssid',ssid);p.set('password',f.password.value||'');fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
-     << "document.getElementById('screenForm').addEventListener('submit',e=>{e.preventDefault();postForm('screenForm','/api/control/screen');});"
-     << "const brightnessInput=document.getElementById('brightnessInput');const brightnessValue=document.getElementById('brightnessValue');brightnessInput.addEventListener('input',()=>{brightnessValue.textContent=brightnessInput.value;});document.getElementById('brightnessForm').addEventListener('submit',e=>{e.preventDefault();postForm('brightnessForm','/api/control/brightness');});"
-     << "document.getElementById('bluetoothForm').addEventListener('submit',e=>{e.preventDefault();postForm('bluetoothForm','/api/control/bluetooth');});"
-     << "document.getElementById('btRestartBtn').addEventListener('click',()=>{fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=restart_advertising'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
-     << "document.getElementById('btClearBondsBtn').addEventListener('click',()=>{fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=clear_bonds'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
+
+     // helpers
+     << "const R=document.getElementById('result');"
+     << "window.addEventListener('error',e=>{if(R)R.textContent='JS error: '+e.message;});"
+     << "function setText(id,v){const e=document.getElementById(id);if(e)e.textContent=(v||'-');}"
+     << "function pwToggle(btn){const inp=btn.previousElementSibling;inp.type=inp.type==='password'?'text':'password';btn.textContent=inp.type==='password'?'Show':'Hide';}"
+     << "function post(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body}).then(r=>r.json()).then(j=>{if(R)R.textContent=JSON.stringify(j,null,2);return j;}).catch(err=>{if(R)R.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});}"
+
+     // tab switching (top-level)
+     << "document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{"
+     << "document.querySelectorAll('[data-tab]').forEach(b=>{b.classList.remove('act');const p=document.getElementById(b.dataset.tab);if(p)p.classList.add('hidden');});"
+     << "btn.classList.add('act');const activeId=btn.dataset.tab;const panel=document.getElementById(activeId);if(panel)panel.classList.remove('hidden');"
+     << "const cfg=document.getElementById('cfgTabs');const ctrl=document.getElementById('ctrlTabs');if(cfg&&ctrl){cfg.classList.toggle('hidden',activeId!=='tConfigure');ctrl.classList.toggle('hidden',activeId!=='tControl');}"
+     << "}));"
+
+     // tab switching (configure subtabs)
+     << "document.querySelectorAll('[data-ctab]').forEach(btn=>btn.addEventListener('click',()=>{"
+     << "document.querySelectorAll('[data-ctab]').forEach(b=>{b.classList.remove('act');const p=document.getElementById(b.dataset.ctab);if(p)p.classList.add('hidden');});"
+     << "btn.classList.add('act');const p=document.getElementById(btn.dataset.ctab);if(p)p.classList.remove('hidden');"
+     << "}));"
+
+     // tab switching (control subtabs)
+     << "document.querySelectorAll('[data-ctrltab]').forEach(btn=>btn.addEventListener('click',()=>{"
+     << "document.querySelectorAll('[data-ctrltab]').forEach(b=>{b.classList.remove('act');const p=document.getElementById(b.dataset.ctrltab);if(p)p.classList.add('hidden');});"
+     << "btn.classList.add('act');const p=document.getElementById(btn.dataset.ctrltab);if(p)p.classList.remove('hidden');"
+     << "}));"
+
+     // refreshStatus — populates overview + prefills forms
+     << "async function refreshStatus(){"
+     << "let d;try{const r=await fetch('/api/status');d=await r.json();}catch(e){R.textContent=String(e);return;}"
+     << "setText('ovDeviceName',d.device_name);setText('ovApSsid',d.ap_ssid);setText('ovApPassword',d.ap_password?'[set]':'(none)');"
+     << "setText('ovApIp',d.ap_ip);setText('ovStaSsid',d.sta_ssid||d.configured_sta_ssid||'-');setText('ovStaIp',d.sta_ip||'-');"
+     << "setText('ovSignal',d.sta_connected?String(d.wifi_strength_bars||0)+' / 4':'-');setText('ovCurrentScreen',d.current_screen);"
+     << "const df=document.getElementById('deviceForm');if(df){df.device_suffix.value=d.device_suffix||'';const tog=df.ap_password_enabled;if(tog){tog.value=d.ap_password?'on':'off';document.getElementById('apPwField').classList.toggle('hidden',tog.value!=='on');}}"
+     // apPwToggle listener moved to init block below
+     << "const of=document.getElementById('otaForm');if(of){of.variant.value=d.ota_variant||'';of.manifest_url.value=d.ota_manifest_url||'';}"
+     << "const o=d.ota_release||{};setText('ovCurrentVersion',o.current_version);setText('ovAvailableVersion',o.available_version);setText('ovOtaStatus',o.status_message);"
+     << "const ub=document.getElementById('otaUpdateBtn');if(ub)ub.disabled=!(o.update_available===true&&!o.busy);"
+     << "const sf=document.getElementById('screenForm');if(sf&&d.current_screen)sf.screen.value=d.current_screen;"
+     << "const mu=document.getElementById('mqttUrl');if(mu)mu.value=d.mqtt_url||'';"
+     << "const mp=document.getElementById('mqttPort');if(mp)mp.value=d.mqtt_port||8883;"
+     << "const mun=document.getElementById('mqttUsername');if(mun)mun.value=d.mqtt_username||'';"
+     << "const wc=document.getElementById('weatherCity');if(wc)wc.value=d.weather_city||'Istanbul';"
+     << "const wco=document.getElementById('weatherCountry');if(wco)wco.value=d.weather_country||'tr';"
+     << "const wt=document.getElementById('weatherToken');if(wt)wt.value=d.weather_api_token||'';"
+     << "const tt=document.getElementById('timeToken');if(tt)tt.value=d.time_api_token||'';"
+     << "}"
+
+     // loadWifiSlots — fetches /api/wifi/credentials and renders slot forms
+     << "async function loadWifiSlots(){"
+     << "const el=document.getElementById('wifiSlots');if(!el)return;"
+     << "try{"
+     << "const r=await fetch('/api/wifi/credentials');const d=await r.json();"
+     << "const slots=d.credentials||[];"
+     << "el.innerHTML=slots.map((s,i)=>{"
+     << "const ssid=(s.ssid||'').replace(/\"/g,'&quot;');const sip=(s.static_ip||'').replace(/\"/g,'&quot;');const empty=!s.ssid;"
+     << "return '<div class=\"slot\"><h3>Slot '+(i+1)+(s.remember?' \u25cf ':' \u25cb ')+(empty?'(empty)':'')+'</h3>'"
+     << "+'<label>SSID</label><input id=\"wSlotSsid'+i+'\" value=\"'+ssid+'\" placeholder=\"SSID\">'"
+     << "+'<label>Password</label><div class=\"pw-wrap\"><input id=\"wSlotPw'+i+'\" type=\"password\" placeholder=\"(unchanged)\"><button type=\"button\" onclick=\"pwToggle(this)\">Show</button></div>'"
+     << "+'<label>Static IP (optional, leave empty for DHCP)</label><input id=\"wSlotSip'+i+'\" value=\"'+sip+'\" placeholder=\"e.g. 192.168.1.50\">'"
+     << "+'<div class=\"row\">'"
+     << "+'<button type=\"button\" onclick=\"saveSlot('+i+')\">Save</button>'"
+     << "+'<button type=\"button\" onclick=\"clearSlot('+i+')\"'+(empty?' disabled':'')+'>Clear</button>'"
+     << "+'</div></div>';"
+     << "}).join('');"
+     << "}catch(e){el.innerHTML='<small style=\"color:#a55;\">Failed to load slots</small>'}}"
+
+     << "async function saveSlot(i){"
+     << "const ssid=document.getElementById('wSlotSsid'+i).value.trim();"
+     << "const pw=document.getElementById('wSlotPw'+i).value;"
+     << "const sip=document.getElementById('wSlotSip'+i).value.trim();"
+     << "const p=new URLSearchParams();p.set('index',i);p.set('ssid',ssid);p.set('password',pw);p.set('remember','1');p.set('static_ip',sip);"
+     << "await post('/api/wifi/credentials',p.toString());loadWifiSlots();}"
+
+     << "async function clearSlot(i){"
+     << "const p=new URLSearchParams();p.set('index',i);p.set('ssid','');p.set('password','');p.set('remember','0');p.set('static_ip','');"
+     << "await post('/api/wifi/credentials',p.toString());loadWifiSlots();}"
+
+     // loadBondedDevices
+    << "async function loadBondedDevices(){"
+    << "const el=document.getElementById('btBondedList');if(!el)return;"
+    << "try{"
+    << "const rb=await fetch('/api/bluetooth/bonded');"
+    << "const d=await rb.json();"
+    << "let btAvailable=false;"
+    << "try{const ri=await fetch('/api/device-info');const info=await ri.json();btAvailable=info&&info.bluetooth_enabled===true;}catch(_){/* optional */}"
+    << "const devices=d.devices||[];"
+    << "setText('btBondCount',String(d.count!=null?d.count:devices.length));"
+    << "if(devices.length===0){el.innerHTML='<small style=\"color:#666;\">(none)</small>';return;}"
+    << "el.innerHTML=devices.map(dev=>{"
+    << "const nm=(dev.name||'Unknown').replace(/</g,'&lt;');"
+    << "const ad=(dev.address||'').replace(/</g,'&lt;');"
+    << "const enc=encodeURIComponent(dev.address||'');"
+    << "const connected=dev.connected===true;"
+    << "const state=connected?'connected':(btAvailable?'available':'unavailable');"
+    << "const statusLabel=state==='connected'?'Connected':(state==='available'?'Available':'Unavailable');"
+    << "const statusCls=state==='connected'?'bt-status bt-connected':'bt-status bt-available';"
+    << "return '<div class=\"bditem\"><div class=\"bdinfo\"><div class=\"bdname\">'+nm+'<span class=\"'+statusCls+'\">'+statusLabel+'</span></div><div class=\"bdaddr\">'+ad+(dev.connection_type?(' ['+dev.connection_type+']'):'')+' </div></div>'"
+    << "+'<div class=\"ibtns\">'+(connected?'<button type=\"button\" class=\"danger bt-disconnect\" data-addr=\"'+enc+'\">Disconnect</button>':'')"
+    << "+(!connected&&btAvailable?'<button type=\"button\" class=\"bt-connect\" data-addr=\"'+enc+'\">Connect</button>':'')"
+    << "+'<button type=\"button\" class=\"danger bt-forget\" data-addr=\"'+enc+'\">Forget</button></div></div>';"
+    << "}).join('');"
+    << "el.querySelectorAll('.bt-forget').forEach(btn=>btn.addEventListener('click',()=>forgetDevice(decodeURIComponent(btn.dataset.addr||''))));"
+    << "el.querySelectorAll('.bt-disconnect').forEach(btn=>btn.addEventListener('click',()=>disconnectBtDevice(decodeURIComponent(btn.dataset.addr||''))));"
+    << "el.querySelectorAll('.bt-connect').forEach(btn=>btn.addEventListener('click',()=>connectBtDevice(decodeURIComponent(btn.dataset.addr||''))));"
+    << "}catch(e){el.innerHTML='<small style=\"color:#a55;\">Failed to load bonds</small>';}}"
+
+     << "async function forgetDevice(addr){"
+     << "const p=new URLSearchParams();p.set('address',addr);"
+     << "await post('/api/bluetooth/forget',p.toString());loadBondedDevices();}"
+
+     << "async function disconnectBtDevice(addr){"
+     << "const p=new URLSearchParams();p.set('address',addr);"
+     << "await post('/api/bluetooth/disconnect',p.toString());setTimeout(loadBondedDevices,600);}"
+
+    << "async function connectBtDevice(addr){"
+    << "const p=new URLSearchParams();p.set('action','restart_advertising');"
+    << "await post('/api/control/bluetooth',p.toString());setTimeout(loadBondedDevices,800);}"
+
+     // loadBtStatus
+     << "async function loadBtStatus(){"
+     << "try{const r=await fetch('/api/device-info');const d=await r.json();"
+     << "setText('btStatus',d.bluetooth_connected?'Connected':(d.bluetooth_enabled?'Enabled':'Disabled'));"
+     << "setText('btBondCount',d.bluetooth_bond_count!=null?String(d.bluetooth_bond_count):'-');"
+     << "const bf=document.getElementById('btForm');if(bf){bf.enabled.value=d.bluetooth_enabled===false?'off':'on';"
+     << "const bn=bf.querySelector('[name=bt_name]');if(bn&&d.bluetooth_name)bn.value=d.bluetooth_name;}"
+     << "}catch(e){}}"
+
+     // WiFi scan
+     << "async function doScan(){"
+     << "const s=document.getElementById('scanList');s.innerHTML='<option disabled selected>Scanning...</option>';"
+     << "try{const r=await fetch('/api/scan');const d=await r.json();"
+     << "s.innerHTML=(d.networks||[]).map(n=>'<option value=\"'+n.ssid.replace(/\"/g,'&quot;')+'\">'+n.ssid+' ('+n.rssi+'dBm)</option>').join('')||'<option disabled selected>No networks found</option>';"
+     << "R.textContent=JSON.stringify(d,null,2);"
+     << "}catch(e){s.innerHTML='<option disabled selected>Scan failed</option>';R.textContent=String(e);}}"
+
+     // Form submit wiring
+     << "document.getElementById('deviceForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/device',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+
+     << "document.getElementById('otaForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/ota',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+
+     << "document.getElementById('otaCheckBtn').addEventListener('click',()=>post('/api/ota','action=check').then(()=>refreshStatus()));"
+     << "document.getElementById('otaUpdateBtn').addEventListener('click',()=>post('/api/ota','action=update').then(()=>refreshStatus()));"
+
+     << "document.getElementById('wifiScanBtn').addEventListener('click',doScan);"
+
+     << "document.getElementById('wifiSaveBtn').addEventListener('click',()=>{"
+     << "const ssid=(document.getElementById('wifiSsidManual').value.trim()||document.getElementById('scanList').value||'');"
+     << "const pw=document.getElementById('wifiPwInput').value;"
+     << "const slot=document.getElementById('wifiSlotSelect').value;"
+     << "if(!ssid){R.textContent=JSON.stringify({ok:false,message:'SSID required'},null,2);return;}"
+     << "const p=new URLSearchParams();p.set('index',slot);p.set('ssid',ssid);p.set('password',pw);p.set('remember','1');"
+     << "post('/api/wifi/credentials',p.toString()).then(()=>loadWifiSlots());});"
+
+     << "document.getElementById('wifiConnectBtn').addEventListener('click',()=>{"
+     << "const ssid=(document.getElementById('wifiSsidManual').value.trim()||document.getElementById('scanList').value||'');"
+     << "const pw=document.getElementById('wifiPwInput').value;"
+     << "if(!ssid){R.textContent=JSON.stringify({ok:false,message:'SSID required'},null,2);return;}"
+     << "const p=new URLSearchParams();p.set('ssid',ssid);p.set('password',pw);"
+     << "post('/api/wifi',p.toString()).then(()=>refreshStatus());});"
+
+
+
+     << "document.getElementById('btForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/control/bluetooth',new URLSearchParams(new FormData(e.target)).toString()).then(()=>loadBtStatus());});"
+
+     << "document.getElementById('btRestartBtn').addEventListener('click',()=>post('/api/control/bluetooth','action=restart_advertising'));"
+     << "document.getElementById('btClearBondsBtn').addEventListener('click',()=>post('/api/control/bluetooth','action=clear_bonds').then(()=>loadBondedDevices()));"
+
      << "document.getElementById('btScanBtn').addEventListener('click',()=>{"
-     << "const statusEl=document.getElementById('btScanStatus');const resultsEl=document.getElementById('btScanResults');"
-     << "statusEl.textContent='Scanning for 5 seconds...';resultsEl.innerHTML='';"
-     << "fetch('/api/control/bluetooth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=start_scan'}).catch(()=>{});"
+     << "const se=document.getElementById('btScanStatus');const re=document.getElementById('btScanResults');"
+     << "se.textContent='Scanning (5s)...';re.innerHTML='';"
+     << "post('/api/control/bluetooth','action=start_scan').catch(()=>{});"
      << "setTimeout(()=>{"
      << "fetch('/api/bluetooth/scan').then(r=>r.json()).then(d=>{"
-     << "statusEl.textContent=(d.scanning?'Still scanning...':'Scan done ['+(d.scan_status||'')+'] — '+(d.devices.length)+' device(s).')+(d.bt_ready===false?' ⚠ BT not ready':'');"
-     << "const unnamedCount=d.devices.filter(v=>!v.name).length;"
-     << "resultsEl.innerHTML=(d.devices.length===0?'<em style=\"color:#888\">No devices found</em>':d.devices.map(dev=>"
-     << "'<div style=\"margin:4px 0;padding:4px 6px;border:1px solid #444;\"><strong>'+(dev.name||'<em style=\"color:#888\">[private]</em>')+'</strong> &nbsp; <span style=\"color:#aaa\">'+dev.address+'</span> &nbsp; <span style=\"color:#9cc7ff;\">'+dev.rssi+'dBm</span></div>').join(''))"
-     << "+(unnamedCount>0?'<small style=\"color:#666\">[private] = iOS/Android/Windows devices with BLE privacy (rotating address, no name broadcast)</small>':'');"
-     << "}).catch(()=>{statusEl.textContent='Scan failed.';});},6000);"
-     << "});"
-     << "staticIpBtn.addEventListener('click',()=>{fetch('/api/static-ip/current',{method:'POST'}).then(r=>r.json()).then(j=>{resultEl.textContent=JSON.stringify(j,null,2);refreshStatus();}).catch(err=>{resultEl.textContent=JSON.stringify({ok:false,message:String(err)},null,2);});});"
-     << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();postForm('mqttForm','/api/mqtt');});"
-     << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();postForm('weatherForm','/api/weather');});"
-     << "document.getElementById('timeForm').addEventListener('submit',e=>{e.preventDefault();postForm('timeForm','/api/time');});"
-    << "refreshStatus();"
+     << "se.textContent=(d.scanning?'Still scanning...':'Done — '+d.devices.length+' device(s).')+(d.bt_ready===false?' [BT not ready]':'');"
+     << "const un=d.devices.filter(v=>!v.name).length;"
+     << "re.innerHTML=(d.devices.length===0?'<em style=\"color:#666\">No devices found</em>':d.devices.map(dv=>"
+     << "'<div style=\"margin:3px 0;padding:4px 6px;border:1px solid #333;\"><strong>'+(dv.name||'<em style=\"color:#666\">[private]</em>')+'</strong> &nbsp;'"
+     << "+'<span style=\"color:#888;\">'+dv.address+'</span> &nbsp;<span style=\"color:#9cc7ff;\">'+dv.rssi+'dBm</span></div>').join(''))"
+     << "+(un>0?'<small style=\"color:#555\">[private] = BLE privacy devices (iOS/Android)</small>':'');"
+     << "}).catch(()=>{se.textContent='Scan fetch failed.';});"
+     << "},6000);});"
+
+     << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/mqtt',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+     << "document.getElementById('weatherForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/weather',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+     << "document.getElementById('timeForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/time',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+
+     << "document.getElementById('screenForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/control/screen',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
+
+     << "const bIn=document.getElementById('brightnessInput');const bVal=document.getElementById('brightnessValue');"
+     << "bIn.addEventListener('input',()=>bVal.textContent=bIn.value);"
+     << "document.getElementById('brightnessForm').addEventListener('submit',e=>{e.preventDefault();"
+     << "post('/api/control/brightness',new URLSearchParams(new FormData(e.target)).toString());});"
+
+     // Restart / factory-reset
+     << "document.getElementById('restartBtn').addEventListener('click',()=>{if(!confirm('Restart device now?'))return;post('/api/reset','');});"
+     << "document.getElementById('factoryResetBtn').addEventListener('click',()=>{if(!confirm('Factory reset will erase ALL saved data and restart. Continue?'))return;post('/api/factory-reset','');});"
+
+     // init
+     << "document.getElementById('apPwToggle').addEventListener('change',function(){document.getElementById('apPwField').classList.toggle('hidden',this.value!=='on');});"
+     << "refreshStatus();loadWifiSlots();loadBondedDevices();loadBtStatus();"
      << "</script></body></html>";
 
     return html.str();
@@ -873,7 +1273,14 @@ std::string SetupPortal::renderStatusJson() const {
     os << "\"ota_variant\":\"" << jsonEscape(nvsManager ? nvsManager->otaVariantId : "") << "\",";
     os << "\"ota_manifest_url\":\"" << jsonEscape(nvsManager ? nvsManager->otaManifestUrl : "") << "\",";
     os << "\"ota_release\":" << (otaStatusCallback ? otaStatusCallback() : "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA unavailable\"}") << ",";
-    os << "\"configured_static_ip\":\"" << jsonEscape(nvsManager ? nvsManager->staticIP : "") << "\"";
+    os << "\"configured_static_ip\":\"" << jsonEscape(nvsManager ? nvsManager->staticIP : "") << "\",";
+    os << "\"mqtt_url\":\"" << jsonEscape(nvsManager ? nvsManager->soundMQTTServerURL : "") << "\",";
+    os << "\"mqtt_port\":" << (nvsManager ? nvsManager->soundMQTTServerPort : 8883) << ",";
+    os << "\"mqtt_username\":\"" << jsonEscape(nvsManager ? nvsManager->soundMQTTUsername : "") << "\",";
+    os << "\"weather_city\":\"" << jsonEscape(nvsManager ? nvsManager->weatherCity : "Istanbul") << "\",";
+    os << "\"weather_country\":\"" << jsonEscape(nvsManager ? nvsManager->weatherCountryCode : "tr") << "\",";
+    os << "\"weather_api_token\":\"" << jsonEscape(nvsManager ? nvsManager->weatherApiToken : "") << "\",";
+    os << "\"time_api_token\":\"" << jsonEscape(nvsManager ? nvsManager->timeApiToken : "") << "\"";
     os << "}";
     return os.str();
 }
@@ -1202,5 +1609,162 @@ esp_err_t SetupPortal::saveTimeFromForm(const std::string& body, std::string& re
 
     commandCallback(std::string("portalTime:") + body);
     responseJson = "{\"ok\":true,\"message\":\"Time command dispatched\"}";
+    return ESP_OK;
+}
+
+esp_err_t SetupPortal::wifiCredentialGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+    const std::string json = self->renderWifiCredentialsJson();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json.c_str(), static_cast<ssize_t>(json.size()));
+}
+
+esp_err_t SetupPortal::wifiCredentialPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+
+    std::string response;
+    self->saveWifiCredentialFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::bluetoothBondedDevicesGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+    const std::string json = self->renderBluetoothBondedDevicesJson();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json.c_str(), static_cast<ssize_t>(json.size()));
+}
+
+esp_err_t SetupPortal::bluetoothBondedDeviceForgetPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) {
+        return ESP_FAIL;
+    }
+
+    std::string response;
+    self->forgetBluetoothDeviceFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::bluetoothDisconnectPostHandler(httpd_req_t* req) {
+    const std::string body = readBody(req);
+    const std::string address = getFormValue(body, "address");
+    std::string response;
+    if (address.empty()) {
+        response = "{\"ok\":false,\"message\":\"Missing address\"}";
+    } else {
+        const esp_err_t ret = BluetoothManager::instance().disconnectDevice(address);
+        if (ret == ESP_OK) {
+            response = std::string("{\"ok\":true,\"message\":\"Disconnect requested for ") + jsonEscape(address) + "\"}";
+        } else {
+            response = std::string("{\"ok\":false,\"message\":\"Device not currently connected\"}");
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+std::string SetupPortal::renderWifiCredentialsJson() const {
+    if (!nvsManager) {
+        return "{\"ok\":false,\"message\":\"NVS Manager unavailable\",\"credentials\":[]}";
+    }
+
+    std::ostringstream os;
+    os << "{\"ok\":true,\"credentials\":[";
+
+    for (int i = 0; i < NUM_WIFI_CREDENTIALS; ++i) {
+        if (i > 0) os << ",";
+        os << "{";
+        os << "\"index\":" << i << ",";
+        os << "\"ssid\":\"" << jsonEscape(nvsManager->wifiCredentials[i].ssid) << "\",";
+        os << "\"password\":\"" << jsonEscape(nvsManager->wifiCredentials[i].password) << "\",";
+        os << "\"static_ip\":\"" << jsonEscape(nvsManager->wifiCredentials[i].static_ip) << "\",";
+        os << "\"remember\":" << (nvsManager->wifiCredentials[i].remember ? "true" : "false");
+        os << "}";
+    }
+
+    os << "]}";
+    return os.str();
+}
+
+std::string SetupPortal::renderBluetoothBondedDevicesJson() const {
+    if (!nvsManager) {
+        return "{\"ok\":false,\"message\":\"NVS Manager unavailable\",\"devices\":[]}";
+    }
+
+    std::ostringstream os;
+    const std::string hidAddr = BluetoothManager::instance().getConnectedHidAddress();
+    const std::string serAddr = BluetoothManager::instance().getConnectedSerialAddress();
+    // Normalise to upper-case for comparison
+    auto toUpper = [](std::string s){ for (char& c : s) c = toupper(c); return s; };
+    const std::string hidAddrUp = toUpper(hidAddr);
+    const std::string serAddrUp = toUpper(serAddr);
+
+    os << "{\"ok\":true,\"count\":" << nvsManager->bondedDeviceCount << ",\"devices\":[";
+
+    for (int i = 0; i < nvsManager->bondedDeviceCount; ++i) {
+        if (i > 0) os << ",";
+        const std::string addrUp = toUpper(nvsManager->bondedDevices[i].address);
+        const bool isConnected = (!hidAddrUp.empty() && hidAddrUp == addrUp) ||
+                                 (!serAddrUp.empty() && serAddrUp == addrUp);
+        const std::string connType = (hidAddrUp == addrUp && !hidAddrUp.empty()) ? "hid" :
+                                     (serAddrUp == addrUp && !serAddrUp.empty()) ? "serial" : "";
+        os << "{";
+        os << "\"index\":" << i << ",";
+        os << "\"address\":\"" << jsonEscape(nvsManager->bondedDevices[i].address) << "\",";
+        os << "\"name\":\"" << jsonEscape(nvsManager->bondedDevices[i].name) << "\",";
+        os << "\"connected\":" << (isConnected ? "true" : "false") << ",";
+        os << "\"connection_type\":\"" << connType << "\"";
+        os << "}";
+    }
+
+    os << "]}";
+    return os.str();
+}
+
+esp_err_t SetupPortal::saveWifiCredentialFromForm(const std::string& body, std::string& responseJson) {
+    if (!commandCallback) {
+        responseJson = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    commandCallback(std::string("portalWifiCredential:") + body);
+    responseJson = "{\"ok\":true,\"message\":\"WiFi credential command dispatched\"}";
+    return ESP_OK;
+}
+
+esp_err_t SetupPortal::forgetBluetoothDeviceFromForm(const std::string& body, std::string& responseJson) {
+    const std::string address = getFormValue(body, "address");
+    if (address.empty()) {
+        responseJson = "{\"ok\":false,\"message\":\"Missing Bluetooth address\"}";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!nvsManager) {
+        responseJson = "{\"ok\":false,\"message\":\"NVS Manager unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t ret = nvsManager->removeBondedDevice(address);
+    if (ret != ESP_OK) {
+        responseJson = std::string("{\"ok\":false,\"message\":\"Failed to remove device: ") + esp_err_to_name(ret) + "\"}";
+        return ret;
+    }
+
+    if (commandCallback) {
+        commandCallback(std::string("forgetBtDevice:") + address);
+    }
+
+    responseJson = std::string("{\"ok\":true,\"address\":\"") + jsonEscape(address) + "\",\"message\":\"Device forgotten\"}";
     return ESP_OK;
 }

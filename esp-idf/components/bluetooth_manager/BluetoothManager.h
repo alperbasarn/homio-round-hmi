@@ -25,6 +25,9 @@ public:
     bool isConnected() const { return hidConnected || serialConnected; }
     bool isHidConnected() const { return hidConnected; }
     bool isSerialConnected() const { return serialConnected; }
+    std::string getConnectedHidAddress() const;
+    std::string getConnectedSerialAddress() const;
+    esp_err_t disconnectDevice(const std::string& address);
 
     esp_err_t setEnabled(bool enable);
     esp_err_t restartAdvertising();

@@ -21,6 +21,7 @@
 #define NVS_KEY_WIFI_SSID       "wifi_ssid_%d"
 #define NVS_KEY_WIFI_PASS       "wifi_pass_%d"
 #define NVS_KEY_WIFI_REMEMBER   "wifi_rem_%d"
+#define NVS_KEY_WIFI_SIP        "wifi_sip_%d"
 #define NVS_KEY_LAST_WIFI_IDX   "last_wifi_idx"
 
 // TCP server keys
@@ -63,14 +64,31 @@
 #define NVS_KEY_STATIC_DNS1     "static_dns1"
 #define NVS_KEY_STATIC_DNS2     "static_dns2"
 
+// Bluetooth bonded devices keys
+#define NUM_BT_BONDED_DEVICES   10
+#define MAX_BT_ADDR_LENGTH      18  // "XX:XX:XX:XX:XX:XX"
+#define MAX_BT_DEVICE_NAME_LEN  248
+#define NVS_KEY_BT_BONDED_COUNT "bt_bonded_cnt"
+#define NVS_KEY_BT_BONDED_ADDR  "bt_bd_addr_%d"
+#define NVS_KEY_BT_BONDED_NAME  "bt_bd_name_%d"
+
 #ifdef __cplusplus
 
 struct WifiCredential {
     std::string ssid;
     std::string password;
     bool remember;
+    std::string static_ip;  // optional static IP for this slot (empty = DHCP)
 
-    WifiCredential() : ssid(""), password(""), remember(false) {}
+    WifiCredential() : ssid(""), password(""), remember(false), static_ip("") {}
+};
+
+struct BondedDevice {
+    std::string address;  // MAC address (XX:XX:XX:XX:XX:XX)
+    std::string name;     // Device name
+
+    BondedDevice() : address(""), name("") {}
+    BondedDevice(const std::string& addr, const std::string& n) : address(addr), name(n) {}
 };
 
 class NVSManager {
@@ -78,6 +96,10 @@ public:
     // WiFi credentials
     WifiCredential wifiCredentials[NUM_WIFI_CREDENTIALS];
     int lastConnectedNetworkIndex;
+
+    // Bluetooth bonded devices
+    BondedDevice bondedDevices[NUM_BT_BONDED_DEVICES];
+    int bondedDeviceCount;
 
     // TCP Server configurations
     std::string soundTCPServerIP;
@@ -160,6 +182,16 @@ public:
                                   const std::string& subnet, const std::string& dns1, const std::string& dns2,
                                   const std::string& ssid = "");
     esp_err_t loadStaticIPConfig();
+
+    // Bluetooth bonded devices management
+    esp_err_t saveBondedDevices();
+    esp_err_t loadBondedDevices();
+    esp_err_t addBondedDevice(const std::string& address, const std::string& name);
+    esp_err_t removeBondedDevice(const std::string& address);
+    esp_err_t clearAllBondedDevices();
+    int getBondedDeviceCount() const;
+    BondedDevice* getBondedDevice(int index);
+    BondedDevice* findBondedDevice(const std::string& address);
 
     // Load all configurations
     esp_err_t loadAllConfigurations();

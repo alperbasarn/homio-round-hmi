@@ -151,6 +151,10 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
         ESP_LOGI(TAG, "Got IP address: %s", current_ip.c_str());
         wifi_connected = true;
 
+        if (setup_portal != nullptr) {
+            setup_portal->onStaGotIp();
+        }
+
         if (on_connected) {
             on_connected(current_ssid, current_ip);
         }
@@ -222,9 +226,7 @@ esp_err_t WiFiManager::initialize()
 
     initialized = true;
     current_ap_ssid = generateAPName();
-    current_ap_password = (nvs_manager && !nvs_manager->accessPointPassword.empty())
-        ? nvs_manager->accessPointPassword
-        : current_ap_ssid;
+    current_ap_password = nvs_manager ? nvs_manager->accessPointPassword : "";
     current_ap_ip = "192.168.4.1";
 
     err = startAPMode();
@@ -291,12 +293,11 @@ esp_err_t WiFiManager::startAPMode()
         ap_name.resize(32);
     }
 
-    std::string ap_password = (nvs_manager && !nvs_manager->accessPointPassword.empty())
-        ? nvs_manager->accessPointPassword
-        : ap_name;
-    if ((ap_password.size() < 8 || ap_password.size() > 63) &&
-        ap_name.size() >= 8 && ap_name.size() <= 63) {
-        ap_password = ap_name;
+    std::string ap_password = nvs_manager ? nvs_manager->accessPointPassword : "";
+    if (!ap_password.empty() && (ap_password.size() < 8 || ap_password.size() > 63)) {
+        ESP_LOGW(TAG, "Ignoring invalid AP password length (%u), starting open AP",
+                 static_cast<unsigned>(ap_password.size()));
+        ap_password.clear();
     }
 
     const bool use_password = ap_password.size() >= 8 && ap_password.size() <= 63;

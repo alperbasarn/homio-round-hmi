@@ -370,6 +370,37 @@ void BluetoothManager::disconnectKnownPeers() {
     }
 }
 
+static std::string bdaToString(const esp_bd_addr_t bda) {
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+    return buf;
+}
+
+std::string BluetoothManager::getConnectedHidAddress() const {
+    return (hidConnected && hidRemoteKnown) ? bdaToString(hidRemoteBda) : "";
+}
+
+std::string BluetoothManager::getConnectedSerialAddress() const {
+    return (serialConnected && serialRemoteKnown) ? bdaToString(serialRemoteBda) : "";
+}
+
+esp_err_t BluetoothManager::disconnectDevice(const std::string& address) {
+    const std::string upper = [&]{ std::string s = address; for (char& c : s) c = toupper(c); return s; }();
+    bool found = false;
+    if (hidRemoteKnown && bdaToString(hidRemoteBda) == upper) {
+        esp_ble_gap_disconnect(hidRemoteBda);
+        found = true;
+    }
+    if (serialRemoteKnown && bdaToString(serialRemoteBda) == upper) {
+        if (!found || std::memcmp(serialRemoteBda, hidRemoteBda, sizeof(esp_bd_addr_t)) != 0) {
+            esp_ble_gap_disconnect(serialRemoteBda);
+        }
+        found = true;
+    }
+    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t BluetoothManager::setEnabled(bool enable) {
     enabled = enable;
     if (!initialized) {

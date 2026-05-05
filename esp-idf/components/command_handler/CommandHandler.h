@@ -64,6 +64,7 @@ private:
     void cmdSwitchToHome(const std::string& params);
     void cmdSwitchToInfo(const std::string& params);
     void cmdClearNVS(const std::string& params);
+    void cmdFactoryReset(const std::string& params);
     void cmdConnectWifi(const std::string& params);
     void cmdShowNetworks(const std::string& params);
     void cmdCalibrateOrientation(const std::string& params);
@@ -97,6 +98,8 @@ private:
     void cmdPortalWeather(const std::string& params);
     void cmdPortalTime(const std::string& params);
     void cmdPortalOta(const std::string& params);
+    void cmdPortalWifiCredential(const std::string& params);
+    void cmdForgetBtDevice(const std::string& params);
 };
 
 #endif // COMMAND_HANDLER_H
