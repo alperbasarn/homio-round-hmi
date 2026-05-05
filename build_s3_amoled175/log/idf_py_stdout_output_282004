@@ -1,10 +1,0 @@
-Command: ninja all
-[1/10] Performing build step for 'bootloader'
-[1/1] C:\Windows\system32\cmd.exe /C "cd /D C:\repos\p\qnob\homio-round-hmi\build_s3_amoled175\bootloader\esp-idf\esptool_py && C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.1/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 C:/repos/p/qnob/homio-round-hmi/build_s3_amoled175/bootloader/bootloader.bin"
-Bootloader binary size 0x5740 bytes. 0x28c0 bytes (32%) free.
-[2/10] No install step for 'bootloader'
-[3/10] Completed 'bootloader'
-[4/10] Building CXX object esp-idf/main/CMakeFiles/__idf_main.dir/main.cpp.obj
-[5/10] Linking C static library esp-idf\main\libmain.a
-[6/10] Generating esp-idf/esp_system/ld/sections.ld
-[7/10] Building C object CMakeFiles/qnob-screen.elf.dir/project_elf_src_esp32s3.c.obj
