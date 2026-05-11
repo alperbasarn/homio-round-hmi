@@ -147,7 +147,7 @@ public:
     bool getStaApInfo(wifi_ap_record_t* out);
 
 private:
-    ConnectivityManager() = default;
+    ConnectivityManager();
     ConnectivityManager(const ConnectivityManager&) = delete;
     ConnectivityManager& operator=(const ConnectivityManager&) = delete;
 

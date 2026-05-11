@@ -56,6 +56,11 @@ const char* stateName(ConnMgrState s) {
 }
 }  // namespace
 
+ConnectivityManager::ConnectivityManager() {
+    publish_mutex_ = xSemaphoreCreateMutex();
+    configASSERT(publish_mutex_);
+}
+
 ConnectivityManager& ConnectivityManager::instance() {
     static ConnectivityManager manager;
     return manager;
@@ -109,12 +114,6 @@ esp_err_t ConnectivityManager::begin() {
         return ESP_ERR_NO_MEM;
     }
 
-    publish_mutex_ = xSemaphoreCreateMutex();
-    if (publish_mutex_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create publish mutex");
-        return ESP_ERR_NO_MEM;
-    }
-
     const BaseType_t ret = xTaskCreate(
         connMgrTask, "ConnMgr", kStackSize, this, kTaskPriority, &taskHandle_);
     if (ret != pdPASS || taskHandle_ == nullptr) {
@@ -122,9 +121,11 @@ esp_err_t ConnectivityManager::begin() {
         return ESP_FAIL;
     }
 
-    // Seed the published snapshot once so version == 1 marks "ConnMgr has
-    // been initialised." Event-driven publishes keep it up to date afterwards.
-    publishSnapshot(ConnectivitySnapshot{});
+    // Seed the snapshot. Preserve any flags (e.g. bt_enabled) written before
+    // begin() via setBtEnabledFlag(); zero-init everything else.
+    ConnectivitySnapshot seed{};
+    seed.bt_enabled = snapshot_.bt_enabled;
+    publishSnapshot(seed);
 
     ESP_LOGI(TAG, "task started; state=%s", stateName(state_));
     postEvent(ConnMgrEvent::EV_BOOT_DONE);
