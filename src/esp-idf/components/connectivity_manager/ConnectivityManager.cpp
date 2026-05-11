@@ -1,8 +1,10 @@
 #include "ConnectivityManager.h"
 
 #include <atomic>
+#include <cstring>
 
 #include "esp_log.h"
+#include "esp_wifi.h"
 
 namespace {
 constexpr const char* TAG = "ConnMgr";
@@ -53,6 +55,12 @@ esp_err_t ConnectivityManager::begin() {
         return ESP_OK;
     }
     initialized_ = true;
+
+    event_group_ = xEventGroupCreate();
+    if (event_group_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create WiFi event group");
+        return ESP_ERR_NO_MEM;
+    }
 
     queue_ = xQueueCreate(kQueueDepth, sizeof(ConnMgrEvent));
     if (queue_ == nullptr) {
@@ -116,6 +124,126 @@ void ConnectivityManager::publishSnapshot(const ConnectivitySnapshot& next) {
 // static
 void ConnectivityManager::connMgrTask(void* arg) {
     static_cast<ConnectivityManager*>(arg)->runTask();
+}
+
+// ── WiFi stack lifecycle ─────────────────────────────────────────────────────
+
+esp_err_t ConnectivityManager::initWifiStack() {
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = esp_wifi_start();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG, "WiFi stack initialised");
+    return ESP_OK;
+}
+
+void ConnectivityManager::stopWifiStack() {
+    esp_wifi_stop();
+    esp_wifi_deinit();
+}
+
+// ── Radio mutators ────────────────────────────────────────────────────────────
+
+esp_err_t ConnectivityManager::configureAP(const wifi_config_t& cfg) {
+    return esp_wifi_set_config(WIFI_IF_AP, const_cast<wifi_config_t*>(&cfg));
+}
+
+esp_err_t ConnectivityManager::connectSTA(const wifi_config_t& cfg) {
+    xEventGroupClearBits(event_group_, kWifiConnectedBit | kWifiFailBit);
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, const_cast<wifi_config_t*>(&cfg));
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        return err;
+    }
+    const EventBits_t bits = xEventGroupWaitBits(
+        event_group_,
+        kWifiConnectedBit | kWifiFailBit,
+        pdTRUE, pdFALSE,
+        pdMS_TO_TICKS(15000));
+    if (bits & kWifiConnectedBit) {
+        return ESP_OK;
+    }
+    esp_wifi_disconnect();
+    return ESP_ERR_WIFI_NOT_CONNECT;
+}
+
+void ConnectivityManager::disconnectSTA() {
+    esp_wifi_disconnect();
+}
+
+void ConnectivityManager::setWifiMode(wifi_mode_t mode) {
+    esp_wifi_set_mode(mode);
+}
+
+wifi_mode_t ConnectivityManager::getWifiMode() {
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    return mode;
+}
+
+esp_err_t ConnectivityManager::startNonBlockingScan() {
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.ssid             = nullptr;
+    scan_cfg.bssid            = nullptr;
+    scan_cfg.channel          = 0;
+    scan_cfg.show_hidden      = true;
+    scan_cfg.scan_type        = WIFI_SCAN_TYPE_ACTIVE;
+    scan_cfg.scan_time.active.min = 100;
+    scan_cfg.scan_time.active.max = 300;
+    scan_cfg.scan_time.passive    = 0;
+    return esp_wifi_scan_start(&scan_cfg, false);
+}
+
+esp_err_t ConnectivityManager::syncScan(std::vector<wifi_ap_record_t>& out) {
+    out.clear();
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.ssid             = nullptr;
+    scan_cfg.bssid            = nullptr;
+    scan_cfg.channel          = 0;
+    scan_cfg.show_hidden      = true;
+    scan_cfg.scan_type        = WIFI_SCAN_TYPE_ACTIVE;
+    scan_cfg.scan_time.active.min = 100;
+    scan_cfg.scan_time.active.max = 300;
+    scan_cfg.scan_time.passive    = 0;
+    if (esp_wifi_scan_start(&scan_cfg, true) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    uint16_t count = 20;
+    out.resize(count);
+    esp_err_t err = esp_wifi_scan_get_ap_records(&count, out.data());
+    if (err == ESP_OK) {
+        out.resize(count);
+    } else {
+        out.clear();
+    }
+    return err;
+}
+
+bool ConnectivityManager::getApStaList(wifi_sta_list_t* out) {
+    return esp_wifi_ap_get_sta_list(out) == ESP_OK;
+}
+
+bool ConnectivityManager::getStaApInfo(wifi_ap_record_t* out) {
+    return esp_wifi_sta_get_ap_info(out) == ESP_OK;
 }
 
 void ConnectivityManager::runTask() {

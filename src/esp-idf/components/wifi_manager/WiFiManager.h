@@ -3,10 +3,8 @@
 #include <string>
 #include <functional>
 #include "esp_err.h"
-#include "esp_wifi.h"
 #include "esp_event.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "ConnectivityManager.h"
 
 // Forward declaration
@@ -21,14 +19,9 @@ using WiFiDisconnectedCallback = std::function<void()>;
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
 
-#define WIFI_CONNECT_TIMEOUT_MS 15000
-#define WIFI_SCAN_INTERVAL_MS   60000
+#define WIFI_CONNECT_TIMEOUT_MS   15000
+#define WIFI_SCAN_INTERVAL_MS     60000
 #define WIFI_AP_CHECK_INTERVAL_MS 30000
-
-// Event bits
-#define WIFI_CONNECTED_BIT      BIT0
-#define WIFI_FAIL_BIT           BIT1
-#define WIFI_SCAN_DONE_BIT      BIT2
 
 #ifdef __cplusplus
 
@@ -91,7 +84,6 @@ public:
 
 private:
     NVSManager* nvs_manager;
-    EventGroupHandle_t wifi_event_group;
 
     bool initialized;
     bool internet_available;
