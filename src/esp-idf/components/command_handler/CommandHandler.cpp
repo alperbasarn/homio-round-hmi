@@ -215,6 +215,8 @@ void CommandHandler::publishResponse(const std::string& response) {
 void CommandHandler::registerCommands() {
     commands["+"] = {"+", [this](const std::string& p) { this->cmdIncrementSetpoint(p); }, "Increment setpoint"};
     commands["-"] = {"-", [this](const std::string& p) { this->cmdDecrementSetpoint(p); }, "Decrement setpoint"};
+    commands["stopPortal"]  = {"stopPortal",  [this](const std::string& p) { if (wifiManager) wifiManager->stopPortal();  }, "Stop captive portal HTTP+DNS (T-19)"};
+    commands["startPortal"] = {"startPortal", [this](const std::string& p) { if (wifiManager) wifiManager->startPortal(); }, "Start captive portal HTTP+DNS (T-19)"};
     commands["reset"] = {"reset", [this](const std::string& p) { this->cmdReset(p); }, "Restart ESP"};
     commands["factoryReset"] = {"factoryReset", [this](const std::string& p) { this->cmdFactoryReset(p); }, "Wipe NVS and restore defaults, then restart"};
     commands["home"] = {"home", [this](const std::string& p) { this->cmdSwitchToHome(p); }, "Switch to home page"};
@@ -704,6 +706,12 @@ void CommandHandler::cmdSetBluetooth(const std::string& params) {
         ESP_LOGE(TAG, "Failed to set Bluetooth state: %s", esp_err_to_name(err));
         publishResponse("setBluetooth:ERR:" + std::string(esp_err_to_name(err)));
         return;
+    }
+
+    // Persist so the setting survives reboot (T-17).
+    if (nvsManager != nullptr) {
+        nvsManager->bluetoothEnabled = enable;
+        nvsManager->saveEnabledFlags();
     }
 
     publishResponse(std::string("setBluetooth:OK:") + (enable ? "on" : "off"));

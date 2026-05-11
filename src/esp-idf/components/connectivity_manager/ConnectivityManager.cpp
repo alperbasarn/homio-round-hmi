@@ -540,6 +540,14 @@ void ConnectivityManager::runTask() {
     }
 }
 
+void ConnectivityManager::setBtEnabledFlag(bool enabled) {
+    xSemaphoreTake(publish_mutex_, portMAX_DELAY);
+    ConnectivitySnapshot next = snapshot_;
+    next.bt_enabled = enabled;
+    publishSnapshotUnlocked_(next);
+    xSemaphoreGive(publish_mutex_);
+}
+
 void ConnectivityManager::requestAdvertisingHold(const char* reason) {
     ESP_LOGI(TAG, "requestAdvertisingHold: %s", reason ? reason : "");
     postEvent(ConnMgrEvent::EV_BT_ADV_HOLD);

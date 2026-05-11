@@ -38,6 +38,8 @@ public:
     esp_err_t startAPMode();
     esp_err_t startAPSTAMode();
     void disconnect();
+    void stopPortal();    // T-19: stop captive portal HTTP+DNS servers
+    void startPortal();   // T-19: (re-)start captive portal
 
     // Status methods — state is owned by ConnectivityManager; read via snapshot.
     bool isConnected() const {

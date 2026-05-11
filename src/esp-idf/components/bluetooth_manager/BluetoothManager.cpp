@@ -394,6 +394,7 @@ esp_err_t BluetoothManager::disconnectDevice(const std::string& address) {
 
 esp_err_t BluetoothManager::setEnabled(bool enable) {
     enabled = enable;
+    ConnectivityManager::instance().setBtEnabledFlag(enable);
     if (!initialized) {
         return ESP_OK;
     }

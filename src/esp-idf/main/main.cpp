@@ -428,6 +428,9 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Initializing Bluetooth...");
     bluetoothManager = &BluetoothManager::instance();
     {
+        // Apply persisted enabled flag before begin() so startAdvertising()
+        // is skipped when the user previously disabled BT (T-17).
+        bluetoothManager->setEnabled(nvsManager->bluetoothEnabled);
         const std::string btName = !nvsManager->bluetoothName.empty()
             ? nvsManager->bluetoothName : "Qnob PC Control";
         const esp_err_t btErr = bluetoothManager->begin(btName.c_str());

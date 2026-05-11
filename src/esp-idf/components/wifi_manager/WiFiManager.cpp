@@ -239,13 +239,32 @@ esp_err_t WiFiManager::initialize()
 
     initialized = true;
 
+    // Safety: if both AP and STA are disabled and recovery mode is not active,
+    // force AP on for this session so the device is always reachable (T-18).
+    if (nvs_manager &&
+        !nvs_manager->wifiApEnabled &&
+        !nvs_manager->wifiStaEnabled &&
+        !nvs_manager->recoveryModeActive) {
+        ESP_LOGW(TAG, "Both wifi_ap and wifi_sta disabled with no recovery mode — "
+                       "forcing AP on for this boot to prevent lockout");
+        nvs_manager->wifiApEnabled = true;  // runtime only, not persisted
+    }
+
     err = startAPMode();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start AP mode: %s", esp_err_to_name(err));
         return err;
     }
 
-    if (setup_portal == nullptr) {
+    // Only start the portal if enabled or recovery mode is active (T-19).
+    const bool portalAllowed = !nvs_manager ||
+                               nvs_manager->portalEnabled ||
+                               nvs_manager->recoveryModeActive;
+    if (!portalAllowed) {
+        ESP_LOGW(TAG, "Captive portal disabled by user setting (T-19)");
+    }
+
+    if (setup_portal == nullptr && portalAllowed) {
         setup_portal = new SetupPortal(this, nvs_manager);
         if (setup_portal != nullptr) {
             if (portal_screen_control_callback) {
@@ -295,6 +314,14 @@ std::string WiFiManager::generateAPName()
 
 esp_err_t WiFiManager::startAPMode()
 {
+    // Honour the disable flag unless recovery mode is active (T-18).
+    if (nvs_manager &&
+        !nvs_manager->wifiApEnabled &&
+        !nvs_manager->recoveryModeActive) {
+        ESP_LOGI(TAG, "AP disabled by user setting — skipping startAPMode()");
+        return ESP_OK;
+    }
+
     std::string ap_name = generateAPName();
     if (ap_name.empty()) {
         ap_name = "Homio-0000";
@@ -480,6 +507,13 @@ esp_err_t WiFiManager::connectToWiFi()
 {
     if (!nvs_manager) {
         ESP_LOGE(TAG, "NVS manager not set");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Honour the STA disable flag (T-18). Recovery mode does not override
+    // STA (only AP + portal) — disabling STA is always safe.
+    if (!nvs_manager->wifiStaEnabled) {
+        ESP_LOGI(TAG, "STA disabled by user setting — skipping connectToWiFi()");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -672,6 +706,20 @@ void WiFiManager::disconnect()
     internet_available = false;
 }
 
+void WiFiManager::stopPortal()
+{
+    if (setup_portal != nullptr) {
+        setup_portal->stop();
+    }
+}
+
+void WiFiManager::startPortal()
+{
+    if (setup_portal != nullptr) {
+        setup_portal->start();
+    }
+}
+
 esp_err_t WiFiManager::scanNetworks()
 {
     esp_err_t ret = ConnectivityManager::instance().startNonBlockingScan();
@@ -838,8 +886,8 @@ void WiFiManager::update()
 
     // Periodic tasks
     if (!sta_connected && !portal_guest_active &&
+        nvs_manager && nvs_manager->wifiStaEnabled &&
         (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
-        // Try to reconnect
         ESP_LOGI(TAG, "Attempting to reconnect to WiFi...");
         connectToWiFi();
     }
