@@ -436,6 +436,12 @@ void BluetoothManager::onHidEvent(int event, void* rawParam) {
                 disconnectKnownPeers();
             }
             ESP_LOGI(TAG, "BLE HID connected");
+            {
+                const std::string ha = hidRemoteKnown    ? bdaToString(hidRemoteBda)    : "";
+                const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                ConnectivityManager::instance().patchBtDetails(
+                    true, ha.c_str(), serialConnected, sa.c_str());
+            }
             break;
         case ESP_HIDD_EVENT_BLE_DISCONNECT:
             hidConnected = false;
@@ -444,6 +450,11 @@ void BluetoothManager::onHidEvent(int event, void* rawParam) {
             hidConnId = 0xffff;
             ESP_LOGI(TAG, "BLE HID disconnected");
             startAdvertising();
+            {
+                const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                ConnectivityManager::instance().patchBtDetails(
+                    false, "", serialConnected, sa.c_str());
+            }
             break;
         default:
             break;
@@ -603,6 +614,12 @@ void BluetoothManager::onSerialGattEvent(int event, int gattsIf, void* rawParam)
                     disconnectKnownPeers();
                 }
                 ESP_LOGI(TAG, "BLE serial connected");
+                {
+                    const std::string ha = hidRemoteKnown    ? bdaToString(hidRemoteBda)    : "";
+                    const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                    ConnectivityManager::instance().patchBtDetails(
+                        hidConnected, ha.c_str(), true, sa.c_str());
+                }
             }
             break;
         case ESP_GATTS_DISCONNECT_EVT:
@@ -613,6 +630,11 @@ void BluetoothManager::onSerialGattEvent(int event, int gattsIf, void* rawParam)
                 serialConnId = 0xffff;
                 serialMtu = 23;
                 ESP_LOGI(TAG, "BLE serial disconnected");
+                {
+                    const std::string ha = hidRemoteKnown ? bdaToString(hidRemoteBda) : "";
+                    ConnectivityManager::instance().patchBtDetails(
+                        hidConnected, ha.c_str(), false, "");
+                }
             }
             break;
         case ESP_GATTS_MTU_EVT:

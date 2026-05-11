@@ -9,7 +9,7 @@
 
 #include "WiFiManager.h"
 #include "NVSManager.h"
-#include "BluetoothManager.h"
+#include "ConnectivityManager.h"
 
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -483,7 +483,9 @@ bool SetupPortal::sendDnsResponse(const uint8_t* request,
     response[pos++] = 0x00; response[pos++] = 0x3C;  // TTL 60 s
     response[pos++] = 0x00; response[pos++] = 0x04;  // RDLENGTH 4
 
-    const std::string apIp = wifiManager != nullptr ? wifiManager->getAPIPAddress() : "192.168.4.1";
+    const std::string apIp = ConnectivityManager::instance().getSnapshot().ap_ip[0]
+                             ? std::string(ConnectivityManager::instance().getSnapshot().ap_ip)
+                             : std::string("192.168.4.1");
     struct in_addr addr = {};
     if (inet_pton(AF_INET, apIp.c_str(), &addr) != 1) {
         inet_pton(AF_INET, "192.168.4.1", &addr);
@@ -718,8 +720,9 @@ esp_err_t SetupPortal::captiveRedirectHandler(httpd_req_t* req) {
         return ESP_FAIL;
     }
 
-    const std::string apIp = (self->wifiManager != nullptr) ? self->wifiManager->getAPIPAddress() : "192.168.4.1";
-    const std::string location = "http://" + (apIp.empty() ? std::string("192.168.4.1") : apIp) + "/";
+    const auto snap = ConnectivityManager::instance().getSnapshot();
+    const std::string apIp = snap.ap_ip[0] ? std::string(snap.ap_ip) : std::string("192.168.4.1");
+    const std::string location = "http://" + apIp + "/";
 
     // iOS, Android, and Windows captive portal detection all require an HTTP 302
     // redirect (not a 200 with HTML) to trigger the "sign in to network" popup.
@@ -1234,11 +1237,12 @@ std::string SetupPortal::renderDeviceInfoPage() const {
 
 std::string SetupPortal::renderStatusJson() const {
     std::ostringstream os;
-    const std::string staIp = wifiManager ? wifiManager->getIPAddress() : "";
-    const std::string apIp = wifiManager ? wifiManager->getAPIPAddress() : "";
-    const std::string apSsid = wifiManager ? wifiManager->getAPSSID() : "";
-    const std::string apPassword = wifiManager ? wifiManager->getAPPassword() : "";
-    const std::string staSsid = wifiManager ? wifiManager->getSSID() : "";
+    const auto snap = ConnectivityManager::instance().getSnapshot();
+    const std::string staIp      = snap.sta_ip;
+    const std::string apIp       = snap.ap_ip;
+    const std::string apSsid     = snap.ap_ssid;
+    const std::string apPassword = snap.ap_password;
+    const std::string staSsid    = snap.sta_ssid;
     std::string configuredStaSsid;
     std::string configuredStaPassword;
 
@@ -1267,7 +1271,7 @@ std::string SetupPortal::renderStatusJson() const {
     os << "\"ap_ssid\":\"" << jsonEscape(apSsid) << "\",";
     os << "\"ap_password\":\"" << jsonEscape(apPassword) << "\",";
     os << "\"ap_ip\":\"" << jsonEscape(apIp) << "\",";
-    os << "\"sta_connected\":" << (wifiManager && wifiManager->isConnected() ? "true" : "false") << ",";
+    os << "\"sta_connected\":" << (snap.wifi_state == ConnMgrState::StaConnected ? "true" : "false") << ",";
     os << "\"sta_ssid\":\"" << jsonEscape(staSsid) << "\",";
     os << "\"configured_sta_ssid\":\"" << jsonEscape(configuredStaSsid) << "\",";
     os << "\"configured_sta_password\":\"" << jsonEscape(configuredStaPassword) << "\",";
@@ -1296,15 +1300,16 @@ std::string SetupPortal::renderDeviceInfoStatusJson() const {
     }
 
     std::ostringstream os;
+    const auto snap = ConnectivityManager::instance().getSnapshot();
     os << "{";
-    os << "\"wifi_connected\":" << (wifiManager && wifiManager->isConnected() ? "true" : "false") << ",";
+    os << "\"wifi_connected\":" << (snap.wifi_state == ConnMgrState::StaConnected ? "true" : "false") << ",";
     os << "\"internet_connected\":false,";
     os << "\"mqtt_connected\":false,";
     os << "\"bluetooth_enabled\":false,";
     os << "\"bluetooth_connected\":false,";
     os << "\"bluetooth_hid_connected\":false,";
     os << "\"bluetooth_serial_connected\":false,";
-    os << "\"wifi_strength_bars\":" << (wifiManager ? wifiManager->getSignalStrength() : 0) << ",";
+    os << "\"wifi_strength_bars\":" << static_cast<int>(snap.rssi_bars) << ",";
     os << "\"battery_presence_known\":false,";
     os << "\"battery_connected\":false,";
     os << "\"battery_percentage_available\":false,";
@@ -1656,13 +1661,13 @@ esp_err_t SetupPortal::bluetoothDisconnectPostHandler(httpd_req_t* req) {
     std::string response;
     if (address.empty()) {
         response = "{\"ok\":false,\"message\":\"Missing address\"}";
+    } else if (!static_cast<SetupPortal*>(req->user_ctx)->commandCallback) {
+        response = "{\"ok\":false,\"message\":\"Command handler unavailable\"}";
     } else {
-        const esp_err_t ret = BluetoothManager::instance().disconnectDevice(address);
-        if (ret == ESP_OK) {
-            response = std::string("{\"ok\":true,\"message\":\"Disconnect requested for ") + jsonEscape(address) + "\"}";
-        } else {
-            response = std::string("{\"ok\":false,\"message\":\"Device not currently connected\"}");
-        }
+        static_cast<SetupPortal*>(req->user_ctx)->commandCallback(
+            "disconnectBtDevice:" + address);
+        response = std::string("{\"ok\":true,\"message\":\"Disconnect requested for ") +
+                   jsonEscape(address) + "\"}";
     }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
@@ -1697,8 +1702,8 @@ std::string SetupPortal::renderBluetoothBondedDevicesJson() const {
     }
 
     std::ostringstream os;
-    const std::string hidAddr = BluetoothManager::instance().getConnectedHidAddress();
-    const std::string serAddr = BluetoothManager::instance().getConnectedSerialAddress();
+    const std::string hidAddr = ConnectivityManager::instance().getSnapshot().bt_hid_addr;
+    const std::string serAddr = ConnectivityManager::instance().getSnapshot().bt_serial_addr;
     // Normalise to upper-case for comparison
     auto toUpper = [](std::string s){ for (char& c : s) c = toupper(c); return s; };
     const std::string hidAddrUp = toUpper(hidAddr);

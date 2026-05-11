@@ -88,6 +88,7 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
             ESP_LOGW(TAG, "Disconnected from WiFi, reason: %d", event->reason);
             current_ip.clear();
+            ConnectivityManager::instance().patchStaDetails("", "", -100, 0);
             ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_DISCONNECTED);
             xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiFailBit);
             break;
@@ -180,6 +181,18 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
         current_ip = ip_str;
 
         ESP_LOGI(TAG, "Got IP address: %s", current_ip.c_str());
+
+        // Push WiFi details so SetupPortal reads from the snapshot (T-12).
+        wifi_ap_record_t ap_info = {};
+        int8_t rssi_dbm = -100;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            rssi_dbm = ap_info.rssi;
+        }
+        const uint8_t rssi_bars =
+            (rssi_dbm >= -50) ? 4u : (rssi_dbm >= -60) ? 3u :
+            (rssi_dbm >= -70) ? 2u : (rssi_dbm >= -80) ? 1u : 0u;
+        ConnectivityManager::instance().patchStaDetails(
+            current_ssid.c_str(), ip_str, rssi_dbm, rssi_bars);
 
         ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_GOT_IP);
         xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiConnectedBit);
@@ -333,6 +346,10 @@ esp_err_t WiFiManager::startAPMode()
             current_ap_ip = ip_str;
         }
     }
+
+    // Push AP details so SetupPortal reads from the snapshot (T-12).
+    ConnectivityManager::instance().patchApDetails(
+        current_ap_ssid.c_str(), current_ap_ip.c_str(), current_ap_password.c_str());
 
     return ESP_OK;
 }

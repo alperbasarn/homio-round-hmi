@@ -30,6 +30,7 @@ struct ConnectivitySnapshot {
     char  sta_ip[16]     = {};   // dotted-quad + NUL ("255.255.255.255")
     char  ap_ssid[33]    = {};
     char  ap_ip[16]      = {};
+    char  ap_password[65] = {}; // WPA2 max 63 chars + NUL; empty string for open AP
     uint8_t ap_clients   = 0;
     int8_t  rssi_dbm     = -100; // -100 means "no signal / unknown"
     uint8_t rssi_bars    = 0;    // 0..4, phone-bar style
@@ -44,6 +45,8 @@ struct ConnectivitySnapshot {
     bool bt_hid_connected    = false;
     bool bt_serial_connected = false;
     bool bt_scanning         = false;
+    char bt_hid_addr[18]     = {}; // "XX:XX:XX:XX:XX:XX" + NUL; empty when not connected
+    char bt_serial_addr[18]  = {}; // "XX:XX:XX:XX:XX:XX" + NUL; empty when not connected
 
     // ── Diagnostics ─────────────────────────────────────────────────────────
     char     last_error[64] = {};
