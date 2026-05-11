@@ -179,10 +179,6 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
 
         ESP_LOGI(TAG, "Got IP address: %s", current_ip.c_str());
 
-        if (setup_portal != nullptr) {
-            setup_portal->onStaGotIp();
-        }
-
         ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_GOT_IP);
         xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiConnectedBit);
     }
