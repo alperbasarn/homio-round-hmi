@@ -11,6 +11,7 @@ idf_component_register(
          "screens/DeviceInfoScreen.cpp"
             "screens/PlaceholderPageScreen.cpp"
          "screens/ModeController.cpp"
+         "screens/SafeModeScreen.cpp"
     INCLUDE_DIRS "." "screens"
     REQUIRES display touch_panel board_hal lvgl LovyanGFX
     PRIV_REQUIRES esp_timer

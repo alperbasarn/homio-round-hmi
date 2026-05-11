@@ -27,6 +27,10 @@
 #include "MQTTManager.h"
 #include "InternetHandler.h"
 
+// Boot guard (safe-mode escalation)
+#include "BootGuard.h"
+#include "SafeModeScreen.h"
+
 // Controllers
 #include "CommandHandler.h"
 #include "SoundController.h"
@@ -193,7 +197,9 @@ void displayTask(void* parameter) {
                     batteryHandler->isBatteryConnected(), telemetry.percentage);
             }
         }
-        displayController->update();
+        if (displayController != nullptr) {
+            displayController->update();
+        }
 
         // Check power management
         if (sleepHandler) {
@@ -223,8 +229,8 @@ void networkTask(void* parameter) {
     while (true) {
         wifiManager->update();
         if (wifiManager->isConnected()) {
-            mqttManager->update();
-            internetHandler->update();
+            if (mqttManager != nullptr) mqttManager->update();
+            if (internetHandler != nullptr) internetHandler->update();
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -250,10 +256,28 @@ static void startupSoundTask(void* parameter) {
 }
 
 extern "C" void app_main(void) {
-    // FIRST: Reset display panel before anything else
+    // ── Boot Guard ─────────────────────────────────────────────────────────
+    // Must be the very first call.  Reads NVS, increments crash_count when the
+    // previous boot never reached the health timer, escalates safe_mode_level
+    // as needed, and sets boot_in_progress = 1.  armHealthTimer() at the end
+    // of init will clear it after 15 s of stable operation.
+    BootGuard::begin();
+
+    if (BootGuard::getMode() == BootGuard::SafeMode::Emergency) {
+        ESP_LOGE(TAG, "====================================================");
+        ESP_LOGE(TAG, "  EMERGENCY MODE — device has crashed repeatedly.");
+        ESP_LOGE(TAG, "  Flash new firmware via USB to recover.");
+        ESP_LOGE(TAG, "====================================================");
+        for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    const bool useDisplay = (BootGuard::getMode() != BootGuard::SafeMode::HeadlessRecovery);
+
+    // NEXT: Reset display panel before anything else
     // This fixes white screen issue when serial monitor triggers soft reset
     // or when the panel is left in an undefined state
 #if LCD_RST_PIN >= 0
+    if (useDisplay) {
     // Configure LCD RST pin as output (before HAL init, just for this pin)
     gpio_config_t rst_conf = {};
     rst_conf.intr_type = GPIO_INTR_DISABLE;
@@ -282,6 +306,7 @@ extern "C" void app_main(void) {
     // 4. Wait for panel to fully initialize (AMOLED needs longer than LCD)
     // SH8601Z datasheet recommends 120ms after reset before commands
     vTaskDelay(pdMS_TO_TICKS(150));
+    } // useDisplay
 #endif
 
     ESP_LOGI(TAG, "===========================================");
@@ -334,10 +359,32 @@ extern "C" void app_main(void) {
     }
 #endif
 
+    // Safe-mode flag overrides — applied AFTER NVS load so they take precedence
+    // without touching persisted NVS.  WiFiManager and ConnectivityManager read
+    // these flags at runtime.
+    if (BootGuard::isInSafeMode()) {
+        const auto mode = BootGuard::getMode();
+        nvsManager->bluetoothEnabled = false;
+        if (mode == BootGuard::SafeMode::Rescue ||
+            mode == BootGuard::SafeMode::HeadlessRecovery) {
+            // AP + portal only; disable STA to avoid long association delays.
+            nvsManager->wifiStaEnabled = false;
+            nvsManager->wifiApEnabled  = true;
+            nvsManager->portalEnabled  = true;
+        } else {
+            // OfflineRecovery: no network at all.
+            nvsManager->wifiStaEnabled = false;
+            nvsManager->wifiApEnabled  = false;
+            nvsManager->portalEnabled  = false;
+        }
+        ESP_LOGW(TAG, "Safe-mode overrides applied: %s", BootGuard::modeName());
+    }
+
     // Create display object early so the pointer is valid, but defer hardware init
     // until just before the display task starts (after WiFi init) to avoid a 7+
     // second idle gap between gfx->init() and the first actual draw call, which
     // causes the CO5300 AMOLED to drop subsequent pixel commands (blank screen).
+    if (useDisplay) {
     ESP_LOGI(TAG, "Initializing display...");
     gfx = new LGFX();
 
@@ -348,8 +395,12 @@ extern "C" void app_main(void) {
     if (touch_err != ESP_OK) {
         ESP_LOGE(TAG, "Touch panel init failed: %s", esp_err_to_name(touch_err));
     }
+    } // useDisplay
 
     // Initialize SD card (optional - media features disabled if not present)
+    // Skipped in all safe-mode levels to reduce boot time and failure surface.
+    bool startupChimeReady = false;
+    if (!BootGuard::isInSafeMode()) {
     ESP_LOGI(TAG, "Initializing SD card...");
     sdCard = new SDCard();
     esp_err_t sd_err = sdCard->initialize();
@@ -368,8 +419,6 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "  %s", sdCard->getReactionSoundsDir().c_str());
         ESP_LOGI(TAG, "  %s", sdCard->getRecordingsDir().c_str());
     }
-
-    bool startupChimeReady = false;
 
     // Initialize audio/media classes only when the selected board exposes audio.
     if (!kAudioOutputSupported && !kAudioInputSupported) {
@@ -408,9 +457,12 @@ extern "C" void app_main(void) {
             ESP_LOGW(TAG, "Audio input is present but no playback path is configured; media controller disabled");
         }
     }
+    } // !BootGuard::isInSafeMode (SD / audio block)
 
     // Initialize Knob Controller
+    // Skipped in safe mode.
 #if (KNOB_TX_PIN >= 0) && (KNOB_RX_PIN >= 0)
+    if (!BootGuard::isInSafeMode()) {
     ESP_LOGI(TAG, "Initializing knob controller...");
     knobController = new KnobController(KNOB_TX_PIN, KNOB_RX_PIN, KNOB_UART_NUM);
     if (knobController->begin(KNOB_BAUD_RATE) != ESP_OK) {
@@ -418,6 +470,7 @@ extern "C" void app_main(void) {
         delete knobController;
         knobController = nullptr;
     }
+    } // !BootGuard::isInSafeMode
 #else
     ESP_LOGI(TAG, "Knob UART is not mapped for %s - skipping knob controller init", QNOB_BOARD_NAME);
 #endif
@@ -425,6 +478,8 @@ extern "C" void app_main(void) {
     // Initialize Bluetooth BEFORE WiFi — BT controller must claim its RF
     // coexistence slot before the WiFi stack starts, otherwise the radio
     // arbitration is misconfigured and BLE cannot advertise or scan.
+    // Skipped in all safe-mode levels (BLE is not needed for recovery).
+    if (!BootGuard::isInSafeMode()) {
     ESP_LOGI(TAG, "Initializing Bluetooth...");
     bluetoothManager = &BluetoothManager::instance();
     {
@@ -438,6 +493,7 @@ extern "C" void app_main(void) {
             ESP_LOGW(TAG, "Bluetooth init failed: %s", esp_err_to_name(btErr));
         }
     }
+    } // !BootGuard::isInSafeMode (Bluetooth init)
 
     // Initialize ConnectivityManager before WiFi so its task is running and
     // ready to receive radio events as soon as the WiFi stack posts them.
@@ -445,9 +501,13 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ConnectivityManager::instance().begin());
 
     // Initialize networking
+    // OfflineRecovery (level 3) skips all networking — AP flags were already
+    // cleared in the safe-mode override block above, so WiFiManager is still
+    // created (for stability of downstream pointers) but will not connect/start.
     ESP_LOGI(TAG, "Initializing networking...");
     wifiManager = new WiFiManager(nvsManager);
     wifiManager->initialize();
+    if (!BootGuard::isInSafeMode()) {
     mqttManager = new MQTTManager(wifiManager, nvsManager);
     if (mqttManager->initialize() != ESP_OK) {
         ESP_LOGW(TAG, "MQTT not configured yet (init skipped)");
@@ -455,6 +515,7 @@ extern "C" void app_main(void) {
     internetHandler = new InternetHandler(wifiManager, nvsManager);
     otaManager = new OTAManager(wifiManager);
     applyOtaConfigFromNvs();
+    } // !BootGuard::isInSafeMode (MQTT / internet / OTA)
     wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
         applyOtaConfigFromNvs();
     });
@@ -583,6 +644,9 @@ extern "C" void app_main(void) {
     });
 
     // Initialize UI controllers
+    // In safe-mode levels the full controller tree is not needed; a minimal
+    // display path is used instead (see else-branch below).
+    if (!BootGuard::isInSafeMode()) {
     ESP_LOGI(TAG, "Initializing UI controllers...");
     modeController = new ModeController(touchPanel);
     initializationScreen = new InitializationScreen();
@@ -720,30 +784,10 @@ extern "C" void app_main(void) {
         return json;
     });
 
-    // Initialize display hardware here — immediately before the display task starts
-    // so the gap between gfx->init() and the first draw is <100 ms.
-    gfx->init();
-    gfx->setRotation(0);
-    // Provide the hardware driver to LvglDisplay before any draw calls.
-    LvglDisplay::setHardware(static_cast<void*>(gfx));
-    gfx->setBrightness(0);
-    gfx->fillScreen(TFT_BLACK);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    for (int i = 0; i <= 255; i += 15) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    gfx->setBrightness(255);
-
-    displayController->init();
-    startDisplayTaskIfNeeded();
-    wifiManager->connectToWiFi();
-
     // Initialize Sleep Handler (power management)
     ESP_LOGI(TAG, "Initializing sleep handler...");
     sleepHandler = SleepHandler::getInstance();
     if (sleepHandler->initialize() == ESP_OK) {
-        // Set power save mode callback (screen off)
         sleepHandler->setPowerSaveModeCallback([](bool enabled) {
             if (enabled) {
                 ESP_LOGI(TAG, "Power save mode: Turning display off");
@@ -753,23 +797,12 @@ extern "C" void app_main(void) {
                 displayController->turnDisplayOn();
             }
         });
-
-        // Set pre-sleep callback (before entering deep sleep)
         sleepHandler->setPreSleepCallback([]() {
             ESP_LOGI(TAG, "Preparing for deep sleep...");
-            // Configure touch IC for wake-on-touch before I2C goes away
-            if (touchPanel) {
-                touchPanel->prepareForSleep();
-            }
-            // Turn off display
-            if (displayController) {
-                displayController->turnDisplayOff();
-            }
-            // Give time for display to turn off
+            if (touchPanel) { touchPanel->prepareForSleep(); }
+            if (displayController) { displayController->turnDisplayOff(); }
             vTaskDelay(pdMS_TO_TICKS(100));
         });
-
-        // Enable the sleep handler
         sleepHandler->enable();
         ESP_LOGI(TAG, "Sleep handler enabled with 4-stage power management");
     } else {
@@ -783,43 +816,30 @@ extern "C" void app_main(void) {
     commandHandler->registerMediaController(mediaController);
     commandHandler->registerOTAManager(otaManager);
     commandHandler->registerBluetoothManager(bluetoothManager);
-    commandHandler->setOtaConfigUpdatedCallback([]() {
-        applyOtaConfigFromNvs();
-    });
+    commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
     commandHandler->begin();
 
     // Set MQTT callbacks for sound controller
     soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
         mqttManager->publish(topic, message);
     });
-    soundController->setMQTTConnectedCallback([&]() {
-        return mqttManager->isConnected();
-    });
+    soundController->setMQTTConnectedCallback([&]() { return mqttManager->isConnected(); });
 
     // Set MQTT callbacks for light controller
     lightController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
         mqttManager->publish(topic, message);
     });
-    lightController->setMQTTConnectedCallback([&]() {
-        return mqttManager->isConnected();
-    });
-    lightController->setMQTTConfiguredCallback([&]() {
-        return mqttManager->hasLightMQTTConfigured();
-    });
+    lightController->setMQTTConnectedCallback([&]() { return mqttManager->isConnected(); });
+    lightController->setMQTTConfiguredCallback([&]() { return mqttManager->hasLightMQTTConfigured(); });
 
     // Set global MQTT message callback
     mqttManager->setMessageCallback([&](const std::string& topic, const std::string& payload) {
         if (topic == MQTT_TOPIC_COMMAND) {
-            if (commandHandler) {
-                commandHandler->handleExternalCommand(payload);
-            }
+            if (commandHandler) commandHandler->handleExternalCommand(payload);
         } else if (topic == MQTT_TOPIC_INDOOR_TEMP) {
-            // Indoor temperature from bridge (e.g., Home Assistant → MQTT)
             try {
                 float indoorTemp = std::stof(payload);
-                if (infoScreen) {
-                    infoScreen->updateIndoorTemperature(indoorTemp);
-                }
+                if (infoScreen) infoScreen->updateIndoorTemperature(indoorTemp);
             } catch (...) {
                 ESP_LOGW(TAG, "Invalid indoor temperature payload: %s", payload.c_str());
             }
@@ -833,22 +853,75 @@ extern "C" void app_main(void) {
         }
     });
 
+    } // end !BootGuard::isInSafeMode() — full UI + MQTT controller block
+
     ESP_LOGI(TAG, "Initialization complete. Starting tasks...");
 
+    // ── Display hardware init ─────────────────────────────────────────────
+    // Normal mode: full controller path.
+    // Safe-mode with display (Rescue=1, OfflineRecovery=3): minimal LVGL path.
+    // Safe-mode without display (HeadlessRecovery=2): skipped entirely.
+    if (!BootGuard::isInSafeMode()) {
+        // Initialize display hardware here — immediately before the display task
+        // starts so the gap between gfx->init() and the first draw is <100 ms.
+        gfx->init();
+        gfx->setRotation(0);
+        LvglDisplay::setHardware(static_cast<void*>(gfx));
+        gfx->setBrightness(0);
+        gfx->fillScreen(TFT_BLACK);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        for (int i = 0; i <= 255; i += 15) {
+            gfx->setBrightness(i);
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        gfx->setBrightness(255);
+        displayController->init();
+        startDisplayTaskIfNeeded();
+    } else if (useDisplay) {
+        // Safe mode with display enabled (Rescue or OfflineRecovery).
+        gfx->init();
+        gfx->setRotation(0);
+        LvglDisplay::setHardware(static_cast<void*>(gfx));
+        gfx->setBrightness(0);
+        gfx->fillScreen(TFT_BLACK);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        for (int i = 0; i <= 255; i += 15) {
+            gfx->setBrightness(i);
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        gfx->setBrightness(255);
+        // Show a sad-face overlay — LVGL is ticked by the display task below.
+        static SafeModeScreen safeModeScreen(BootGuard::modeName());
+        safeModeScreen.show();
+        startDisplayTaskIfNeeded();
+    }
+
+    // Start WiFi / portal (all levels except OfflineRecovery & Emergency have
+    // at least AP enabled; the NVS flag overrides earlier ensure the right mode).
+    wifiManager->connectToWiFi();
+
+    // ── Start tasks ──────────────────────────────────────────────────────────
     // Start tasks
-    startDisplayTaskIfNeeded();
 #if DUAL_CORE_AVAILABLE
     xTaskCreatePinnedToCore(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle, NETWORK_CORE);
-    xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle, NETWORK_CORE);
+    if (!BootGuard::isInSafeMode()) {
+        xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle, NETWORK_CORE);
+    }
 #else
     xTaskCreate(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle);
-    xTaskCreate(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle);
+    if (!BootGuard::isInSafeMode()) {
+        xTaskCreate(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle);
+    }
 #endif
 
     if (startupChimeReady) {
         // Startup chime with 16384 byte stack to handle audio codec operations
         xTaskCreate(startupSoundTask, "StartupSound", 16384, soundPlayer, 2, nullptr);
     }
+
+    // Arm the 15-second health timer.  On expiry it clears the boot_in_progress
+    // NVS flag and resets crash_count / safe_mode_level to 0.
+    BootGuard::armHealthTimer();
 
     ESP_LOGI(TAG, "Tasks started.");
 }
