@@ -86,6 +86,10 @@ public:
     void patchBtDetails(bool hid_connected, const char* hid_addr,
                         bool serial_connected, const char* serial_addr);
 
+    // Update the bt_enabled flag in the published snapshot (T-17).
+    // Called by BluetoothManager::setEnabled() so readers see the correct state.
+    void setBtEnabledFlag(bool enabled);
+
     // ── BLE advertising hold (T-15) ──────────────────────────────────────
     // Ref-counted pause for BLE advertising. Callers paired with an equal
     // number of request+release calls; advertising resumes only when the

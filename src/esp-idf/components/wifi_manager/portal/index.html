@@ -120,6 +120,16 @@ pre{white-space:pre-wrap;word-break:break-word;border:1px solid #333;padding:8px
           <button id="restartBtn" type="button" class="danger">Restart Device</button>
           <button id="factoryResetBtn" type="button" class="danger" style="margin-top:8px;">Factory Reset (Wipe All)</button>
         </section>
+
+        <form id="portalForm"><h2>Captive Portal</h2>
+          <label>Portal enabled</label>
+          <select id="portalEnabledSel" name="portal_enabled">
+            <option value="on">Enabled</option>
+            <option value="off">Disabled</option>
+          </select>
+          <small class="danger" id="portalDisableWarn" style="display:none">Warning: disabling the portal stops this page. Re-enable by pressing PWR_KEY ≥3 s at boot or factory reset.</small>
+          <button type="submit">Save Portal Setting</button>
+        </form>
       </div><!-- ctGeneral -->
 
       <!-- Wi-Fi -->
@@ -129,6 +139,21 @@ pre{white-space:pre-wrap;word-break:break-word;border:1px solid #333;padding:8px
           <div class="k">Signal</div><div class="v" id="ovSignal">-</div>
           <div class="k">IP Address</div><div class="v" id="ovStaIp">-</div>
         </div></section>
+
+        <form id="wifiEnabledForm"><h2>WiFi Enable / Disable</h2>
+          <label>Home network (STA)</label>
+          <select id="staEnabledSel" name="wifi_sta_enabled">
+            <option value="on">Enabled — device connects to home WiFi</option>
+            <option value="off">Disabled — no STA connection attempts</option>
+          </select>
+          <label>Access Point (AP)</label>
+          <select id="apEnabledSel" name="wifi_ap_enabled">
+            <option value="on">Enabled — AP always visible</option>
+            <option value="off">Disabled — AP hidden (requires STA connected first)</option>
+          </select>
+          <small id="apDisableWarn" style="display:none;color:#f88;">Warning: disabling the AP while not connected will be rejected. Re-enable via factory reset or recovery mode.</small>
+          <button type="submit">Save WiFi Enable Settings</button>
+        </form>
 
         <section><h2>Saved Credentials</h2>
           <div id="wifiSlots"><small>Loading...</small></div>
@@ -300,6 +325,9 @@ async function refreshStatus(){
   const wco=document.getElementById('weatherCountry');if(wco)wco.value=d.weather_country||'tr';
   const wt=document.getElementById('weatherToken');if(wt)wt.value=d.weather_api_token||'';
   const tt=document.getElementById('timeToken');if(tt)tt.value=d.time_api_token||'';
+  const sta=document.getElementById('staEnabledSel');if(sta)sta.value=d.wifi_sta_enabled===false?'off':'on';
+  const ap=document.getElementById('apEnabledSel');if(ap)ap.value=d.wifi_ap_enabled===false?'off':'on';
+  const pe=document.getElementById('portalEnabledSel');if(pe)pe.value=d.portal_enabled===false?'off':'on';
 }
 
 async function loadWifiSlots(){
@@ -457,6 +485,33 @@ document.getElementById('restartBtn').addEventListener('click',()=>{if(!confirm(
 document.getElementById('factoryResetBtn').addEventListener('click',()=>{if(!confirm('Factory reset will erase ALL saved data and restart. Continue?'))return;post('/api/factory-reset','');});
 
 document.getElementById('apPwToggle').addEventListener('change',function(){document.getElementById('apPwField').classList.toggle('hidden',this.value!=='on');});
+
+// WiFi enable form (T-18)
+document.getElementById('wifiEnabledForm').addEventListener('submit',e=>{
+  e.preventDefault();
+  const p=new URLSearchParams(new FormData(e.target));
+  fetch('/api/wifi/enabled',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})
+    .then(r=>r.json()).then(d=>{if(R)R.textContent=JSON.stringify(d,null,2);refreshStatus();})
+    .catch(err=>{if(R)R.textContent=String(err);});
+});
+document.getElementById('apEnabledSel').addEventListener('change',function(){
+  document.getElementById('apDisableWarn').style.display=this.value==='off'?'block':'none';
+});
+
+// Portal enable form (T-19)
+document.getElementById('portalForm').addEventListener('submit',e=>{
+  e.preventDefault();
+  const en=document.getElementById('portalEnabledSel').value;
+  if(en==='off'&&!confirm('Disabling the portal will stop this page. Continue?'))return;
+  const p=new URLSearchParams();p.set('portal_enabled',en);
+  fetch('/api/portal/enabled',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})
+    .then(r=>r.json()).then(d=>{if(R)R.textContent=JSON.stringify(d,null,2);})
+    .catch(err=>{if(R)R.textContent=String(err);});
+});
+document.getElementById('portalEnabledSel').addEventListener('change',function(){
+  document.getElementById('portalDisableWarn').style.display=this.value==='off'?'block':'none';
+});
+
 refreshStatus();loadWifiSlots();loadBondedDevices();loadBtStatus();
 </script>
 </body>

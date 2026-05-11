@@ -283,6 +283,20 @@ esp_err_t SetupPortal::startHttpServer() {
     factoryResetPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &factoryResetPost);
 
+    httpd_uri_t wifiEnabledPost = {};
+    wifiEnabledPost.uri = "/api/wifi/enabled";
+    wifiEnabledPost.method = HTTP_POST;
+    wifiEnabledPost.handler = wifiEnabledPostHandler;
+    wifiEnabledPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &wifiEnabledPost);
+
+    httpd_uri_t portalEnabledPost = {};
+    portalEnabledPost.uri = "/api/portal/enabled";
+    portalEnabledPost.method = HTTP_POST;
+    portalEnabledPost.handler = portalEnabledPostHandler;
+    portalEnabledPost.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &portalEnabledPost);
+
     const char* captiveUris[] = {
         "/generate_204",
         "/gen_204",
@@ -789,7 +803,11 @@ std::string SetupPortal::renderStatusJson() const {
     os << "\"weather_city\":\"" << jsonEscape(nvsManager ? nvsManager->weatherCity : "Istanbul") << "\",";
     os << "\"weather_country\":\"" << jsonEscape(nvsManager ? nvsManager->weatherCountryCode : "tr") << "\",";
     os << "\"weather_api_token\":\"" << jsonEscape(nvsManager ? nvsManager->weatherApiToken : "") << "\",";
-    os << "\"time_api_token\":\"" << jsonEscape(nvsManager ? nvsManager->timeApiToken : "") << "\"";
+    os << "\"time_api_token\":\"" << jsonEscape(nvsManager ? nvsManager->timeApiToken : "") << "\",";
+    os << "\"wifi_sta_enabled\":" << (nvsManager && !nvsManager->wifiStaEnabled ? "false" : "true") << ",";
+    os << "\"wifi_ap_enabled\":"  << (nvsManager && !nvsManager->wifiApEnabled  ? "false" : "true") << ",";
+    os << "\"portal_enabled\":"   << (nvsManager && !nvsManager->portalEnabled  ? "false" : "true") << ",";
+    os << "\"bluetooth_enabled\":" << (nvsManager && !nvsManager->bluetoothEnabled ? "false" : "true");
     os << "}";
     return os.str();
 }
@@ -1265,5 +1283,104 @@ esp_err_t SetupPortal::forgetBluetoothDeviceFromForm(const std::string& body, st
     }
 
     responseJson = std::string("{\"ok\":true,\"address\":\"") + jsonEscape(address) + "\",\"message\":\"Device forgotten\"}";
+    return ESP_OK;
+}
+
+// ── T-18: WiFi STA / AP enable-disable ──────────────────────────────────────
+
+esp_err_t SetupPortal::wifiEnabledPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) return ESP_FAIL;
+    std::string response;
+    self->saveWifiEnabledFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::saveWifiEnabledFromForm(const std::string& body, std::string& responseJson) {
+    if (nvsManager == nullptr) {
+        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const std::string staVal = getFormValue(body, "wifi_sta_enabled");
+    const std::string apVal  = getFormValue(body, "wifi_ap_enabled");
+
+    const bool staEnabled = !(staVal == "off" || staVal == "0" || staVal == "false");
+    const bool apEnabled  = !(apVal  == "off" || apVal  == "0" || apVal  == "false");
+
+    // Safety rail: disabling AP is only allowed when STA is connected (T-18).
+    if (!apEnabled) {
+        const auto snap = ConnectivityManager::instance().getSnapshot();
+        if (snap.wifi_state != ConnMgrState::StaConnected) {
+            responseJson = "{\"ok\":false,\"reason\":\"sta_not_connected\","
+                           "\"message\":\"Disable AP only while connected to home WiFi\"}";
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    if (!staVal.empty()) nvsManager->wifiStaEnabled = staEnabled;
+    if (!apVal.empty())  nvsManager->wifiApEnabled  = apEnabled;
+    nvsManager->saveEnabledFlags();
+
+    // Apply AP change immediately (start or stop AP).
+    if (!apVal.empty()) {
+        if (apEnabled) {
+            if (wifiManager != nullptr) wifiManager->startAPMode();
+        }
+        // Stopping the AP requires esp_wifi_set_mode(STA-only) which is handled
+        // by ConnMgr; a reboot is the safest path for now.
+    }
+
+    responseJson = std::string("{\"ok\":true,\"wifi_sta_enabled\":") +
+                   (nvsManager->wifiStaEnabled ? "true" : "false") + ",\"wifi_ap_enabled\":" +
+                   (nvsManager->wifiApEnabled  ? "true" : "false") + "}";
+    return ESP_OK;
+}
+
+// ── T-19: Captive portal enable-disable ─────────────────────────────────────
+
+esp_err_t SetupPortal::portalEnabledPostHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) return ESP_FAIL;
+    std::string response;
+    self->savePortalEnabledFromForm(readBody(req), response);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response.c_str(), static_cast<ssize_t>(response.size()));
+}
+
+esp_err_t SetupPortal::savePortalEnabledFromForm(const std::string& body, std::string& responseJson) {
+    if (nvsManager == nullptr) {
+        responseJson = "{\"ok\":false,\"message\":\"NVS unavailable\"}";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const std::string val = getFormValue(body, "portal_enabled");
+    const bool enable = !(val == "off" || val == "0" || val == "false");
+
+    // Safety: disabling the portal without STA connectivity locks the user out (T-19).
+    if (!enable) {
+        const auto snap = ConnectivityManager::instance().getSnapshot();
+        if (snap.wifi_state != ConnMgrState::StaConnected) {
+            responseJson = "{\"ok\":false,\"reason\":\"no_remote_management\","
+                           "\"message\":\"Connect to home WiFi before disabling the portal\"}";
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    nvsManager->portalEnabled = enable;
+    nvsManager->saveEnabledFlags();
+
+    if (!enable) {
+        // Tell the caller the portal is going down *after* this response,
+        // then stop it via commandCallback so the response can be sent first.
+        if (commandCallback) {
+            commandCallback("stopPortal");
+        }
+    }
+
+    const char* warning = enable ? "" : " Portal stops after this response.";
+    responseJson = std::string("{\"ok\":true,\"portal_enabled\":") +
+                   (enable ? "true" : "false") + ",\"message\":\"Saved." + warning + "\"}";
     return ESP_OK;
 }
