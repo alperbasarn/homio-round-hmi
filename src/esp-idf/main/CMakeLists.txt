@@ -22,4 +22,5 @@ idf_component_register(
         ota_manager
         sleep_handler
         bluetooth_manager
+        connectivity_manager
 )
