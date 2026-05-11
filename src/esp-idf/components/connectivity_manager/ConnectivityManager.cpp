@@ -107,6 +107,12 @@ esp_err_t ConnectivityManager::begin() {
         return ESP_ERR_NO_MEM;
     }
 
+    publish_mutex_ = xSemaphoreCreateMutex();
+    if (publish_mutex_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create publish mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
     const BaseType_t ret = xTaskCreate(
         connMgrTask, "ConnMgr", kStackSize, this, kTaskPriority, &taskHandle_);
     if (ret != pdPASS || taskHandle_ == nullptr) {
@@ -147,6 +153,14 @@ ConnectivitySnapshot ConnectivityManager::getSnapshot() const {
 }
 
 void ConnectivityManager::publishSnapshot(const ConnectivitySnapshot& next) {
+    // Serialises concurrent writers (runTask + patch* methods) before the
+    // seqlock write.  Readers are still lock-free via getSnapshot().
+    xSemaphoreTake(publish_mutex_, portMAX_DELAY);
+    publishSnapshotUnlocked_(next);
+    xSemaphoreGive(publish_mutex_);
+}
+
+void ConnectivityManager::publishSnapshotUnlocked_(const ConnectivitySnapshot& next) {
     // Single-writer seqlock: bump to odd (update in progress), write the
     // snapshot, bump to even (stable). `version` advances by 1 per publish,
     // so seq_ == version * 2 once the writer is done.
@@ -158,6 +172,48 @@ void ConnectivityManager::publishSnapshot(const ConnectivitySnapshot& next) {
 
     std::atomic_thread_fence(std::memory_order_release);
     seq_.store(prev + 2u, std::memory_order_release);
+}
+
+void ConnectivityManager::patchStaDetails(const char* ssid, const char* ip,
+                                           int8_t rssi_dbm, uint8_t rssi_bars) {
+    xSemaphoreTake(publish_mutex_, portMAX_DELAY);
+    ConnectivitySnapshot next = snapshot_;
+    strncpy(next.sta_ssid, ssid ? ssid : "", sizeof(next.sta_ssid) - 1);
+    next.sta_ssid[sizeof(next.sta_ssid) - 1] = '\0';
+    strncpy(next.sta_ip, ip ? ip : "", sizeof(next.sta_ip) - 1);
+    next.sta_ip[sizeof(next.sta_ip) - 1] = '\0';
+    next.rssi_dbm  = rssi_dbm;
+    next.rssi_bars = rssi_bars;
+    publishSnapshotUnlocked_(next);
+    xSemaphoreGive(publish_mutex_);
+}
+
+void ConnectivityManager::patchApDetails(const char* ssid, const char* ip,
+                                          const char* password) {
+    xSemaphoreTake(publish_mutex_, portMAX_DELAY);
+    ConnectivitySnapshot next = snapshot_;
+    strncpy(next.ap_ssid, ssid ? ssid : "", sizeof(next.ap_ssid) - 1);
+    next.ap_ssid[sizeof(next.ap_ssid) - 1] = '\0';
+    strncpy(next.ap_ip, ip ? ip : "", sizeof(next.ap_ip) - 1);
+    next.ap_ip[sizeof(next.ap_ip) - 1] = '\0';
+    strncpy(next.ap_password, password ? password : "", sizeof(next.ap_password) - 1);
+    next.ap_password[sizeof(next.ap_password) - 1] = '\0';
+    publishSnapshotUnlocked_(next);
+    xSemaphoreGive(publish_mutex_);
+}
+
+void ConnectivityManager::patchBtDetails(bool hid_connected, const char* hid_addr,
+                                          bool serial_connected, const char* serial_addr) {
+    xSemaphoreTake(publish_mutex_, portMAX_DELAY);
+    ConnectivitySnapshot next = snapshot_;
+    next.bt_hid_connected = hid_connected;
+    strncpy(next.bt_hid_addr, hid_addr ? hid_addr : "", sizeof(next.bt_hid_addr) - 1);
+    next.bt_hid_addr[sizeof(next.bt_hid_addr) - 1] = '\0';
+    next.bt_serial_connected = serial_connected;
+    strncpy(next.bt_serial_addr, serial_addr ? serial_addr : "", sizeof(next.bt_serial_addr) - 1);
+    next.bt_serial_addr[sizeof(next.bt_serial_addr) - 1] = '\0';
+    publishSnapshotUnlocked_(next);
+    xSemaphoreGive(publish_mutex_);
 }
 
 // static

@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "ConnectivitySnapshot.h"
@@ -70,6 +71,16 @@ public:
     // display, command router). Returns a by-value copy via a single-writer
     // seqlock — readers retry briefly if a publish races with them.
     ConnectivitySnapshot getSnapshot() const;
+
+    // Thread-safe patch methods — callable from any task (WiFiManager event
+    // handler, BluetoothManager stack callbacks, etc.) to push radio-specific
+    // detail fields into the snapshot without touching the FSM state.
+    void patchStaDetails(const char* sta_ssid, const char* sta_ip,
+                         int8_t rssi_dbm, uint8_t rssi_bars);
+    void patchApDetails(const char* ap_ssid, const char* ap_ip,
+                        const char* ap_password);
+    void patchBtDetails(bool hid_connected, const char* hid_addr,
+                        bool serial_connected, const char* serial_addr);
 
     // ── BLE GAP delegation (T-06) ─────────────────────────────────────────
     // BluetoothManager calls these instead of esp_ble_gap_* directly.
@@ -131,12 +142,15 @@ private:
 
     // Single-writer seqlock publish. Even seq values indicate "snapshot_ is
     // stable"; odd values indicate "writer is mid-update, retry the read."
-    // Called only from the ConnMgr task.
+    // publishSnapshot() takes publish_mutex_ then calls the unlocked variant.
+    // Patch methods also take publish_mutex_ before calling the unlocked variant.
     void publishSnapshot(const ConnectivitySnapshot& next);
+    void publishSnapshotUnlocked_(const ConnectivitySnapshot& next);
 
     ConnectivitySnapshot snapshot_{};
     mutable std::atomic<uint32_t> seq_{0};
     bool initialized_ = false;
+    SemaphoreHandle_t publish_mutex_ = nullptr;
 
     TaskHandle_t       taskHandle_      = nullptr;
     QueueHandle_t      queue_           = nullptr;
