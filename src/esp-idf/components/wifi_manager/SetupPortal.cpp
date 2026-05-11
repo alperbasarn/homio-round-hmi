@@ -85,9 +85,10 @@ void SetupPortal::stop() {
 }
 
 void SetupPortal::onStaGotIp() {
-    ESP_LOGI(TAG, "STA got IP — restarting HTTP server to bind on STA interface");
-    stopHttpServer();
-    startHttpServer();
+    // No-op: httpd_start with INADDR_ANY already binds to both netifs.
+    // Restarting the server here caused captive-portal popup failures and
+    // empty form fields on first load (T-10).
+    ESP_LOGI(TAG, "STA got IP - HTTP server left running (INADDR_ANY)");
 }
 
 esp_err_t SetupPortal::startHttpServer() {
