@@ -27,6 +27,8 @@ NVSManager::NVSManager()
       accessPointPassword(std::string(kDeviceNamePrefix) + kDefaultDeviceSuffix),
     otaVariantId(""),
     otaManifestUrl(""),
+      wifiStaEnabled(true), wifiApEnabled(true), portalEnabled(true),
+      bluetoothEnabled(true), recoveryModeActive(false),
       staticIPEnabled(false),
     staticIPSSID(""),
       staticIP("192.168.4.1"), staticGateway("192.168.4.1"),
@@ -292,6 +294,12 @@ esp_err_t NVSManager::clearAll()
     accessPointPassword = ""; // open AP by default
     otaVariantId.clear();
     otaManifestUrl.clear();
+
+    wifiStaEnabled   = true;
+    wifiApEnabled    = true;
+    portalEnabled    = true;
+    bluetoothEnabled = true;
+    // recoveryModeActive is intentionally NOT reset — it is boot-time only.
 
     staticIPEnabled = false;
     staticIPSSID.clear();
@@ -676,8 +684,26 @@ esp_err_t NVSManager::loadAllConfigurations()
     // Bluetooth bonded devices
     loadBondedDevices();
 
+    // Enable flags (default true = on; never read recoveryModeActive from NVS)
+    readBool(NVS_KEY_WIFI_STA_EN, wifiStaEnabled,   true);
+    readBool(NVS_KEY_WIFI_AP_EN,  wifiApEnabled,    true);
+    readBool(NVS_KEY_PORTAL_EN,   portalEnabled,    true);
+    readBool(NVS_KEY_BT_ENABLED,  bluetoothEnabled, true);
+    ESP_LOGI(TAG, "Enable flags: wifi_sta=%d wifi_ap=%d portal=%d bt=%d",
+             wifiStaEnabled, wifiApEnabled, portalEnabled, bluetoothEnabled);
+
     ESP_LOGI(TAG, "All configurations loaded");
     return ESP_OK;
+}
+
+esp_err_t NVSManager::saveEnabledFlags()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+    writeBool(NVS_KEY_WIFI_STA_EN, wifiStaEnabled);
+    writeBool(NVS_KEY_WIFI_AP_EN,  wifiApEnabled);
+    writeBool(NVS_KEY_PORTAL_EN,   portalEnabled);
+    writeBool(NVS_KEY_BT_ENABLED,  bluetoothEnabled);
+    return nvs_commit(nvs_handle);
 }
 
 std::string NVSManager::getConfigurationInfo()
