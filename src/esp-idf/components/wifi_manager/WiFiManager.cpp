@@ -6,11 +6,13 @@
 #include "esp_netif.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_mac.h"
+#include "esp_wifi.h"
 #include "sdkconfig.h"
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
+#include <algorithm>
 #include <cstring>
 
 static const char *TAG = "WiFiManager";
@@ -24,6 +26,7 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
       internet_available(false),
       prev_sta_connected_(false),
       prev_sta_connecting_(false),
+      scan_pending_connect_(false),
       connect_cred_index_(-1),
       connect_creds_tried_(0),
       scan_result_count(0),
@@ -118,10 +121,57 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             break;
         }
 
-        case WIFI_EVENT_SCAN_DONE:
+        case WIFI_EVENT_SCAN_DONE: {
             ESP_LOGI(TAG, "WiFi scan completed");
             xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiScanDoneBit);
+
+            if (!scan_pending_connect_ || !nvs_manager) {
+                break;
+            }
+            scan_pending_connect_ = false;
+
+            // Read scan results and cross-reference with saved credentials.
+            uint16_t ap_count = 0;
+            esp_wifi_scan_get_ap_num(&ap_count);
+            if (ap_count == 0) {
+                ESP_LOGW(TAG, "Scan found no APs; staying in AP mode");
+                break;
+            }
+
+            // Cap to a reasonable maximum to avoid stack pressure.
+            constexpr uint16_t kMaxAPs = 20;
+            if (ap_count > kMaxAPs) ap_count = kMaxAPs;
+            wifi_ap_record_t records[kMaxAPs];
+            if (esp_wifi_scan_get_ap_records(&ap_count, records) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to read scan records");
+                break;
+            }
+
+            // Find the saved credential with the strongest (highest) RSSI among visible APs.
+            int best_cred = -1;
+            int8_t best_rssi = INT8_MIN;
+            for (int ci = 0; ci < NUM_WIFI_CREDENTIALS; ++ci) {
+                const auto& cred = nvs_manager->wifiCredentials[ci];
+                if (cred.ssid.empty()) continue;
+                for (uint16_t ai = 0; ai < ap_count; ++ai) {
+                    const char* ap_ssid = reinterpret_cast<const char*>(records[ai].ssid);
+                    if (cred.ssid == ap_ssid && records[ai].rssi > best_rssi) {
+                        best_rssi  = records[ai].rssi;
+                        best_cred  = ci;
+                    }
+                }
+            }
+
+            if (best_cred >= 0) {
+                ESP_LOGI(TAG, "Best visible saved network: %s (RSSI %d dBm)",
+                         nvs_manager->wifiCredentials[best_cred].ssid.c_str(), best_rssi);
+                connect_creds_tried_ = 0;
+                connectToStoredNetwork(best_cred);
+            } else {
+                ESP_LOGW(TAG, "No saved network in range; staying in AP mode");
+            }
             break;
+        }
     }
 }
 
@@ -401,23 +451,25 @@ esp_err_t WiFiManager::connectToStoredNetwork(int index)
     return ESP_OK;  // attempt launched
 }
 
-esp_err_t WiFiManager::startNextCredential_()
+esp_err_t WiFiManager::startScanThenConnect_()
 {
-    if (!nvs_manager) return ESP_ERR_INVALID_STATE;
-
-    // Scan forward from connect_cred_index_ for the next non-empty slot.
-    for (int n = 0; n < NUM_WIFI_CREDENTIALS; ++n) {
-        const int i = (connect_cred_index_ + n) % NUM_WIFI_CREDENTIALS;
-        if (!nvs_manager->wifiCredentials[i].ssid.empty()) {
-            connect_creds_tried_++;
-            return connectToStoredNetwork(i);
+    scan_pending_connect_ = true;
+    const esp_err_t err = ConnectivityManager::instance().startNonBlockingScan();
+    if (err != ESP_OK) {
+        // Scan failed to start — fall back to direct connect attempt if we have a last-known-good.
+        scan_pending_connect_ = false;
+        ESP_LOGW(TAG, "Scan start failed (%s); attempting direct connect", esp_err_to_name(err));
+        if (nvs_manager) {
+            int idx = nvs_manager->lastConnectedNetworkIndex;
+            if (idx >= 0 && idx < NUM_WIFI_CREDENTIALS &&
+                !nvs_manager->wifiCredentials[idx].ssid.empty()) {
+                return connectToStoredNetwork(idx);
+            }
         }
+        return err;
     }
-
-    // All slots empty or exhausted.
-    connect_cred_index_ = -1;
-    ESP_LOGW(TAG, "No more credentials to try");
-    return ESP_ERR_NOT_FOUND;
+    ESP_LOGI(TAG, "WiFi scan started; will connect to strongest saved network on SCAN_DONE");
+    return ESP_OK;
 }
 
 esp_err_t WiFiManager::connectToWiFi()
@@ -427,10 +479,13 @@ esp_err_t WiFiManager::connectToWiFi()
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Enable STA only when we are about to actively try a connection.
+    // Ensure radio is in APSTA so AP keeps running during the scan.
     ConnectivityManager::instance().setWifiMode(WIFI_MODE_APSTA);
     last_connect_attempt = esp_timer_get_time() / 1000;
+    connect_cred_index_ = -1;
+    connect_creds_tried_ = 0;
 
+    // Check whether there are any stored networks at all.
     bool hasStoredNetworks = false;
     for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
         if (!nvs_manager->wifiCredentials[i].ssid.empty()) {
@@ -440,12 +495,8 @@ esp_err_t WiFiManager::connectToWiFi()
     }
 
     if (hasStoredNetworks) {
-        // Start from last-known-good credential; cycling continues in update().
-        int start = nvs_manager->lastConnectedNetworkIndex;
-        if (start < 0 || start >= NUM_WIFI_CREDENTIALS) start = 0;
-        connect_cred_index_ = start;
-        connect_creds_tried_ = 0;
-        return startNextCredential_();
+        // Scan first; SCAN_DONE handler picks the strongest visible saved network.
+        return startScanThenConnect_();
     }
 
     if (strlen(CONFIG_QNOB_WIFI_SSID) > 0) {
@@ -459,7 +510,6 @@ esp_err_t WiFiManager::connectToWiFi()
 
         applySTAIPConfig(CONFIG_QNOB_WIFI_SSID);
         ConnectivityManager::instance().startSTAConnect(sta_config);
-        connect_cred_index_ = -1;  // single-shot, no cycling
         return ESP_OK;
     }
 
@@ -762,16 +812,14 @@ void WiFiManager::update()
         }
     }
 
-    // Edge-detect StaConnecting → failure: advance credential cycle.
+    // Edge-detect StaConnecting → failure: retry via a new scan.
     const bool sta_connecting = (snap.wifi_state == ConnMgrState::StaConnecting);
     if (prev_sta_connecting_ && !sta_connecting && !sta_connected) {
-        if (connect_cred_index_ >= 0 && connect_creds_tried_ < NUM_WIFI_CREDENTIALS) {
-            // Advance to next credential slot.
-            connect_cred_index_ = (connect_cred_index_ + 1) % NUM_WIFI_CREDENTIALS;
-            startNextCredential_();
-        } else {
-            connect_cred_index_  = -1;
-            connect_creds_tried_ = 0;
+        // Connect attempt failed. Trigger a fresh scan so the next try
+        // still picks the strongest available saved network.
+        if (!scan_pending_connect_) {
+            ESP_LOGI(TAG, "STA connect failed; retrying via scan");
+            startScanThenConnect_();
         }
     }
     prev_sta_connecting_ = sta_connecting;
