@@ -26,6 +26,7 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
       internet_available(false),
       prev_sta_connected_(false),
       prev_sta_connecting_(false),
+      prev_portal_guest_(false),
       scan_pending_connect_(false),
       connect_cred_index_(-1),
       connect_creds_tried_(0),
@@ -109,15 +110,8 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*)event_data;
             ESP_LOGI(TAG, "Station " MACSTR " left AP", MAC2STR(event->mac));
             ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_AP_CLIENT_LEFT);
-            // Reset reconnect backoff timer when the last AP client leaves so
-            // update() retries STA immediately instead of waiting SCAN_INTERVAL.
-            {
-                wifi_sta_list_t sta_list = {};
-                if (ConnectivityManager::instance().getApStaList(&sta_list) && sta_list.num == 0) {
-                    ESP_LOGI(TAG, "No AP clients connected, STA reconnect allowed again");
-                    last_connect_attempt = 0;
-                }
-            }
+            // STA retry is deferred by ConnMgr's 30 s debounce timer (T-09);
+            // do NOT reset last_connect_attempt here.
             break;
         }
 
@@ -811,6 +805,14 @@ void WiFiManager::update()
             on_disconnected();
         }
     }
+
+    // Edge-detect PortalGuestActive → off (debounce expired): reset backoff so
+    // update() triggers connectToWiFi() promptly on the next loop.
+    if (prev_portal_guest_ && !portal_guest_active && !sta_connected) {
+        ESP_LOGI(TAG, "Portal guest gone; scheduling immediate STA retry");
+        last_connect_attempt = 0;
+    }
+    prev_portal_guest_ = portal_guest_active;
 
     // Edge-detect StaConnecting → failure: retry via a new scan.
     const bool sta_connecting = (snap.wifi_state == ConnMgrState::StaConnecting);
