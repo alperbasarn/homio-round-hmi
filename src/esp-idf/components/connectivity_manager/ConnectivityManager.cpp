@@ -30,6 +30,7 @@ const char* eventName(ConnMgrEvent ev) {
         case ConnMgrEvent::EV_USER_REQUESTED_CONNECT: return "EV_USER_REQUESTED_CONNECT";
         case ConnMgrEvent::EV_BACKOFF_TIMER:          return "EV_BACKOFF_TIMER";
         case ConnMgrEvent::EV_CONNECT_TIMEOUT:        return "EV_CONNECT_TIMEOUT";
+        case ConnMgrEvent::EV_STA_ASSOCIATED:         return "EV_STA_ASSOCIATED";
         case ConnMgrEvent::EV_BT_SCAN_REQUESTED:      return "EV_BT_SCAN_REQUESTED";
         case ConnMgrEvent::EV_BT_ENABLE_REQUESTED:    return "EV_BT_ENABLE_REQUESTED";
         case ConnMgrEvent::EV_PORTAL_ENABLE_REQUESTED:return "EV_PORTAL_ENABLE_REQUESTED";
@@ -336,9 +337,16 @@ void ConnectivityManager::runTask() {
             case ConnMgrEvent::EV_BOOT_DONE:
                 state_ = ConnMgrState::ApReady;
                 break;
+            case ConnMgrEvent::EV_STA_ASSOCIATED:
+                // Boost WiFi priority during the DHCP window so EAPOL/DHCP
+                // exchanges are not starved by concurrent BLE activity.
+                esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+                break;
             case ConnMgrEvent::EV_STA_GOT_IP:
                 cancelConnectTimer_();
                 state_ = ConnMgrState::StaConnected;
+                // Restore balanced coex now that the DHCP window is closed.
+                esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
                 break;
             case ConnMgrEvent::EV_STA_DISCONNECTED:
                 if (state_ == ConnMgrState::StaConnected ||
@@ -379,6 +387,15 @@ void ConnectivityManager::runTask() {
                 break;
             case ConnMgrEvent::EV_USER_REQUESTED_CONNECT:
                 state_ = ConnMgrState::StaConnecting;
+                break;
+            case ConnMgrEvent::EV_BT_SCAN_REQUESTED:
+                // Gate BLE scans while a STA association is in progress so
+                // that radio contention does not break the 4-way handshake.
+                if (state_ == ConnMgrState::StaConnecting) {
+                    ESP_LOGW(TAG, "BLE scan rejected: STA association in progress");
+                } else {
+                    postEvent(ConnMgrEvent::EV_BT_SCAN_START);
+                }
                 break;
             case ConnMgrEvent::EV_BT_ADV_START: {
                 const esp_err_t err = esp_ble_gap_start_advertising(&ble_adv_params_);

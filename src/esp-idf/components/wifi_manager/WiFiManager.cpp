@@ -79,6 +79,8 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             wifi_event_sta_connected_t* event = (wifi_event_sta_connected_t*)event_data;
             current_ssid = std::string((char*)event->ssid, event->ssid_len);
             ESP_LOGI(TAG, "Connected to %s", current_ssid.c_str());
+            // Notify ConnMgr to boost coex priority during the DHCP window.
+            ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_ASSOCIATED);
             break;
         }
 
