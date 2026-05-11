@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "esp_gap_ble_api.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -94,9 +95,11 @@ public:
     // Configure and apply an AP config; calls esp_wifi_set_config(WIFI_IF_AP).
     esp_err_t configureAP(const wifi_config_t& cfg);
 
-    // Set APSTA mode, apply STA config, connect, and block until IP or fail
-    // (up to WIFI_CONNECT_TIMEOUT_MS). Returns ESP_OK on success.
-    esp_err_t connectSTA(const wifi_config_t& cfg);
+    // Set APSTA mode, apply STA config, and fire esp_wifi_connect().
+    // Returns immediately; result arrives as EV_STA_GOT_IP / EV_STA_DISCONNECTED
+    // or EV_CONNECT_TIMEOUT (15 s one-shot timer). Caller must not call this
+    // again until one of those events fires.
+    esp_err_t startSTAConnect(const wifi_config_t& cfg);
 
     // esp_wifi_disconnect().
     void disconnectSTA();
@@ -139,6 +142,12 @@ private:
     EventGroupHandle_t event_group_     = nullptr;
     ConnMgrState       state_           = ConnMgrState::Boot;
     uint8_t            ap_client_count_ = 0;
+
+    // 15-second one-shot timer that posts EV_CONNECT_TIMEOUT when a STA
+    // connect attempt does not produce EV_STA_GOT_IP in time.
+    esp_timer_handle_t connect_timer_   = nullptr;
+    static void connectTimeoutCb_(void* arg);
+    void        cancelConnectTimer_();
 
     // BLE GAP params — written before posting EV_BT_ADV_START/EV_BT_SCAN_START;
     // read only inside runTask(). FreeRTOS queue ops provide the memory barrier.

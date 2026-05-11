@@ -6,6 +6,7 @@
 #include "esp_coexist.h"
 #include "esp_gap_ble_api.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 
 namespace {
@@ -13,9 +14,10 @@ constexpr const char* TAG = "ConnMgr";
 
 // Task sits between the display task (priority 2) and the network task
 // (priority 3). Using priority 2 until the bands are spread further apart.
-constexpr UBaseType_t kTaskPriority = 2;
-constexpr uint32_t    kStackSize    = 4096;
-constexpr UBaseType_t kQueueDepth   = 16;
+constexpr UBaseType_t kTaskPriority   = 2;
+constexpr uint32_t    kStackSize      = 4096;
+constexpr UBaseType_t kQueueDepth     = 16;
+constexpr uint64_t    kConnectTimeoutUs = 15'000'000ULL; // 15 s
 
 const char* eventName(ConnMgrEvent ev) {
     switch (ev) {
@@ -64,6 +66,19 @@ esp_err_t ConnectivityManager::begin() {
     // Give WiFi and BLE equal radio time. The default (ESP_COEX_PREFER_WIFI)
     // blocks all BLE TX slots; balance mode lets both radios share the air.
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+
+    // Create the one-shot 15 s connect-timeout timer.
+    const esp_timer_create_args_t timer_args = {
+        .callback  = &ConnectivityManager::connectTimeoutCb_,
+        .arg       = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name      = "ConnMgrTimeout",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&timer_args, &connect_timer_) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create connect timeout timer");
+        return ESP_FAIL;
+    }
 
     event_group_ = xEventGroupCreate();
     if (event_group_ == nullptr) {
@@ -170,27 +185,35 @@ esp_err_t ConnectivityManager::configureAP(const wifi_config_t& cfg) {
     return esp_wifi_set_config(WIFI_IF_AP, const_cast<wifi_config_t*>(&cfg));
 }
 
-esp_err_t ConnectivityManager::connectSTA(const wifi_config_t& cfg) {
-    xEventGroupClearBits(event_group_, kWifiConnectedBit | kWifiFailBit);
+// T-08: non-blocking — arms 15 s timer, returns immediately.
+esp_err_t ConnectivityManager::startSTAConnect(const wifi_config_t& cfg) {
     esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, const_cast<wifi_config_t*>(&cfg));
+    const esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, const_cast<wifi_config_t*>(&cfg));
     if (err != ESP_OK) {
         return err;
     }
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-        return err;
+    const esp_err_t cerr = esp_wifi_connect();
+    if (cerr != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(cerr));
+        // Post a synthetic timeout so runTask advances state without waiting.
+        postEvent(ConnMgrEvent::EV_CONNECT_TIMEOUT);
+        return cerr;
     }
-    const EventBits_t bits = xEventGroupWaitBits(
-        event_group_,
-        kWifiConnectedBit | kWifiFailBit,
-        pdTRUE, pdFALSE,
-        pdMS_TO_TICKS(15000));
-    if (bits & kWifiConnectedBit) {
-        return ESP_OK;
+    // Arm 15 s safety-net timer.
+    esp_timer_stop(connect_timer_);
+    esp_timer_start_once(connect_timer_, kConnectTimeoutUs);
+    return ESP_OK;
+}
+
+// static — fires on esp-timer task; just posts the event.
+void ConnectivityManager::connectTimeoutCb_(void* arg) {
+    static_cast<ConnectivityManager*>(arg)->postEvent(ConnMgrEvent::EV_CONNECT_TIMEOUT);
+}
+
+void ConnectivityManager::cancelConnectTimer_() {
+    if (connect_timer_ != nullptr) {
+        esp_timer_stop(connect_timer_);
     }
-    esp_wifi_disconnect();
-    return ESP_ERR_WIFI_NOT_CONNECT;
 }
 
 void ConnectivityManager::disconnectSTA() {
@@ -289,11 +312,13 @@ void ConnectivityManager::runTask() {
                 state_ = ConnMgrState::ApReady;
                 break;
             case ConnMgrEvent::EV_STA_GOT_IP:
+                cancelConnectTimer_();
                 state_ = ConnMgrState::StaConnected;
                 break;
             case ConnMgrEvent::EV_STA_DISCONNECTED:
                 if (state_ == ConnMgrState::StaConnected ||
                     state_ == ConnMgrState::StaConnecting) {
+                    cancelConnectTimer_();
                     state_ = ConnMgrState::StaFailedBackoff;
                 }
                 break;
@@ -311,6 +336,8 @@ void ConnectivityManager::runTask() {
                 }
                 break;
             case ConnMgrEvent::EV_CONNECT_TIMEOUT:
+                ESP_LOGW(TAG, "STA connect timed out");
+                esp_wifi_disconnect();
                 state_ = ConnMgrState::StaFailedBackoff;
                 break;
             case ConnMgrEvent::EV_USER_REQUESTED_CONNECT:
