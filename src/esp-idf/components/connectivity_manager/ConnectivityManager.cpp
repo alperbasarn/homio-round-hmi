@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstring>
 
+#include "esp_coexist.h"
+#include "esp_gap_ble_api.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 
@@ -28,6 +30,9 @@ const char* eventName(ConnMgrEvent ev) {
         case ConnMgrEvent::EV_BT_SCAN_REQUESTED:      return "EV_BT_SCAN_REQUESTED";
         case ConnMgrEvent::EV_BT_ENABLE_REQUESTED:    return "EV_BT_ENABLE_REQUESTED";
         case ConnMgrEvent::EV_PORTAL_ENABLE_REQUESTED:return "EV_PORTAL_ENABLE_REQUESTED";
+        case ConnMgrEvent::EV_BT_ADV_START:           return "EV_BT_ADV_START";
+        case ConnMgrEvent::EV_BT_ADV_STOP:            return "EV_BT_ADV_STOP";
+        case ConnMgrEvent::EV_BT_SCAN_START:          return "EV_BT_SCAN_START";
         default:                                      return "EV_UNKNOWN";
     }
 }
@@ -55,6 +60,10 @@ esp_err_t ConnectivityManager::begin() {
         return ESP_OK;
     }
     initialized_ = true;
+
+    // Give WiFi and BLE equal radio time. The default (ESP_COEX_PREFER_WIFI)
+    // blocks all BLE TX slots; balance mode lets both radios share the air.
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
     event_group_ = xEventGroupCreate();
     if (event_group_ == nullptr) {
@@ -246,6 +255,22 @@ bool ConnectivityManager::getStaApInfo(wifi_ap_record_t* out) {
     return esp_wifi_sta_get_ap_info(out) == ESP_OK;
 }
 
+// ── BLE GAP delegation (T-06) ──────────────────────────────────────────────────────────
+
+void ConnectivityManager::bleRequestAdvertisingStart(const esp_ble_adv_params_t& params) {
+    ble_adv_params_ = params;
+    postEvent(ConnMgrEvent::EV_BT_ADV_START);
+}
+
+void ConnectivityManager::bleRequestAdvertisingStop() {
+    postEvent(ConnMgrEvent::EV_BT_ADV_STOP);
+}
+
+void ConnectivityManager::bleRequestScanStart(uint32_t durationSec) {
+    ble_scan_duration_ = durationSec;
+    postEvent(ConnMgrEvent::EV_BT_SCAN_START);
+}
+
 void ConnectivityManager::runTask() {
     ESP_LOGI(TAG, "running on core %d", xPortGetCoreID());
 
@@ -291,6 +316,28 @@ void ConnectivityManager::runTask() {
             case ConnMgrEvent::EV_USER_REQUESTED_CONNECT:
                 state_ = ConnMgrState::StaConnecting;
                 break;
+            case ConnMgrEvent::EV_BT_ADV_START: {
+                const esp_err_t err = esp_ble_gap_start_advertising(&ble_adv_params_);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "BLE start advertising failed: %s", esp_err_to_name(err));
+                }
+                break;
+            }
+            case ConnMgrEvent::EV_BT_ADV_STOP: {
+                const esp_err_t err = esp_ble_gap_stop_advertising();
+                if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+                    ESP_LOGW(TAG, "BLE stop advertising failed: %s", esp_err_to_name(err));
+                }
+                break;
+            }
+            case ConnMgrEvent::EV_BT_SCAN_START: {
+                const esp_err_t err =
+                    esp_ble_gap_start_scanning(ble_scan_duration_);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "BLE start scanning failed: %s", esp_err_to_name(err));
+                }
+                break;
+            }
             default:
                 break;
         }

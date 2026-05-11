@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "esp_err.h"
+#include "esp_gap_ble_api.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -37,6 +38,10 @@ enum class ConnMgrEvent : uint8_t {
     EV_BT_SCAN_REQUESTED,
     EV_BT_ENABLE_REQUESTED,
     EV_PORTAL_ENABLE_REQUESTED,
+    // T-06: low-level BLE GAP dispatch — only executed inside runTask()
+    EV_BT_ADV_START,
+    EV_BT_ADV_STOP,
+    EV_BT_SCAN_START,
 };
 
 // ConnectivityManager is the single owner of the radio (WiFi STA/AP + BLE
@@ -63,6 +68,14 @@ public:
     // display, command router). Returns a by-value copy via a single-writer
     // seqlock — readers retry briefly if a publish races with them.
     ConnectivitySnapshot getSnapshot() const;
+
+    // ── BLE GAP delegation (T-06) ─────────────────────────────────────────
+    // BluetoothManager calls these instead of esp_ble_gap_* directly.
+    // Stores params and posts the corresponding event to the queue so the
+    // actual GAP call happens inside runTask() on the ConnMgr task.
+    void bleRequestAdvertisingStart(const esp_ble_adv_params_t& params);
+    void bleRequestAdvertisingStop();
+    void bleRequestScanStart(uint32_t durationSec);
 
     // ── WiFi event group ────────────────────────────────────────────────────
     // WiFiManager event handlers call this to set connection result bits
@@ -126,4 +139,9 @@ private:
     EventGroupHandle_t event_group_     = nullptr;
     ConnMgrState       state_           = ConnMgrState::Boot;
     uint8_t            ap_client_count_ = 0;
+
+    // BLE GAP params — written before posting EV_BT_ADV_START/EV_BT_SCAN_START;
+    // read only inside runTask(). FreeRTOS queue ops provide the memory barrier.
+    esp_ble_adv_params_t ble_adv_params_{};
+    uint32_t             ble_scan_duration_ = 5;
 };

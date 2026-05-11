@@ -1,8 +1,9 @@
 #include "BluetoothManager.h"
 
+#include "ConnectivityManager.h"
+
 #include "esp_bt.h"
 #include "esp_bt_main.h"
-#include "esp_coexist.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatt_common_api.h"
 #include "esp_gatts_api.h"
@@ -204,10 +205,6 @@ esp_err_t BluetoothManager::begin(const char* deviceName) {
 }
 
 esp_err_t BluetoothManager::initializeController() {
-    // Give WiFi and BLE equal radio time so BLE advertising is not starved.
-    // The default preference (ESP_COEX_PREFER_WIFI) blocks all BLE TX slots.
-    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-
     esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "classic BT memory release failed: %s", esp_err_to_name(err));
@@ -347,17 +344,11 @@ void BluetoothManager::startAdvertising() {
     if (!enabled || !ready || !advDataConfigured || !scanRspConfigured) {
         return;
     }
-    const esp_err_t err = esp_ble_gap_start_advertising(&advParams);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "start advertising failed: %s", esp_err_to_name(err));
-    }
+    ConnectivityManager::instance().bleRequestAdvertisingStart(advParams);
 }
 
 void BluetoothManager::stopAdvertising() {
-    const esp_err_t err = esp_ble_gap_stop_advertising();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "stop advertising failed: %s", esp_err_to_name(err));
-    }
+    ConnectivityManager::instance().bleRequestAdvertisingStop();
 }
 
 void BluetoothManager::disconnectKnownPeers() {
@@ -523,7 +514,8 @@ void BluetoothManager::onGapEvent(int event, void* rawParam) {
                 const uint8_t status = (param != nullptr) ? param->scan_param_cmpl.status : 0xFF;
                 if (status == ESP_BT_STATUS_SUCCESS) {
                     scanStatusMsg = "scanning";
-                    esp_ble_gap_start_scanning(static_cast<uint32_t>(scanDuration));
+                    ConnectivityManager::instance().bleRequestScanStart(
+                        static_cast<uint32_t>(scanDuration));
                 } else {
                     scanning = false;
                     char buf[32];
@@ -684,7 +676,7 @@ esp_err_t BluetoothManager::startScan(int durationSec) {
     scanPending = true;
     // Stop advertising first; scan params are set in ADV_STOP_COMPLETE_EVT
     // to avoid a state conflict when advertising stop is still in progress.
-    esp_ble_gap_stop_advertising();
+    ConnectivityManager::instance().bleRequestAdvertisingStop();
     return ESP_OK;
 }
 
