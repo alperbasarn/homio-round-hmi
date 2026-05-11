@@ -89,6 +89,7 @@ private:
     bool internet_available;
     bool prev_sta_connected_;    // edge detection for callbacks in update()
     bool prev_sta_connecting_;    // edge detection: StaConnecting → fail in update()
+    bool prev_portal_guest_;      // edge detection: PortalGuestActive → off in update()
     bool scan_pending_connect_;   // scan was triggered by connectToWiFi(); on done → pick best
     int  connect_cred_index_;     // slot of the credential being attempted (-1 = none)
     int  connect_creds_tried_;    // kept for compatibility; not used for cycling in T-20

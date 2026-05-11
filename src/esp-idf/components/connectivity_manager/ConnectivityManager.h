@@ -149,6 +149,14 @@ private:
     static void connectTimeoutCb_(void* arg);
     void        cancelConnectTimer_();
 
+    // 30-second debounce timer posted after the last AP client leaves.
+    // Keeps state in PortalGuestActive during the window so update() does not
+    // fire STA retries while the user's phone finishes its TCP teardown.
+    // Fires EV_BACKOFF_TIMER to resume STA attempts.
+    esp_timer_handle_t debounce_timer_  = nullptr;
+    static void debounceTimerCb_(void* arg);
+    void        cancelDebounceTimer_();
+
     // BLE GAP params — written before posting EV_BT_ADV_START/EV_BT_SCAN_START;
     // read only inside runTask(). FreeRTOS queue ops provide the memory barrier.
     esp_ble_adv_params_t ble_adv_params_{};

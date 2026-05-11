@@ -17,7 +17,8 @@ constexpr const char* TAG = "ConnMgr";
 constexpr UBaseType_t kTaskPriority   = 2;
 constexpr uint32_t    kStackSize      = 4096;
 constexpr UBaseType_t kQueueDepth     = 16;
-constexpr uint64_t    kConnectTimeoutUs = 15'000'000ULL; // 15 s
+constexpr uint64_t    kConnectTimeoutUs  = 15'000'000ULL; // 15 s
+constexpr uint64_t    kPortalDebounceUs  = 30'000'000ULL; // 30 s
 
 const char* eventName(ConnMgrEvent ev) {
     switch (ev) {
@@ -77,6 +78,19 @@ esp_err_t ConnectivityManager::begin() {
     };
     if (esp_timer_create(&timer_args, &connect_timer_) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create connect timeout timer");
+        return ESP_FAIL;
+    }
+
+    // 30 s debounce: keeps PortalGuestActive while phone TCP sessions close.
+    const esp_timer_create_args_t debounce_args = {
+        .callback  = &ConnectivityManager::debounceTimerCb_,
+        .arg       = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name      = "ConnMgrDebounce",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&debounce_args, &debounce_timer_) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create portal debounce timer");
         return ESP_FAIL;
     }
 
@@ -216,6 +230,17 @@ void ConnectivityManager::cancelConnectTimer_() {
     }
 }
 
+// static
+void ConnectivityManager::debounceTimerCb_(void* arg) {
+    static_cast<ConnectivityManager*>(arg)->postEvent(ConnMgrEvent::EV_BACKOFF_TIMER);
+}
+
+void ConnectivityManager::cancelDebounceTimer_() {
+    if (debounce_timer_ != nullptr) {
+        esp_timer_stop(debounce_timer_);
+    }
+}
+
 void ConnectivityManager::disconnectSTA() {
     esp_wifi_disconnect();
 }
@@ -323,6 +348,7 @@ void ConnectivityManager::runTask() {
                 }
                 break;
             case ConnMgrEvent::EV_AP_CLIENT_JOINED:
+                cancelDebounceTimer_();  // client rejoined during debounce window
                 ap_client_count_++;
                 state_ = ConnMgrState::PortalGuestActive;
                 break;
@@ -332,6 +358,17 @@ void ConnectivityManager::runTask() {
                 }
                 if (ap_client_count_ == 0 &&
                     state_ == ConnMgrState::PortalGuestActive) {
+                    // Arm 30 s debounce; stay in PortalGuestActive so update()
+                    // does not trigger STA retries while the phone tears down.
+                    ESP_LOGI(TAG, "Last AP client left; debounce 30 s before STA retry");
+                    esp_timer_stop(debounce_timer_);
+                    esp_timer_start_once(debounce_timer_, kPortalDebounceUs);
+                }
+                break;
+            case ConnMgrEvent::EV_BACKOFF_TIMER:
+                // Debounce expired: AP has been empty for 30 s, resume STA.
+                if (state_ == ConnMgrState::PortalGuestActive && ap_client_count_ == 0) {
+                    ESP_LOGI(TAG, "Portal debounce expired; resuming STA attempts");
                     state_ = ConnMgrState::StaFailedBackoff;
                 }
                 break;
