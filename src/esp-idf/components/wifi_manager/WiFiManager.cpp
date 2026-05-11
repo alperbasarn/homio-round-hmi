@@ -23,6 +23,9 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
       initialized(false),
       internet_available(false),
       prev_sta_connected_(false),
+      prev_sta_connecting_(false),
+      connect_cred_index_(-1),
+      connect_creds_tried_(0),
       scan_result_count(0),
       wifi_channel(WIFI_AP_CHANNEL),
       last_ap_check_time(0),
@@ -392,17 +395,29 @@ esp_err_t WiFiManager::connectToStoredNetwork(int index)
     strncpy((char*)sta_config.sta.password, cred.password.c_str(), sizeof(sta_config.sta.password) - 1);
     sta_config.sta.threshold.authmode = cred.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 
-    if (ConnectivityManager::instance().connectSTA(sta_config) == ESP_OK) {
-        if (nvs_manager) {
-            nvs_manager->lastConnectedNetworkIndex = index;
-            nvs_manager->saveWiFiCredentials();
+    // Non-blocking after T-08: result arrives via EV_STA_GOT_IP or timeout.
+    ConnectivityManager::instance().startSTAConnect(sta_config);
+    connect_cred_index_ = index;
+    return ESP_OK;  // attempt launched
+}
+
+esp_err_t WiFiManager::startNextCredential_()
+{
+    if (!nvs_manager) return ESP_ERR_INVALID_STATE;
+
+    // Scan forward from connect_cred_index_ for the next non-empty slot.
+    for (int n = 0; n < NUM_WIFI_CREDENTIALS; ++n) {
+        const int i = (connect_cred_index_ + n) % NUM_WIFI_CREDENTIALS;
+        if (!nvs_manager->wifiCredentials[i].ssid.empty()) {
+            connect_creds_tried_++;
+            return connectToStoredNetwork(i);
         }
-        return ESP_OK;
     }
 
-    // Stop ongoing STA retries for this credential; update() will retry later.
-    ESP_LOGW(TAG, "Failed to connect to %s", cred.ssid.c_str());
-    return ESP_ERR_WIFI_NOT_CONNECT;
+    // All slots empty or exhausted.
+    connect_cred_index_ = -1;
+    ESP_LOGW(TAG, "No more credentials to try");
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t WiFiManager::connectToWiFi()
@@ -424,26 +439,16 @@ esp_err_t WiFiManager::connectToWiFi()
         }
     }
 
-    // First try last connected network
-    int lastIndex = nvs_manager->lastConnectedNetworkIndex;
-    if (lastIndex >= 0 && lastIndex < NUM_WIFI_CREDENTIALS) {
-        if (connectToStoredNetwork(lastIndex) == ESP_OK) {
-            checkInternetConnectivity();
-            return ESP_OK;
-        }
+    if (hasStoredNetworks) {
+        // Start from last-known-good credential; cycling continues in update().
+        int start = nvs_manager->lastConnectedNetworkIndex;
+        if (start < 0 || start >= NUM_WIFI_CREDENTIALS) start = 0;
+        connect_cred_index_ = start;
+        connect_creds_tried_ = 0;
+        return startNextCredential_();
     }
 
-    // Try other stored networks
-    for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
-        if (i == lastIndex) continue;  // Already tried
-
-        if (connectToStoredNetwork(i) == ESP_OK) {
-            checkInternetConnectivity();
-            return ESP_OK;
-        }
-    }
-
-    if (!hasStoredNetworks && strlen(CONFIG_QNOB_WIFI_SSID) > 0) {
+    if (strlen(CONFIG_QNOB_WIFI_SSID) > 0) {
         ESP_LOGI(TAG, "Trying default WiFi from Kconfig: %s", CONFIG_QNOB_WIFI_SSID);
 
         wifi_config_t sta_config = {};
@@ -453,26 +458,12 @@ esp_err_t WiFiManager::connectToWiFi()
             (strlen(CONFIG_QNOB_WIFI_PASSWORD) == 0) ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 
         applySTAIPConfig(CONFIG_QNOB_WIFI_SSID);
-
-        if (ConnectivityManager::instance().connectSTA(sta_config) == ESP_OK) {
-            if (nvs_manager) {
-                nvs_manager->wifiCredentials[0].ssid = CONFIG_QNOB_WIFI_SSID;
-                nvs_manager->wifiCredentials[0].password = CONFIG_QNOB_WIFI_PASSWORD;
-                nvs_manager->wifiCredentials[0].remember = true;
-                nvs_manager->lastConnectedNetworkIndex = 0;
-                nvs_manager->saveWiFiCredentials();
-            }
-            checkInternetConnectivity();
-            return ESP_OK;
-        }
-
-        ESP_LOGW(TAG, "Failed to connect to default WiFi SSID");
+        ConnectivityManager::instance().startSTAConnect(sta_config);
+        connect_cred_index_ = -1;  // single-shot, no cycling
+        return ESP_OK;
     }
 
-    // No successful STA connection: stay in APSTA so the AP remains reachable.
-    ConnectivityManager::instance().disconnectSTA();
-    ESP_LOGW(TAG, "Failed to connect to any stored network");
-    return ESP_ERR_WIFI_NOT_CONNECT;
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t WiFiManager::connectToNetwork(const std::string& ssid, const std::string& password, bool remember)
@@ -502,7 +493,8 @@ esp_err_t WiFiManager::connectToNetwork(const std::string& ssid, const std::stri
     nvs_manager->saveWiFiCredentials();
 
     ConnectivityManager::instance().disconnectSTA();
-    return connectToStoredNetwork(target);
+    connect_creds_tried_ = 0;
+    return connectToStoredNetwork(target);  // non-blocking; result via snapshot
 }
 
 esp_err_t WiFiManager::saveCurrentConnectionAsStaticIP()
@@ -751,6 +743,13 @@ void WiFiManager::update()
     if (sta_connected && !prev_sta_connected_) {
         prev_sta_connected_ = true;
         internet_available = false;
+        // Save the credential that succeeded.
+        if (connect_cred_index_ >= 0 && nvs_manager) {
+            nvs_manager->lastConnectedNetworkIndex = connect_cred_index_;
+            nvs_manager->saveWiFiCredentials();
+        }
+        connect_cred_index_   = -1;
+        connect_creds_tried_  = 0;
         checkInternetConnectivity();
         if (on_connected) {
             on_connected(current_ssid, current_ip);
@@ -762,6 +761,20 @@ void WiFiManager::update()
             on_disconnected();
         }
     }
+
+    // Edge-detect StaConnecting → failure: advance credential cycle.
+    const bool sta_connecting = (snap.wifi_state == ConnMgrState::StaConnecting);
+    if (prev_sta_connecting_ && !sta_connecting && !sta_connected) {
+        if (connect_cred_index_ >= 0 && connect_creds_tried_ < NUM_WIFI_CREDENTIALS) {
+            // Advance to next credential slot.
+            connect_cred_index_ = (connect_cred_index_ + 1) % NUM_WIFI_CREDENTIALS;
+            startNextCredential_();
+        } else {
+            connect_cred_index_  = -1;
+            connect_creds_tried_ = 0;
+        }
+    }
+    prev_sta_connecting_ = sta_connecting;
 
     // Periodic tasks
     if (!sta_connected && !portal_guest_active &&
