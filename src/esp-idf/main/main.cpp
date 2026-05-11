@@ -304,6 +304,36 @@ extern "C" void app_main(void) {
     nvsManager = new NVSManager();
     ESP_ERROR_CHECK(nvsManager->begin());
 
+    // Recovery mode: if PWR_KEY is held LOW for ≥3 s during boot, force
+    // wifi_ap_enabled and portal_enabled to true for this session (does NOT
+    // write NVS) so the user can always reach the portal even if they
+    // accidentally disabled it via T-18/T-19. Factory reset also sets this.
+#if defined(PWR_KEY_PIN) && (PWR_KEY_PIN >= 0)
+    {
+        gpio_config_t rcv_cfg = {};
+        rcv_cfg.intr_type    = GPIO_INTR_DISABLE;
+        rcv_cfg.mode         = GPIO_MODE_INPUT;
+        rcv_cfg.pin_bit_mask = (1ULL << PWR_KEY_PIN);
+        rcv_cfg.pull_up_en   = GPIO_PULLUP_ENABLE;
+        gpio_config(&rcv_cfg);
+
+        constexpr int kRecoveryHoldMs  = 3000;
+        constexpr int kSampleIntervalMs = 50;
+        int held_ms = 0;
+        while (held_ms < kRecoveryHoldMs) {
+            if (gpio_get_level((gpio_num_t)PWR_KEY_PIN) != 0) {
+                break;  // released — not a recovery hold
+            }
+            vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
+            held_ms += kSampleIntervalMs;
+        }
+        if (held_ms >= kRecoveryHoldMs) {
+            nvsManager->recoveryModeActive = true;
+            ESP_LOGW(TAG, "*** RECOVERY MODE ACTIVE: AP + portal forced on ***");
+        }
+    }
+#endif
+
     // Create display object early so the pointer is valid, but defer hardware init
     // until just before the display task starts (after WiFi init) to avoid a 7+
     // second idle gap between gfx->init() and the first actual draw call, which
