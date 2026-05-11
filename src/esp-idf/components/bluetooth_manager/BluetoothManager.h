@@ -42,6 +42,11 @@ public:
     esp_err_t sendSerial(const uint8_t* data, size_t length);
     esp_err_t sendSerialLine(const std::string& line);
 
+    // Advertising hold — delegates to ConnectivityManager (T-15).
+    // Ref-counted: advertising resumes only when all holds are released.
+    void requestAdvertisingHold(const char* reason);
+    void releaseAdvertisingHold(const char* reason);
+
     void onHidEvent(int event, void* param);
     void onGapEvent(int event, void* param);
     void onSerialGattEvent(int event, int gattsIf, void* param);

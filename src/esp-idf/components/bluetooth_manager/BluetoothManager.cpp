@@ -760,3 +760,11 @@ esp_err_t BluetoothManager::sendSerialLine(const std::string& line) {
     payload += "\r\n";
     return sendSerial(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
 }
+
+void BluetoothManager::requestAdvertisingHold(const char* reason) {
+    ConnectivityManager::instance().requestAdvertisingHold(reason);
+}
+
+void BluetoothManager::releaseAdvertisingHold(const char* reason) {
+    ConnectivityManager::instance().releaseAdvertisingHold(reason);
+}

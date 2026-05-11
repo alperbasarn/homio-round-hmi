@@ -45,6 +45,10 @@ enum class ConnMgrEvent : uint8_t {
     EV_BT_ADV_START,
     EV_BT_ADV_STOP,
     EV_BT_SCAN_START,
+    // T-15: advertising hold/release — ref-counted; queued so all adv
+    // mutations happen on the ConnMgr task.
+    EV_BT_ADV_HOLD,
+    EV_BT_ADV_RELEASE,
 };
 
 // ConnectivityManager is the single owner of the radio (WiFi STA/AP + BLE
@@ -81,6 +85,14 @@ public:
                         const char* ap_password);
     void patchBtDetails(bool hid_connected, const char* hid_addr,
                         bool serial_connected, const char* serial_addr);
+
+    // ── BLE advertising hold (T-15) ──────────────────────────────────────
+    // Ref-counted pause for BLE advertising. Callers paired with an equal
+    // number of request+release calls; advertising resumes only when the
+    // count reaches 0. Safe to call from any task — posts to ConnMgr queue.
+    void requestAdvertisingHold(const char* reason);
+    void releaseAdvertisingHold(const char* reason);
+    int  advertisingHoldCount() const { return adv_hold_count_; }
 
     // ── BLE GAP delegation (T-06) ─────────────────────────────────────────
     // BluetoothManager calls these instead of esp_ble_gap_* directly.
@@ -176,4 +188,10 @@ private:
     // read only inside runTask(). FreeRTOS queue ops provide the memory barrier.
     esp_ble_adv_params_t ble_adv_params_{};
     uint32_t             ble_scan_duration_ = 5;
+
+    // Advertising hold ref-count (T-15). Written only from runTask().
+    // sta_adv_held_ tracks the one internal hold placed during EAPOL so we
+    // never double-release if EV_STA_ASSOCIATED was never received.
+    int  adv_hold_count_ = 0;
+    bool sta_adv_held_   = false;
 };
