@@ -127,9 +127,10 @@ void ConnectivityManager::runTask() {
             continue;
         }
 
-        const ConnMgrState prev = state_;
+        const ConnMgrState prev        = state_;
+        const uint8_t      prev_clients = ap_client_count_;
 
-        // T-03: receive events and log them; radio calls arrive in T-04+.
+        // Receive events and drive the state machine. Radio calls arrive in T-05+.
         switch (ev) {
             case ConnMgrEvent::EV_BOOT_DONE:
                 state_ = ConnMgrState::ApReady;
@@ -138,14 +139,22 @@ void ConnectivityManager::runTask() {
                 state_ = ConnMgrState::StaConnected;
                 break;
             case ConnMgrEvent::EV_STA_DISCONNECTED:
-                state_ = ConnMgrState::StaFailedBackoff;
+                if (state_ == ConnMgrState::StaConnected ||
+                    state_ == ConnMgrState::StaConnecting) {
+                    state_ = ConnMgrState::StaFailedBackoff;
+                }
                 break;
             case ConnMgrEvent::EV_AP_CLIENT_JOINED:
+                ap_client_count_++;
                 state_ = ConnMgrState::PortalGuestActive;
                 break;
             case ConnMgrEvent::EV_AP_CLIENT_LEFT:
-                if (state_ == ConnMgrState::PortalGuestActive) {
-                    state_ = ConnMgrState::ApReady;
+                if (ap_client_count_ > 0) {
+                    ap_client_count_--;
+                }
+                if (ap_client_count_ == 0 &&
+                    state_ == ConnMgrState::PortalGuestActive) {
+                    state_ = ConnMgrState::StaFailedBackoff;
                 }
                 break;
             case ConnMgrEvent::EV_CONNECT_TIMEOUT:
@@ -158,9 +167,15 @@ void ConnectivityManager::runTask() {
                 break;
         }
 
-        if (state_ != prev) {
-            ESP_LOGI(TAG, "%s → %s  [%s]",
-                     stateName(prev), stateName(state_), eventName(ev));
+        // Publish updated snapshot whenever state or client count changed.
+        if (state_ != prev || ap_client_count_ != prev_clients) {
+            ConnectivitySnapshot next = snapshot_;
+            next.wifi_state = state_;
+            next.ap_clients = ap_client_count_;
+            publishSnapshot(next);
+            ESP_LOGI(TAG, "%s → %s  [%s]  ap_clients=%u",
+                     stateName(prev), stateName(state_),
+                     eventName(ev), ap_client_count_);
         } else {
             ESP_LOGI(TAG, "event %s  (state unchanged: %s)",
                      eventName(ev), stateName(state_));

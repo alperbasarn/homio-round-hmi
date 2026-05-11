@@ -7,6 +7,7 @@
 #include "esp_event.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "ConnectivityManager.h"
 
 // Forward declaration
 class NVSManager;
@@ -45,9 +46,15 @@ public:
     esp_err_t startAPSTAMode();
     void disconnect();
 
-    // Status methods
-    bool isConnected() const { return wifi_connected; }
-    bool isAPModeActive() const { return ap_mode_active; }
+    // Status methods — state is owned by ConnectivityManager; read via snapshot.
+    bool isConnected() const {
+        return ConnectivityManager::instance().getSnapshot().wifi_state
+               == ConnMgrState::StaConnected;
+    }
+    bool isAPModeActive() const {
+        return ConnectivityManager::instance().getSnapshot().wifi_state
+               != ConnMgrState::Boot;
+    }
     int getSignalStrength();  // Returns 0-4 (like phone bars)
     std::string getIPAddress() const;
     std::string getAPIPAddress() const;
@@ -87,10 +94,8 @@ private:
     EventGroupHandle_t wifi_event_group;
 
     bool initialized;
-    bool wifi_connected;
-    bool ap_mode_active;
-    bool ap_client_active;
     bool internet_available;
+    bool prev_sta_connected_;  // edge detection for callbacks in update()
     int scan_result_count;
 
     std::string current_ssid;

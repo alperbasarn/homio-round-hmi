@@ -71,7 +71,8 @@ private:
     mutable std::atomic<uint32_t> seq_{0};
     bool initialized_ = false;
 
-    TaskHandle_t  taskHandle_ = nullptr;
-    QueueHandle_t queue_      = nullptr;
-    ConnMgrState  state_      = ConnMgrState::Boot;
+    TaskHandle_t  taskHandle_      = nullptr;
+    QueueHandle_t queue_           = nullptr;
+    ConnMgrState  state_           = ConnMgrState::Boot;
+    uint8_t       ap_client_count_ = 0;
 };
