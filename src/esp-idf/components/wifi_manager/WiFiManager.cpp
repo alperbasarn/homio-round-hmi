@@ -71,8 +71,7 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
         case WIFI_EVENT_STA_CONNECTED: {
             wifi_event_sta_connected_t* event = (wifi_event_sta_connected_t*)event_data;
             current_ssid = std::string((char*)event->ssid, event->ssid_len);
-            wifi_channel = event->channel;
-            ESP_LOGI(TAG, "Connected to %s (channel %d)", current_ssid.c_str(), wifi_channel);
+            ESP_LOGI(TAG, "Connected to %s", current_ssid.c_str());
             break;
         }
 
@@ -470,11 +469,8 @@ esp_err_t WiFiManager::connectToWiFi()
         ESP_LOGW(TAG, "Failed to connect to default WiFi SSID");
     }
 
-    // No successful STA connection: keep AP only to avoid repeated STA warning spam.
+    // No successful STA connection: stay in APSTA so the AP remains reachable.
     ConnectivityManager::instance().disconnectSTA();
-    wifi_channel = WIFI_AP_CHANNEL;
-    ConnectivityManager::instance().setWifiMode(WIFI_MODE_AP);
-    startAPMode();
     ESP_LOGW(TAG, "Failed to connect to any stored network");
     return ESP_ERR_WIFI_NOT_CONNECT;
 }
