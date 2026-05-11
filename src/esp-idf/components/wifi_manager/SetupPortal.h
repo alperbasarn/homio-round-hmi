@@ -82,9 +82,6 @@ private:
     static esp_err_t factoryResetPostHandler(httpd_req_t* req);
     static esp_err_t captiveRedirectHandler(httpd_req_t* req);
 
-    std::string renderRootPage() const;
-    std::string renderDeviceInfoPage() const;
-    std::string renderConfigureTabsPage() const;
     std::string renderStatusJson() const;
     std::string renderWifiCredentialsJson() const;
     std::string renderBluetoothBondedDevicesJson() const;
