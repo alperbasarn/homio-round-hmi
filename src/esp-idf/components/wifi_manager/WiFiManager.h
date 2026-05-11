@@ -97,9 +97,6 @@ private:
 
     std::string current_ssid;
     std::string current_ip;
-    std::string current_ap_ssid;
-    std::string current_ap_ip;
-    std::string current_ap_password;
     int wifi_channel;
 
     int64_t last_ap_check_time;

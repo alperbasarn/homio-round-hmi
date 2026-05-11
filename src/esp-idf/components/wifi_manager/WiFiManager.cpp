@@ -238,9 +238,6 @@ esp_err_t WiFiManager::initialize()
                                                         &eventHandler, this, nullptr));
 
     initialized = true;
-    current_ap_ssid = generateAPName();
-    current_ap_password = nvs_manager ? nvs_manager->accessPointPassword : "";
-    current_ap_ip = "192.168.4.1";
 
     err = startAPMode();
     if (err != ESP_OK) {
@@ -334,22 +331,20 @@ esp_err_t WiFiManager::startAPMode()
     }
 
     ESP_LOGI(TAG, "AP started: %s (channel %d)", ap_name.c_str(), ap_channel);
-    current_ap_ssid = ap_name;
-    current_ap_password = use_password ? ap_password : "";
 
+    // Read the AP's actual IP from the netif (always 192.168.4.1 unless changed).
+    char ap_ip_str[16] = "192.168.4.1";
     esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap_netif != nullptr) {
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
-            char ip_str[16] = {0};
-            esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
-            current_ap_ip = ip_str;
+            esp_ip4addr_ntoa(&ip_info.ip, ap_ip_str, sizeof(ap_ip_str));
         }
     }
 
-    // Push AP details so SetupPortal reads from the snapshot (T-12).
+    // Snapshot is the single source of truth; no local mirrors (T-14).
     ConnectivityManager::instance().patchApDetails(
-        current_ap_ssid.c_str(), current_ap_ip.c_str(), current_ap_password.c_str());
+        ap_name.c_str(), ap_ip_str, use_password ? ap_password.c_str() : "");
 
     return ESP_OK;
 }
@@ -716,7 +711,7 @@ std::string WiFiManager::getIPAddress() const
 
 std::string WiFiManager::getAPIPAddress() const
 {
-    return current_ap_ip;
+    return ConnectivityManager::instance().getSnapshot().ap_ip;
 }
 
 std::string WiFiManager::getSSID() const
@@ -726,12 +721,12 @@ std::string WiFiManager::getSSID() const
 
 std::string WiFiManager::getAPSSID() const
 {
-    return current_ap_ssid;
+    return ConnectivityManager::instance().getSnapshot().ap_ssid;
 }
 
 std::string WiFiManager::getAPPassword() const
 {
-    return current_ap_password;
+    return ConnectivityManager::instance().getSnapshot().ap_password;
 }
 
 bool WiFiManager::checkInternetConnectivity()
