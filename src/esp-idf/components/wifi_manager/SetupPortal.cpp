@@ -88,6 +88,7 @@ void SetupPortal::onStaGotIp() {
     // No-op: httpd_start with INADDR_ANY already binds to both netifs.
     // Restarting the server here caused captive-portal popup failures and
     // empty form fields on first load (T-10).
+    ESP_LOGI(TAG, "STA got IP - HTTP server left running (INADDR_ANY)"elds on first load (T-10).
     ESP_LOGI(TAG, "STA got IP - HTTP server left running (INADDR_ANY)");
 }
 
@@ -1135,18 +1136,21 @@ std::string SetupPortal::renderRootPage() const {
 
      << "document.getElementById('btScanBtn').addEventListener('click',()=>{"
      << "const se=document.getElementById('btScanStatus');const re=document.getElementById('btScanResults');"
-     << "se.textContent='Scanning (5s)...';re.innerHTML='';"
-     << "post('/api/control/bluetooth','action=start_scan').catch(()=>{});"
+     << "se.textContent='Requesting scan...';re.innerHTML='';"
+     << "post('/api/control/bluetooth','action=start_scan').then(r=>{"
+     << "if(r&&r.ok===false){se.textContent='Scan blocked: '+(r.message||r.reason||'unknown error');return;}"
+     << "se.textContent='Scanning (5s)...';"
      << "setTimeout(()=>{"
      << "fetch('/api/bluetooth/scan').then(r=>r.json()).then(d=>{"
-     << "se.textContent=(d.scanning?'Still scanning...':'Done — '+d.devices.length+' device(s).')+(d.bt_ready===false?' [BT not ready]':'');"
+     << "se.textContent=(d.scanning?'Still scanning...':'Done \u2014 '+d.devices.length+' device(s).')+(d.bt_ready===false?' [BT not ready]':'');"
      << "const un=d.devices.filter(v=>!v.name).length;"
      << "re.innerHTML=(d.devices.length===0?'<em style=\"color:#666\">No devices found</em>':d.devices.map(dv=>"
      << "'<div style=\"margin:3px 0;padding:4px 6px;border:1px solid #333;\"><strong>'+(dv.name||'<em style=\"color:#666\">[private]</em>')+'</strong> &nbsp;'"
      << "+'<span style=\"color:#888;\">'+dv.address+'</span> &nbsp;<span style=\"color:#9cc7ff;\">'+dv.rssi+'dBm</span></div>').join(''))"
      << "+(un>0?'<small style=\"color:#555\">[private] = BLE privacy devices (iOS/Android)</small>':'');"
      << "}).catch(()=>{se.textContent='Scan fetch failed.';});"
-     << "},6000);});"
+     << "},6000);"
+     << "}).catch(()=>{se.textContent='Scan request failed.';});});"
 
      << "document.getElementById('mqttForm').addEventListener('submit',e=>{e.preventDefault();"
      << "post('/api/mqtt',new URLSearchParams(new FormData(e.target)).toString()).then(()=>refreshStatus());});"
@@ -1411,6 +1415,15 @@ esp_err_t SetupPortal::saveBluetoothControlFromForm(const std::string& body, std
         return ESP_OK;
     }
     if (action == "start_scan") {
+        // Reject the scan request if a STA association is in progress.
+        // Concurrent BLE scanning during the 4-way handshake / DHCP exchange
+        // disrupts the association (T-11).
+        if (ConnectivityManager::instance().getSnapshot().wifi_state ==
+                ConnMgrState::StaConnecting) {
+            responseJson = "{\"ok\":false,\"reason\":\"wifi_busy\","
+                           "\"message\":\"WiFi association in progress — try again shortly\"}";
+            return ESP_ERR_INVALID_STATE;
+        }
         commandCallback("startBtScan:5");
         responseJson = "{\"ok\":true,\"action\":\"start_scan\",\"duration\":5}";
         return ESP_OK;
