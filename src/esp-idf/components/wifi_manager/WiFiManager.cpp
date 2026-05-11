@@ -22,10 +22,8 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
     : nvs_manager(nvsManager),
       wifi_event_group(nullptr),
       initialized(false),
-      wifi_connected(false),
-      ap_mode_active(false),
-    ap_client_active(false),
       internet_available(false),
+      prev_sta_connected_(false),
       scan_result_count(0),
       wifi_channel(WIFI_AP_CHANNEL),
       last_ap_check_time(0),
@@ -86,49 +84,39 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
             ESP_LOGW(TAG, "Disconnected from WiFi, reason: %d", event->reason);
-            wifi_connected = false;
-            internet_available = false;
             current_ip.clear();
-
-            if (on_disconnected) {
-                on_disconnected();
-            }
-
+            ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_DISCONNECTED);
             xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
             break;
         }
 
         case WIFI_EVENT_AP_START:
             ESP_LOGI(TAG, "AP started");
-            ap_mode_active = true;
             break;
 
         case WIFI_EVENT_AP_STOP:
             ESP_LOGI(TAG, "AP stopped");
-            ap_mode_active = false;
             break;
 
         case WIFI_EVENT_AP_STACONNECTED: {
             wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*)event_data;
             ESP_LOGI(TAG, "Station " MACSTR " joined AP", MAC2STR(event->mac));
-            ap_client_active = true;
+            ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_AP_CLIENT_JOINED);
             break;
         }
 
         case WIFI_EVENT_AP_STADISCONNECTED: {
             wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*)event_data;
             ESP_LOGI(TAG, "Station " MACSTR " left AP", MAC2STR(event->mac));
-
-            wifi_sta_list_t sta_list = {};
-            if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
-                ap_client_active = (sta_list.num > 0);
-            } else {
-                ap_client_active = false;
-            }
-
-            if (!ap_client_active) {
-                ESP_LOGI(TAG, "No AP clients connected, STA reconnect is allowed again");
-                last_connect_attempt = 0;
+            ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_AP_CLIENT_LEFT);
+            // Reset reconnect backoff timer when the last AP client leaves so
+            // update() retries STA immediately instead of waiting SCAN_INTERVAL.
+            {
+                wifi_sta_list_t sta_list = {};
+                if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
+                    ESP_LOGI(TAG, "No AP clients connected, STA reconnect allowed again");
+                    last_connect_attempt = 0;
+                }
             }
             break;
         }
@@ -149,16 +137,12 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
         current_ip = ip_str;
 
         ESP_LOGI(TAG, "Got IP address: %s", current_ip.c_str());
-        wifi_connected = true;
 
         if (setup_portal != nullptr) {
             setup_portal->onStaGotIp();
         }
 
-        if (on_connected) {
-            on_connected(current_ssid, current_ip);
-        }
-
+        ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_GOT_IP);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -321,7 +305,6 @@ esp_err_t WiFiManager::startAPMode()
     }
 
     ESP_LOGI(TAG, "AP started: %s (channel %d)", ap_name.c_str(), ap_channel);
-    ap_mode_active = true;
     current_ap_ssid = ap_name;
     current_ap_password = use_password ? ap_password : "";
 
@@ -575,7 +558,9 @@ esp_err_t WiFiManager::connectToNetwork(const std::string& ssid, const std::stri
 
 esp_err_t WiFiManager::saveCurrentConnectionAsStaticIP()
 {
-    if (!wifi_connected || current_ssid.empty() || nvs_manager == nullptr) {
+    const bool connected = ConnectivityManager::instance().getSnapshot().wifi_state
+                           == ConnMgrState::StaConnected;
+    if (!connected || current_ssid.empty() || nvs_manager == nullptr) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -689,7 +674,6 @@ void WiFiManager::setSetupPortalBtScanResultsCallback(std::function<std::string(
 void WiFiManager::disconnect()
 {
     esp_wifi_disconnect();
-    wifi_connected = false;
     internet_available = false;
 }
 
@@ -724,7 +708,9 @@ int WiFiManager::getSignalStrength()
 
 int8_t WiFiManager::getRSSI() const
 {
-    if (!wifi_connected) return -100;
+    const bool connected = ConnectivityManager::instance().getSnapshot().wifi_state
+                           == ConnMgrState::StaConnected;
+    if (!connected) return -100;
 
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
@@ -760,7 +746,9 @@ std::string WiFiManager::getAPPassword() const
 
 bool WiFiManager::checkInternetConnectivity()
 {
-    if (!wifi_connected) {
+    const bool connected = ConnectivityManager::instance().getSnapshot().wifi_state
+                           == ConnMgrState::StaConnected;
+    if (!connected) {
         internet_available = false;
         return false;
     }
@@ -813,29 +801,32 @@ void WiFiManager::update()
 {
     if (!initialized) return;
 
-    int64_t current_time = esp_timer_get_time() / 1000;
+    const int64_t current_time = esp_timer_get_time() / 1000;
+    const auto    snap         = ConnectivityManager::instance().getSnapshot();
+    const bool    sta_connected =
+        (snap.wifi_state == ConnMgrState::StaConnected);
+    const bool portal_guest_active =
+        (snap.wifi_state == ConnMgrState::PortalGuestActive);
 
-    // Check WiFi connection status
-    wifi_ap_record_t ap_info;
-    bool currently_connected = (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
-
-    if (currently_connected && !wifi_connected) {
-        // Just connected
-        wifi_connected = true;
-        ESP_LOGI(TAG, "WiFi reconnected to: %s", (char*)ap_info.ssid);
-        checkInternetConnectivity();
-    } else if (!currently_connected && wifi_connected) {
-        // Just disconnected
-        wifi_connected = false;
+    // Edge-detect STA connected → fire application callbacks.
+    if (sta_connected && !prev_sta_connected_) {
+        prev_sta_connected_ = true;
         internet_available = false;
-        ESP_LOGW(TAG, "WiFi disconnected");
+        checkInternetConnectivity();
+        if (on_connected) {
+            on_connected(current_ssid, current_ip);
+        }
+    } else if (!sta_connected && prev_sta_connected_) {
+        prev_sta_connected_ = false;
+        internet_available = false;
         if (on_disconnected) {
             on_disconnected();
         }
     }
 
     // Periodic tasks
-    if (!wifi_connected && !ap_client_active && (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
+    if (!sta_connected && !portal_guest_active &&
+        (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
         // Try to reconnect
         ESP_LOGI(TAG, "Attempting to reconnect to WiFi...");
         connectToWiFi();
