@@ -1440,34 +1440,14 @@ esp_err_t SetupPortal::saveBluetoothControlFromForm(const std::string& body, std
 
 std::string SetupPortal::renderScanJson() const {
     wifi_sta_list_t staList = {};
-    if (esp_wifi_ap_get_sta_list(&staList) == ESP_OK && staList.num > 0) {
+    if (ConnectivityManager::instance().getApStaList(&staList) && staList.num > 0) {
         std::ostringstream busy;
         busy << "{\"ok\":false,\"message\":\"Scan blocked while device is connected to AP to keep captive portal stable\",\"networks\":[]}";
         return busy.str();
     }
 
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-
-    wifi_scan_config_t scanConfig = {};
-    scanConfig.ssid = nullptr;
-    scanConfig.bssid = nullptr;
-    scanConfig.channel = 0;
-    scanConfig.show_hidden = true;
-    scanConfig.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-    scanConfig.scan_time.active.min = 100;
-    scanConfig.scan_time.active.max = 300;
-    scanConfig.scan_time.passive = 0;
-
     std::vector<wifi_ap_record_t> records;
-    if (esp_wifi_scan_start(&scanConfig, true) == ESP_OK) {
-        uint16_t count = 20;
-        records.resize(count);
-        if (esp_wifi_scan_get_ap_records(&count, records.data()) == ESP_OK) {
-            records.resize(count);
-        } else {
-            records.clear();
-        }
-    }
+    ConnectivityManager::instance().syncScan(records);
 
     std::ostringstream os;
     os << "{\"ok\":true,\"networks\":[";

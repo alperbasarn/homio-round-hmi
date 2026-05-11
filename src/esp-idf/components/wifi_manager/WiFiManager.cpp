@@ -20,7 +20,6 @@ static WiFiManager* s_wifi_manager = nullptr;
 
 WiFiManager::WiFiManager(NVSManager* nvsManager)
     : nvs_manager(nvsManager),
-      wifi_event_group(nullptr),
       initialized(false),
       internet_available(false),
       prev_sta_connected_(false),
@@ -45,11 +44,7 @@ WiFiManager::~WiFiManager()
     }
 
     if (initialized) {
-        esp_wifi_stop();
-        esp_wifi_deinit();
-    }
-    if (wifi_event_group) {
-        vEventGroupDelete(wifi_event_group);
+        ConnectivityManager::instance().stopWifiStack();
     }
     s_wifi_manager = nullptr;
 }
@@ -86,7 +81,7 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             ESP_LOGW(TAG, "Disconnected from WiFi, reason: %d", event->reason);
             current_ip.clear();
             ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_DISCONNECTED);
-            xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+            xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiFailBit);
             break;
         }
 
@@ -113,7 +108,7 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
             // update() retries STA immediately instead of waiting SCAN_INTERVAL.
             {
                 wifi_sta_list_t sta_list = {};
-                if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
+                if (ConnectivityManager::instance().getApStaList(&sta_list) && sta_list.num == 0) {
                     ESP_LOGI(TAG, "No AP clients connected, STA reconnect allowed again");
                     last_connect_attempt = 0;
                 }
@@ -123,7 +118,7 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
 
         case WIFI_EVENT_SCAN_DONE:
             ESP_LOGI(TAG, "WiFi scan completed");
-            xEventGroupSetBits(wifi_event_group, WIFI_SCAN_DONE_BIT);
+            xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiScanDoneBit);
             break;
     }
 }
@@ -143,20 +138,13 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
         }
 
         ConnectivityManager::instance().postEvent(ConnMgrEvent::EV_STA_GOT_IP);
-        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupSetBits(ConnectivityManager::instance().getWifiEventGroup(), kWifiConnectedBit);
     }
 }
 
 esp_err_t WiFiManager::initialize()
 {
     ESP_LOGI(TAG, "Initializing WiFi manager...");
-
-    // Create event group
-    wifi_event_group = xEventGroupCreate();
-    if (!wifi_event_group) {
-        ESP_LOGE(TAG, "Failed to create event group");
-        return ESP_ERR_NO_MEM;
-    }
 
     // Initialize networking stack in an idempotent way so AP/portal also work
     // when another subsystem already performed part of the setup.
@@ -179,30 +167,14 @@ esp_err_t WiFiManager::initialize()
         esp_netif_create_default_wifi_ap();
     }
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&cfg);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
+    // WiFi stack init (esp_wifi_*) delegated to ConnMgr so that no esp_wifi_*
+    // symbols are referenced outside the connectivity_manager component.
+    err = ConnectivityManager::instance().initWifiStack();
+    if (err != ESP_OK) {
         return err;
     }
 
-    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = esp_wifi_start();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    // Keep AP+STA behavior deterministic during provisioning; modem sleep can make
-    // captive portal behavior intermittent under concurrent BLE/Wi-Fi activity.
-    esp_wifi_set_ps(WIFI_PS_NONE);
-
-    // Register event handlers (works on both Matter-managed and standalone stacks)
+    // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                         &eventHandler, this, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
@@ -298,7 +270,7 @@ esp_err_t WiFiManager::startAPMode()
     ap_config.ap.max_connection = WIFI_AP_MAX_CONNECTIONS;
     ap_config.ap.authmode = use_password ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    esp_err_t err = ConnectivityManager::instance().configureAP(ap_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure AP %s: %s", ap_name.c_str(), esp_err_to_name(err));
         return err;
@@ -396,7 +368,7 @@ esp_err_t WiFiManager::applySTAIPConfig(const std::string& targetSsid)
 
 esp_err_t WiFiManager::startAPSTAMode()
 {
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ConnectivityManager::instance().setWifiMode(WIFI_MODE_APSTA);
     return startAPMode();
 }
 
@@ -413,34 +385,23 @@ esp_err_t WiFiManager::connectToStoredNetwork(int index)
 
     ESP_LOGI(TAG, "Connecting to: %s", cred.ssid.c_str());
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_SCAN_DONE_BIT);
+    ConnectivityManager::instance().setWifiMode(WIFI_MODE_APSTA);
+    applySTAIPConfig(cred.ssid);
 
     wifi_config_t sta_config = {};
     strncpy((char*)sta_config.sta.ssid, cred.ssid.c_str(), sizeof(sta_config.sta.ssid) - 1);
     strncpy((char*)sta_config.sta.password, cred.password.c_str(), sizeof(sta_config.sta.password) - 1);
     sta_config.sta.threshold.authmode = cred.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 
-    applySTAIPConfig(cred.ssid);
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
-
-    // Wait for connection
-    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
-                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdTRUE, pdFALSE,
-                                            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to %s", cred.ssid.c_str());
-        nvs_manager->lastConnectedNetworkIndex = index;
-        nvs_manager->saveWiFiCredentials();
+    if (ConnectivityManager::instance().connectSTA(sta_config) == ESP_OK) {
+        if (nvs_manager) {
+            nvs_manager->lastConnectedNetworkIndex = index;
+            nvs_manager->saveWiFiCredentials();
+        }
         return ESP_OK;
     }
 
     // Stop ongoing STA retries for this credential; update() will retry later.
-    esp_wifi_disconnect();
     ESP_LOGW(TAG, "Failed to connect to %s", cred.ssid.c_str());
     return ESP_ERR_WIFI_NOT_CONNECT;
 }
@@ -453,7 +414,7 @@ esp_err_t WiFiManager::connectToWiFi()
     }
 
     // Enable STA only when we are about to actively try a connection.
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ConnectivityManager::instance().setWifiMode(WIFI_MODE_APSTA);
     last_connect_attempt = esp_timer_get_time() / 1000;
 
     bool hasStoredNetworks = false;
@@ -494,33 +455,25 @@ esp_err_t WiFiManager::connectToWiFi()
 
         applySTAIPConfig(CONFIG_QNOB_WIFI_SSID);
 
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-        ESP_ERROR_CHECK(esp_wifi_connect());
-
-        EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
-                                                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                                pdTRUE, pdFALSE,
-                                                pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-
-        if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "Connected to default WiFi SSID");
-            nvs_manager->wifiCredentials[0].ssid = CONFIG_QNOB_WIFI_SSID;
-            nvs_manager->wifiCredentials[0].password = CONFIG_QNOB_WIFI_PASSWORD;
-            nvs_manager->wifiCredentials[0].remember = true;
-            nvs_manager->lastConnectedNetworkIndex = 0;
-            nvs_manager->saveWiFiCredentials();
+        if (ConnectivityManager::instance().connectSTA(sta_config) == ESP_OK) {
+            if (nvs_manager) {
+                nvs_manager->wifiCredentials[0].ssid = CONFIG_QNOB_WIFI_SSID;
+                nvs_manager->wifiCredentials[0].password = CONFIG_QNOB_WIFI_PASSWORD;
+                nvs_manager->wifiCredentials[0].remember = true;
+                nvs_manager->lastConnectedNetworkIndex = 0;
+                nvs_manager->saveWiFiCredentials();
+            }
             checkInternetConnectivity();
             return ESP_OK;
         }
 
-        esp_wifi_disconnect();
         ESP_LOGW(TAG, "Failed to connect to default WiFi SSID");
     }
 
     // No successful STA connection: keep AP only to avoid repeated STA warning spam.
-    esp_wifi_disconnect();
+    ConnectivityManager::instance().disconnectSTA();
     wifi_channel = WIFI_AP_CHANNEL;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ConnectivityManager::instance().setWifiMode(WIFI_MODE_AP);
     startAPMode();
     ESP_LOGW(TAG, "Failed to connect to any stored network");
     return ESP_ERR_WIFI_NOT_CONNECT;
@@ -552,7 +505,7 @@ esp_err_t WiFiManager::connectToNetwork(const std::string& ssid, const std::stri
     nvs_manager->lastConnectedNetworkIndex = target;
     nvs_manager->saveWiFiCredentials();
 
-    esp_wifi_disconnect();
+    ConnectivityManager::instance().disconnectSTA();
     return connectToStoredNetwork(target);
 }
 
@@ -673,23 +626,13 @@ void WiFiManager::setSetupPortalBtScanResultsCallback(std::function<std::string(
 
 void WiFiManager::disconnect()
 {
-    esp_wifi_disconnect();
+    ConnectivityManager::instance().disconnectSTA();
     internet_available = false;
 }
 
 esp_err_t WiFiManager::scanNetworks()
 {
-    wifi_scan_config_t scan_config = {};
-    scan_config.ssid = nullptr;
-    scan_config.bssid = nullptr;
-    scan_config.channel = 0;
-    scan_config.show_hidden = true;
-    scan_config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-    scan_config.scan_time.active.min = 100;
-    scan_config.scan_time.active.max = 300;
-    scan_config.scan_time.passive = 0;
-
-    esp_err_t ret = esp_wifi_scan_start(&scan_config, false);  // Non-blocking
+    esp_err_t ret = ConnectivityManager::instance().startNonBlockingScan();
     if (ret == ESP_OK) {
         last_scan_time = esp_timer_get_time() / 1000;
     }
@@ -713,7 +656,7 @@ int8_t WiFiManager::getRSSI() const
     if (!connected) return -100;
 
     wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+    if (ConnectivityManager::instance().getStaApInfo(&ap_info)) {
         return ap_info.rssi;
     }
     return -100;
@@ -836,8 +779,7 @@ void WiFiManager::update()
     if (current_time - last_ap_check_time > WIFI_AP_CHECK_INTERVAL_MS) {
         last_ap_check_time = current_time;
 
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
+        const wifi_mode_t mode = ConnectivityManager::instance().getWifiMode();
 
         if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) {
             // AP should be active
