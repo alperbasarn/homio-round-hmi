@@ -87,10 +87,11 @@ private:
 
     bool initialized;
     bool internet_available;
-    bool prev_sta_connected_;   // edge detection for callbacks in update()
-    bool prev_sta_connecting_;   // edge detection: StaConnecting → fail in update()
-    int  connect_cred_index_;    // slot currently being attempted (-1 = none)
-    int  connect_creds_tried_;   // how many slots tried in this cycle
+    bool prev_sta_connected_;    // edge detection for callbacks in update()
+    bool prev_sta_connecting_;    // edge detection: StaConnecting → fail in update()
+    bool scan_pending_connect_;   // scan was triggered by connectToWiFi(); on done → pick best
+    int  connect_cred_index_;     // slot of the credential being attempted (-1 = none)
+    int  connect_creds_tried_;    // kept for compatibility; not used for cycling in T-20
     int scan_result_count;
 
     std::string current_ssid;
@@ -126,7 +127,7 @@ private:
     // Helper methods
     esp_err_t initWiFi();
     esp_err_t connectToStoredNetwork(int index);
-    esp_err_t startNextCredential_();   // advance + kick off next stored-network attempt
+    esp_err_t startScanThenConnect_();  // kick non-blocking scan; pick best on SCAN_DONE
     esp_err_t applySTAIPConfig(const std::string& targetSsid = "");
     std::string generateAPName();
 };
