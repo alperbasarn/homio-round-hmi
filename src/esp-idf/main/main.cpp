@@ -40,6 +40,7 @@
 #include "PlaceholderPageScreen.h"
 #include "BatteryHandler.h"
 #include "BluetoothManager.h"
+#include "ConnectivityManager.h"
 
 // Media
 #include "SDCard.h"
@@ -404,6 +405,11 @@ extern "C" void app_main(void) {
             ESP_LOGW(TAG, "Bluetooth init failed: %s", esp_err_to_name(btErr));
         }
     }
+
+    // Initialize ConnectivityManager before WiFi so its task is running and
+    // ready to receive radio events as soon as the WiFi stack posts them.
+    ESP_LOGI(TAG, "Initializing ConnectivityManager...");
+    ESP_ERROR_CHECK(ConnectivityManager::instance().begin());
 
     // Initialize networking
     ESP_LOGI(TAG, "Initializing networking...");
