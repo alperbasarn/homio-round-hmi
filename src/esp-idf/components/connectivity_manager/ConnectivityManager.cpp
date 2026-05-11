@@ -6,7 +6,42 @@
 
 namespace {
 constexpr const char* TAG = "ConnMgr";
+
+// Task sits between the display task (priority 2) and the network task
+// (priority 3). Using priority 2 until the bands are spread further apart.
+constexpr UBaseType_t kTaskPriority = 2;
+constexpr uint32_t    kStackSize    = 4096;
+constexpr UBaseType_t kQueueDepth   = 16;
+
+const char* eventName(ConnMgrEvent ev) {
+    switch (ev) {
+        case ConnMgrEvent::EV_BOOT_DONE:              return "EV_BOOT_DONE";
+        case ConnMgrEvent::EV_STA_GOT_IP:             return "EV_STA_GOT_IP";
+        case ConnMgrEvent::EV_STA_DISCONNECTED:       return "EV_STA_DISCONNECTED";
+        case ConnMgrEvent::EV_AP_CLIENT_JOINED:       return "EV_AP_CLIENT_JOINED";
+        case ConnMgrEvent::EV_AP_CLIENT_LEFT:         return "EV_AP_CLIENT_LEFT";
+        case ConnMgrEvent::EV_USER_REQUESTED_CONNECT: return "EV_USER_REQUESTED_CONNECT";
+        case ConnMgrEvent::EV_BACKOFF_TIMER:          return "EV_BACKOFF_TIMER";
+        case ConnMgrEvent::EV_CONNECT_TIMEOUT:        return "EV_CONNECT_TIMEOUT";
+        case ConnMgrEvent::EV_BT_SCAN_REQUESTED:      return "EV_BT_SCAN_REQUESTED";
+        case ConnMgrEvent::EV_BT_ENABLE_REQUESTED:    return "EV_BT_ENABLE_REQUESTED";
+        case ConnMgrEvent::EV_PORTAL_ENABLE_REQUESTED:return "EV_PORTAL_ENABLE_REQUESTED";
+        default:                                      return "EV_UNKNOWN";
+    }
 }
+
+const char* stateName(ConnMgrState s) {
+    switch (s) {
+        case ConnMgrState::Boot:              return "BOOT";
+        case ConnMgrState::ApReady:           return "AP_READY";
+        case ConnMgrState::StaConnecting:     return "STA_CONNECTING";
+        case ConnMgrState::StaConnected:      return "STA_CONNECTED";
+        case ConnMgrState::StaFailedBackoff:  return "STA_FAILED_BACKOFF";
+        case ConnMgrState::PortalGuestActive: return "PORTAL_GUEST_ACTIVE";
+        default:                              return "UNKNOWN";
+    }
+}
+}  // namespace
 
 ConnectivityManager& ConnectivityManager::instance() {
     static ConnectivityManager manager;
@@ -19,13 +54,33 @@ esp_err_t ConnectivityManager::begin() {
     }
     initialized_ = true;
 
+    queue_ = xQueueCreate(kQueueDepth, sizeof(ConnMgrEvent));
+    if (queue_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create event queue");
+        return ESP_ERR_NO_MEM;
+    }
+
+    const BaseType_t ret = xTaskCreate(
+        connMgrTask, "ConnMgr", kStackSize, this, kTaskPriority, &taskHandle_);
+    if (ret != pdPASS || taskHandle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create ConnMgr task");
+        return ESP_FAIL;
+    }
+
     // Seed the published snapshot once so version == 1 marks "ConnMgr has
-    // been initialised at least once." Event-driven publishes from T-03+
-    // will keep it up to date afterwards.
+    // been initialised." Event-driven publishes keep it up to date afterwards.
     publishSnapshot(ConnectivitySnapshot{});
 
-    ESP_LOGI(TAG, "scaffold ready (T-02 snapshot reachable); task + queue arrive in T-03");
+    ESP_LOGI(TAG, "task started; state=%s", stateName(state_));
+    postEvent(ConnMgrEvent::EV_BOOT_DONE);
     return ESP_OK;
+}
+
+bool ConnectivityManager::postEvent(ConnMgrEvent ev) {
+    if (queue_ == nullptr) {
+        return false;
+    }
+    return xQueueSend(queue_, &ev, 0) == pdTRUE;
 }
 
 ConnectivitySnapshot ConnectivityManager::getSnapshot() const {
@@ -57,3 +112,59 @@ void ConnectivityManager::publishSnapshot(const ConnectivitySnapshot& next) {
     std::atomic_thread_fence(std::memory_order_release);
     seq_.store(prev + 2u, std::memory_order_release);
 }
+
+// static
+void ConnectivityManager::connMgrTask(void* arg) {
+    static_cast<ConnectivityManager*>(arg)->runTask();
+}
+
+void ConnectivityManager::runTask() {
+    ESP_LOGI(TAG, "running on core %d", xPortGetCoreID());
+
+    ConnMgrEvent ev;
+    while (true) {
+        if (xQueueReceive(queue_, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        const ConnMgrState prev = state_;
+
+        // T-03: receive events and log them; radio calls arrive in T-04+.
+        switch (ev) {
+            case ConnMgrEvent::EV_BOOT_DONE:
+                state_ = ConnMgrState::ApReady;
+                break;
+            case ConnMgrEvent::EV_STA_GOT_IP:
+                state_ = ConnMgrState::StaConnected;
+                break;
+            case ConnMgrEvent::EV_STA_DISCONNECTED:
+                state_ = ConnMgrState::StaFailedBackoff;
+                break;
+            case ConnMgrEvent::EV_AP_CLIENT_JOINED:
+                state_ = ConnMgrState::PortalGuestActive;
+                break;
+            case ConnMgrEvent::EV_AP_CLIENT_LEFT:
+                if (state_ == ConnMgrState::PortalGuestActive) {
+                    state_ = ConnMgrState::ApReady;
+                }
+                break;
+            case ConnMgrEvent::EV_CONNECT_TIMEOUT:
+                state_ = ConnMgrState::StaFailedBackoff;
+                break;
+            case ConnMgrEvent::EV_USER_REQUESTED_CONNECT:
+                state_ = ConnMgrState::StaConnecting;
+                break;
+            default:
+                break;
+        }
+
+        if (state_ != prev) {
+            ESP_LOGI(TAG, "%s → %s  [%s]",
+                     stateName(prev), stateName(state_), eventName(ev));
+        } else {
+            ESP_LOGI(TAG, "event %s  (state unchanged: %s)",
+                     eventName(ev), stateName(state_));
+        }
+    }
+}
+
