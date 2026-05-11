@@ -37,6 +37,8 @@ const char* eventName(ConnMgrEvent ev) {
         case ConnMgrEvent::EV_BT_ADV_START:           return "EV_BT_ADV_START";
         case ConnMgrEvent::EV_BT_ADV_STOP:            return "EV_BT_ADV_STOP";
         case ConnMgrEvent::EV_BT_SCAN_START:          return "EV_BT_SCAN_START";
+        case ConnMgrEvent::EV_BT_ADV_HOLD:            return "EV_BT_ADV_HOLD";
+        case ConnMgrEvent::EV_BT_ADV_RELEASE:         return "EV_BT_ADV_RELEASE";
         default:                                      return "EV_UNKNOWN";
     }
 }
@@ -395,20 +397,41 @@ void ConnectivityManager::runTask() {
                 break;
             case ConnMgrEvent::EV_STA_ASSOCIATED:
                 // Boost WiFi priority during the DHCP window so EAPOL/DHCP
-                // exchanges are not starved by concurrent BLE activity.
+                // exchanges are not starved by concurrent BLE activity (T-11).
                 esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+                // Pause BLE advertising during the same window (T-15).
+                if (!sta_adv_held_) {
+                    sta_adv_held_ = true;
+                    if (adv_hold_count_++ == 0) {
+                        esp_ble_gap_stop_advertising();
+                    }
+                }
                 break;
             case ConnMgrEvent::EV_STA_GOT_IP:
                 cancelConnectTimer_();
                 state_ = ConnMgrState::StaConnected;
                 // Restore balanced coex now that the DHCP window is closed.
                 esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+                // Release EAPOL hold; restart advertising if no other hold remains.
+                if (sta_adv_held_) {
+                    sta_adv_held_ = false;
+                    if (adv_hold_count_ > 0 && --adv_hold_count_ == 0) {
+                        esp_ble_gap_start_advertising(&ble_adv_params_);
+                    }
+                }
                 break;
             case ConnMgrEvent::EV_STA_DISCONNECTED:
                 if (state_ == ConnMgrState::StaConnected ||
                     state_ == ConnMgrState::StaConnecting) {
                     cancelConnectTimer_();
                     state_ = ConnMgrState::StaFailedBackoff;
+                    // Release any EAPOL hold so advertising is not stuck paused.
+                    if (sta_adv_held_) {
+                        sta_adv_held_ = false;
+                        if (adv_hold_count_ > 0 && --adv_hold_count_ == 0) {
+                            esp_ble_gap_start_advertising(&ble_adv_params_);
+                        }
+                    }
                 }
                 break;
             case ConnMgrEvent::EV_AP_CLIENT_JOINED:
@@ -440,6 +463,12 @@ void ConnectivityManager::runTask() {
                 ESP_LOGW(TAG, "STA connect timed out");
                 esp_wifi_disconnect();
                 state_ = ConnMgrState::StaFailedBackoff;
+                if (sta_adv_held_) {
+                    sta_adv_held_ = false;
+                    if (adv_hold_count_ > 0 && --adv_hold_count_ == 0) {
+                        esp_ble_gap_start_advertising(&ble_adv_params_);
+                    }
+                }
                 break;
             case ConnMgrEvent::EV_USER_REQUESTED_CONNECT:
                 state_ = ConnMgrState::StaConnecting;
@@ -475,6 +504,22 @@ void ConnectivityManager::runTask() {
                 }
                 break;
             }
+            case ConnMgrEvent::EV_BT_ADV_HOLD:
+                ESP_LOGI(TAG, "ADV hold +1 → %d", adv_hold_count_ + 1);
+                if (adv_hold_count_++ == 0) {
+                    esp_ble_gap_stop_advertising();
+                }
+                break;
+            case ConnMgrEvent::EV_BT_ADV_RELEASE:
+                if (adv_hold_count_ <= 0) {
+                    ESP_LOGW(TAG, "ADV hold release with count already 0");
+                    break;
+                }
+                ESP_LOGI(TAG, "ADV hold -1 → %d", adv_hold_count_ - 1);
+                if (--adv_hold_count_ == 0) {
+                    esp_ble_gap_start_advertising(&ble_adv_params_);
+                }
+                break;
             default:
                 break;
         }
@@ -493,5 +538,15 @@ void ConnectivityManager::runTask() {
                      eventName(ev), stateName(state_));
         }
     }
+}
+
+void ConnectivityManager::requestAdvertisingHold(const char* reason) {
+    ESP_LOGI(TAG, "requestAdvertisingHold: %s", reason ? reason : "");
+    postEvent(ConnMgrEvent::EV_BT_ADV_HOLD);
+}
+
+void ConnectivityManager::releaseAdvertisingHold(const char* reason) {
+    ESP_LOGI(TAG, "releaseAdvertisingHold: %s", reason ? reason : "");
+    postEvent(ConnMgrEvent::EV_BT_ADV_RELEASE);
 }
 
