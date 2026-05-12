@@ -3,10 +3,9 @@
 #include <string>
 #include <functional>
 #include "esp_err.h"
-#include "esp_wifi.h"
 #include "esp_event.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
+#include "ConnectivityManager.h"
 
 // Forward declaration
 class NVSManager;
@@ -20,14 +19,9 @@ using WiFiDisconnectedCallback = std::function<void()>;
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
 
-#define WIFI_CONNECT_TIMEOUT_MS 15000
-#define WIFI_SCAN_INTERVAL_MS   60000
+#define WIFI_CONNECT_TIMEOUT_MS   15000
+#define WIFI_SCAN_INTERVAL_MS     60000
 #define WIFI_AP_CHECK_INTERVAL_MS 30000
-
-// Event bits
-#define WIFI_CONNECTED_BIT      BIT0
-#define WIFI_FAIL_BIT           BIT1
-#define WIFI_SCAN_DONE_BIT      BIT2
 
 #ifdef __cplusplus
 
@@ -44,10 +38,18 @@ public:
     esp_err_t startAPMode();
     esp_err_t startAPSTAMode();
     void disconnect();
+    void stopPortal();    // T-19: stop captive portal HTTP+DNS servers
+    void startPortal();   // T-19: (re-)start captive portal
 
-    // Status methods
-    bool isConnected() const { return wifi_connected; }
-    bool isAPModeActive() const { return ap_mode_active; }
+    // Status methods — state is owned by ConnectivityManager; read via snapshot.
+    bool isConnected() const {
+        return ConnectivityManager::instance().getSnapshot().wifi_state
+               == ConnMgrState::StaConnected;
+    }
+    bool isAPModeActive() const {
+        return ConnectivityManager::instance().getSnapshot().wifi_state
+               != ConnMgrState::Boot;
+    }
     int getSignalStrength();  // Returns 0-4 (like phone bars)
     std::string getIPAddress() const;
     std::string getAPIPAddress() const;
@@ -84,20 +86,19 @@ public:
 
 private:
     NVSManager* nvs_manager;
-    EventGroupHandle_t wifi_event_group;
 
     bool initialized;
-    bool wifi_connected;
-    bool ap_mode_active;
-    bool ap_client_active;
     bool internet_available;
+    bool prev_sta_connected_;    // edge detection for callbacks in update()
+    bool prev_sta_connecting_;    // edge detection: StaConnecting → fail in update()
+    bool prev_portal_guest_;      // edge detection: PortalGuestActive → off in update()
+    bool scan_pending_connect_;   // scan was triggered by connectToWiFi(); on done → pick best
+    int  connect_cred_index_;     // slot of the credential being attempted (-1 = none)
+    int  connect_creds_tried_;    // kept for compatibility; not used for cycling in T-20
     int scan_result_count;
 
     std::string current_ssid;
     std::string current_ip;
-    std::string current_ap_ssid;
-    std::string current_ap_ip;
-    std::string current_ap_password;
     int wifi_channel;
 
     int64_t last_ap_check_time;
@@ -126,6 +127,7 @@ private:
     // Helper methods
     esp_err_t initWiFi();
     esp_err_t connectToStoredNetwork(int index);
+    esp_err_t startScanThenConnect_();  // kick non-blocking scan; pick best on SCAN_DONE
     esp_err_t applySTAIPConfig(const std::string& targetSsid = "");
     std::string generateAPName();
 };

@@ -1,8 +1,9 @@
 #include "BluetoothManager.h"
 
+#include "ConnectivityManager.h"
+
 #include "esp_bt.h"
 #include "esp_bt_main.h"
-#include "esp_coexist.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatt_common_api.h"
 #include "esp_gatts_api.h"
@@ -204,10 +205,6 @@ esp_err_t BluetoothManager::begin(const char* deviceName) {
 }
 
 esp_err_t BluetoothManager::initializeController() {
-    // Give WiFi and BLE equal radio time so BLE advertising is not starved.
-    // The default preference (ESP_COEX_PREFER_WIFI) blocks all BLE TX slots.
-    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-
     esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "classic BT memory release failed: %s", esp_err_to_name(err));
@@ -347,17 +344,11 @@ void BluetoothManager::startAdvertising() {
     if (!enabled || !ready || !advDataConfigured || !scanRspConfigured) {
         return;
     }
-    const esp_err_t err = esp_ble_gap_start_advertising(&advParams);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "start advertising failed: %s", esp_err_to_name(err));
-    }
+    ConnectivityManager::instance().bleRequestAdvertisingStart(advParams);
 }
 
 void BluetoothManager::stopAdvertising() {
-    const esp_err_t err = esp_ble_gap_stop_advertising();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "stop advertising failed: %s", esp_err_to_name(err));
-    }
+    ConnectivityManager::instance().bleRequestAdvertisingStop();
 }
 
 void BluetoothManager::disconnectKnownPeers() {
@@ -403,6 +394,7 @@ esp_err_t BluetoothManager::disconnectDevice(const std::string& address) {
 
 esp_err_t BluetoothManager::setEnabled(bool enable) {
     enabled = enable;
+    ConnectivityManager::instance().setBtEnabledFlag(enable);
     if (!initialized) {
         return ESP_OK;
     }
@@ -445,6 +437,12 @@ void BluetoothManager::onHidEvent(int event, void* rawParam) {
                 disconnectKnownPeers();
             }
             ESP_LOGI(TAG, "BLE HID connected");
+            {
+                const std::string ha = hidRemoteKnown    ? bdaToString(hidRemoteBda)    : "";
+                const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                ConnectivityManager::instance().patchBtDetails(
+                    true, ha.c_str(), serialConnected, sa.c_str());
+            }
             break;
         case ESP_HIDD_EVENT_BLE_DISCONNECT:
             hidConnected = false;
@@ -453,6 +451,11 @@ void BluetoothManager::onHidEvent(int event, void* rawParam) {
             hidConnId = 0xffff;
             ESP_LOGI(TAG, "BLE HID disconnected");
             startAdvertising();
+            {
+                const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                ConnectivityManager::instance().patchBtDetails(
+                    false, "", serialConnected, sa.c_str());
+            }
             break;
         default:
             break;
@@ -523,7 +526,8 @@ void BluetoothManager::onGapEvent(int event, void* rawParam) {
                 const uint8_t status = (param != nullptr) ? param->scan_param_cmpl.status : 0xFF;
                 if (status == ESP_BT_STATUS_SUCCESS) {
                     scanStatusMsg = "scanning";
-                    esp_ble_gap_start_scanning(static_cast<uint32_t>(scanDuration));
+                    ConnectivityManager::instance().bleRequestScanStart(
+                        static_cast<uint32_t>(scanDuration));
                 } else {
                     scanning = false;
                     char buf[32];
@@ -611,6 +615,12 @@ void BluetoothManager::onSerialGattEvent(int event, int gattsIf, void* rawParam)
                     disconnectKnownPeers();
                 }
                 ESP_LOGI(TAG, "BLE serial connected");
+                {
+                    const std::string ha = hidRemoteKnown    ? bdaToString(hidRemoteBda)    : "";
+                    const std::string sa = serialRemoteKnown ? bdaToString(serialRemoteBda) : "";
+                    ConnectivityManager::instance().patchBtDetails(
+                        hidConnected, ha.c_str(), true, sa.c_str());
+                }
             }
             break;
         case ESP_GATTS_DISCONNECT_EVT:
@@ -621,6 +631,11 @@ void BluetoothManager::onSerialGattEvent(int event, int gattsIf, void* rawParam)
                 serialConnId = 0xffff;
                 serialMtu = 23;
                 ESP_LOGI(TAG, "BLE serial disconnected");
+                {
+                    const std::string ha = hidRemoteKnown ? bdaToString(hidRemoteBda) : "";
+                    ConnectivityManager::instance().patchBtDetails(
+                        hidConnected, ha.c_str(), false, "");
+                }
             }
             break;
         case ESP_GATTS_MTU_EVT:
@@ -684,7 +699,7 @@ esp_err_t BluetoothManager::startScan(int durationSec) {
     scanPending = true;
     // Stop advertising first; scan params are set in ADV_STOP_COMPLETE_EVT
     // to avoid a state conflict when advertising stop is still in progress.
-    esp_ble_gap_stop_advertising();
+    ConnectivityManager::instance().bleRequestAdvertisingStop();
     return ESP_OK;
 }
 
@@ -745,4 +760,12 @@ esp_err_t BluetoothManager::sendSerialLine(const std::string& line) {
     std::string payload = line;
     payload += "\r\n";
     return sendSerial(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+}
+
+void BluetoothManager::requestAdvertisingHold(const char* reason) {
+    ConnectivityManager::instance().requestAdvertisingHold(reason);
+}
+
+void BluetoothManager::releaseAdvertisingHold(const char* reason) {
+    ConnectivityManager::instance().releaseAdvertisingHold(reason);
 }

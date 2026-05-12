@@ -5,5 +5,5 @@ idf_component_register(
         "hid_dev.c"
         "hid_device_le_prf.c"
     INCLUDE_DIRS "."
-    REQUIRES bt nvs_flash esp_coex
+    REQUIRES bt nvs_flash connectivity_manager
 )

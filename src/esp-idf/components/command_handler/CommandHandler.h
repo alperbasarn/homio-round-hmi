@@ -87,6 +87,7 @@ private:
     void cmdSetBluetoothName(const std::string& params);
     void cmdRestartBtAdvertising(const std::string& params);
     void cmdClearBtBonds(const std::string& params);
+    void cmdDisconnectBtDevice(const std::string& params);
     void cmdStartBtScan(const std::string& params);
     void cmdOTAUpdate(const std::string& params);
     void cmdOTAInfo(const std::string& params);

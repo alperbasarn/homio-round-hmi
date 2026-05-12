@@ -81,10 +81,9 @@ private:
     static esp_err_t resetPostHandler(httpd_req_t* req);
     static esp_err_t factoryResetPostHandler(httpd_req_t* req);
     static esp_err_t captiveRedirectHandler(httpd_req_t* req);
+    static esp_err_t wifiEnabledPostHandler(httpd_req_t* req);   // T-18
+    static esp_err_t portalEnabledPostHandler(httpd_req_t* req); // T-19
 
-    std::string renderRootPage() const;
-    std::string renderDeviceInfoPage() const;
-    std::string renderConfigureTabsPage() const;
     std::string renderStatusJson() const;
     std::string renderWifiCredentialsJson() const;
     std::string renderBluetoothBondedDevicesJson() const;
@@ -109,4 +108,6 @@ private:
     esp_err_t saveTimeFromForm(const std::string& body, std::string& responseJson);
     esp_err_t saveWifiCredentialFromForm(const std::string& body, std::string& responseJson);
     esp_err_t forgetBluetoothDeviceFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t saveWifiEnabledFromForm(const std::string& body, std::string& responseJson);
+    esp_err_t savePortalEnabledFromForm(const std::string& body, std::string& responseJson);
 };

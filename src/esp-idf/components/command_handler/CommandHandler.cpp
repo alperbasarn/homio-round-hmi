@@ -215,6 +215,8 @@ void CommandHandler::publishResponse(const std::string& response) {
 void CommandHandler::registerCommands() {
     commands["+"] = {"+", [this](const std::string& p) { this->cmdIncrementSetpoint(p); }, "Increment setpoint"};
     commands["-"] = {"-", [this](const std::string& p) { this->cmdDecrementSetpoint(p); }, "Decrement setpoint"};
+    commands["stopPortal"]  = {"stopPortal",  [this](const std::string& p) { if (wifiManager) wifiManager->stopPortal();  }, "Stop captive portal HTTP+DNS (T-19)"};
+    commands["startPortal"] = {"startPortal", [this](const std::string& p) { if (wifiManager) wifiManager->startPortal(); }, "Start captive portal HTTP+DNS (T-19)"};
     commands["reset"] = {"reset", [this](const std::string& p) { this->cmdReset(p); }, "Restart ESP"};
     commands["factoryReset"] = {"factoryReset", [this](const std::string& p) { this->cmdFactoryReset(p); }, "Wipe NVS and restore defaults, then restart"};
     commands["home"] = {"home", [this](const std::string& p) { this->cmdSwitchToHome(p); }, "Switch to home page"};
@@ -241,6 +243,7 @@ void CommandHandler::registerCommands() {
     commands["setBluetoothName"] = {"setBluetoothName", [this](const std::string& p) { this->cmdSetBluetoothName(p); }, "setBluetoothName:name - Set Bluetooth device name (takes effect after restart)"};
     commands["restartBtAdvertising"] = {"restartBtAdvertising", [this](const std::string& p) { this->cmdRestartBtAdvertising(p); }, "restartBtAdvertising - Restart BLE advertising so new devices can find this device"};
     commands["clearBtBonds"] = {"clearBtBonds", [this](const std::string& p) { this->cmdClearBtBonds(p); }, "clearBtBonds - Remove all bonded BLE devices so any device can pair"};
+    commands["disconnectBtDevice"] = {"disconnectBtDevice", [this](const std::string& p) { this->cmdDisconnectBtDevice(p); }, "disconnectBtDevice:ADDR - Disconnect a currently connected BT device"};
     commands["startBtScan"] = {"startBtScan", [this](const std::string& p) { this->cmdStartBtScan(p); }, "startBtScan[:seconds] - Scan for nearby BLE devices"};
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
@@ -705,6 +708,12 @@ void CommandHandler::cmdSetBluetooth(const std::string& params) {
         return;
     }
 
+    // Persist so the setting survives reboot (T-17).
+    if (nvsManager != nullptr) {
+        nvsManager->bluetoothEnabled = enable;
+        nvsManager->saveEnabledFlags();
+    }
+
     publishResponse(std::string("setBluetooth:OK:") + (enable ? "on" : "off"));
 }
 
@@ -756,6 +765,24 @@ void CommandHandler::cmdClearBtBonds(const std::string& params) {
     }
     bluetoothManager->restartAdvertising();
     publishResponse("clearBtBonds:OK:cleared=" + std::to_string(before));
+}
+
+void CommandHandler::cmdDisconnectBtDevice(const std::string& params) {
+    if (bluetoothManager == nullptr) {
+        publishResponse("disconnectBtDevice:ERR:bt_not_registered");
+        return;
+    }
+    const std::string addr = params;
+    if (addr.empty()) {
+        publishResponse("disconnectBtDevice:ERR:missing_address");
+        return;
+    }
+    const esp_err_t ret = bluetoothManager->disconnectDevice(addr);
+    if (ret != ESP_OK) {
+        publishResponse("disconnectBtDevice:ERR:not_connected");
+        return;
+    }
+    publishResponse("disconnectBtDevice:OK:" + addr);
 }
 
 void CommandHandler::cmdSetBluetoothName(const std::string& params) {

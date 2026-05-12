@@ -55,6 +55,12 @@
 #define NVS_KEY_AP_PASSWORD     "ap_password"
 #define NVS_KEY_BT_NAME         "bt_name"
 
+// Enable flags (all default true; false = subsystem disabled)
+#define NVS_KEY_WIFI_STA_EN     "wifi_sta_en"
+#define NVS_KEY_WIFI_AP_EN      "wifi_ap_en"
+#define NVS_KEY_PORTAL_EN       "portal_en"
+#define NVS_KEY_BT_ENABLED      "bt_enabled"
+
 // Static IP keys
 #define NVS_KEY_STATIC_ENABLED  "static_en"
 #define NVS_KEY_STATIC_SSID     "static_ssid"
@@ -133,6 +139,16 @@ public:
     std::string otaVariantId;
     std::string otaManifestUrl;
 
+    // Enable flags (T-16) — all default true; false disables the subsystem.
+    // recoveryModeActive is NOT persisted; set at boot by long-pressing PWR_KEY.
+    // When true, wifi_ap_enabled and portal_enabled are treated as true
+    // regardless of NVS so the user can always reach the portal.
+    bool wifiStaEnabled;
+    bool wifiApEnabled;
+    bool portalEnabled;
+    bool bluetoothEnabled;
+    bool recoveryModeActive;
+
     // Static IP Configuration
     bool staticIPEnabled;
     std::string staticIPSSID;
@@ -170,6 +186,7 @@ public:
     esp_err_t saveDeviceName(const std::string& name);
     esp_err_t saveAccessPointPassword(const std::string& password);
     esp_err_t saveBluetoothName(const std::string& name);
+    esp_err_t saveEnabledFlags();  // Persists wifiStaEnabled/wifiApEnabled/portalEnabled/bluetoothEnabled.
     esp_err_t saveOtaConfig(const std::string& variantId, const std::string& manifestUrl);
 
     static std::string normalizeDeviceSuffix(const std::string& value);

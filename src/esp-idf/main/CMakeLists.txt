@@ -3,6 +3,7 @@ idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
     REQUIRES
+        boot_guard
         board_hal
         display
         touch_panel
@@ -22,4 +23,5 @@ idf_component_register(
         ota_manager
         sleep_handler
         bluetooth_manager
+        connectivity_manager
 )
