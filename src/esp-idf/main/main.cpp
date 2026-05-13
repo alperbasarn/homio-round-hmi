@@ -33,6 +33,8 @@
 
 // Controllers
 #include "CommandHandler.h"
+#include "MdnsAdvertiser.h"
+#include "esp_wifi.h"
 #include "SoundController.h"
 #include "LightController.h"
 #include "MediaController.h"
@@ -112,6 +114,7 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+static MdnsAdvertiser* mdnsAdvertiser = nullptr;
 
 static std::string resolveManifestUrl(const std::string& variantId,
                                       const std::string& configuredManifestUrl) {
@@ -818,6 +821,17 @@ extern "C" void app_main(void) {
     commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
     commandHandler->begin();
+
+    mdnsAdvertiser = new MdnsAdvertiser();
+    wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
+        if (mdnsAdvertiser == nullptr) return;
+        uint8_t mac[6] = {};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        mdnsAdvertiser->start(nvsManager, mac);
+    });
+    wifiManager->setDisconnectedCallback([]() {
+        if (mdnsAdvertiser != nullptr) mdnsAdvertiser->stop();
+    });
 
     // Set MQTT callbacks for sound controller
     soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {

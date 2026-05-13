@@ -13,6 +13,7 @@ idf_component_register(
         driver
         nvs_flash
         command_handler
+        mdns_advertiser
         wifi_manager
         mqtt_manager
         internet_handler
