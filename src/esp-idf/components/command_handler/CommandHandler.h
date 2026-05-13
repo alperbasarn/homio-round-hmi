@@ -6,6 +6,9 @@
 #include <map>
 #include <functional>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 // Forward declarations
 class DisplayController;
 class NVSManager;
@@ -22,6 +25,8 @@ public:
     void begin();
     void update();
     void handleExternalCommand(const std::string& commandLine);
+    // Thread-safe overload that also captures the publishResponse() output.
+    void handleExternalCommand(const std::string& commandLine, std::string& responseOut);
     void registerKnobController(KnobController* kc);
     void registerMediaController(MediaController* mc);
     void registerOTAManager(OTAManager* ota);
@@ -49,6 +54,8 @@ private:
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
+    SemaphoreHandle_t dispatch_mutex_;
+    std::string* response_capture_;
 
     void registerCommands();
     void processCommand(const std::string& command);

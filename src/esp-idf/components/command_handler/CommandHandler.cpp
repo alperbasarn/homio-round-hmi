@@ -33,7 +33,9 @@ CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManag
       mqttManager(mqtt),
       mediaController(nullptr),
       otaManager(nullptr),
-      bluetoothManager(nullptr) {
+      bluetoothManager(nullptr),
+      dispatch_mutex_(xSemaphoreCreateMutex()),
+      response_capture_(nullptr) {
 }
 
 void CommandHandler::begin() {
@@ -140,7 +142,23 @@ void CommandHandler::handleExternalCommand(const std::string& commandLine) {
         return;
     }
     ESP_LOGI(TAG, "External command: %s", command.c_str());
+    if (dispatch_mutex_) xSemaphoreTake(dispatch_mutex_, portMAX_DELAY);
     processCommand(command);
+    if (dispatch_mutex_) xSemaphoreGive(dispatch_mutex_);
+}
+
+void CommandHandler::handleExternalCommand(const std::string& commandLine, std::string& responseOut) {
+    const std::string command = trimCommand(commandLine);
+    if (command.empty()) {
+        ESP_LOGW(TAG, "Ignoring empty external command");
+        return;
+    }
+    ESP_LOGI(TAG, "External command (captured): %s", command.c_str());
+    if (dispatch_mutex_) xSemaphoreTake(dispatch_mutex_, portMAX_DELAY);
+    response_capture_ = &responseOut;
+    processCommand(command);
+    response_capture_ = nullptr;
+    if (dispatch_mutex_) xSemaphoreGive(dispatch_mutex_);
 }
 
 void CommandHandler::processCommand(const std::string& command_line) {
@@ -203,13 +221,15 @@ std::string CommandHandler::getFormValue(const std::string& body, const std::str
 }
 
 void CommandHandler::publishResponse(const std::string& response) {
-    if (!mqttManager || !mqttManager->isConnected()) {
-        return;
-    }
     if (response.empty()) {
         return;
     }
-    mqttManager->publish(MQTT_TOPIC_COMMAND_RESPONSE, response);
+    if (response_capture_) {
+        *response_capture_ = response;
+    }
+    if (mqttManager && mqttManager->isConnected()) {
+        mqttManager->publish(MQTT_TOPIC_COMMAND_RESPONSE, response);
+    }
 }
 
 void CommandHandler::registerCommands() {
