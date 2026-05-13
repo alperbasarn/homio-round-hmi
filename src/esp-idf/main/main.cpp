@@ -33,6 +33,7 @@
 
 // Controllers
 #include "CommandHandler.h"
+#include "CommandServer.h"
 #include "SoundController.h"
 #include "LightController.h"
 #include "MediaController.h"
@@ -112,6 +113,7 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+static CommandServer* commandServer = nullptr;
 
 static std::string resolveManifestUrl(const std::string& variantId,
                                       const std::string& configuredManifestUrl) {
@@ -818,6 +820,14 @@ extern "C" void app_main(void) {
     commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
     commandHandler->begin();
+
+    commandServer = new CommandServer();
+    wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
+        if (commandServer != nullptr) commandServer->start(commandHandler);
+    });
+    wifiManager->setDisconnectedCallback([]() {
+        if (commandServer != nullptr) commandServer->stop();
+    });
 
     // Set MQTT callbacks for sound controller
     soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
