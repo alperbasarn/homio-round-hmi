@@ -19,12 +19,58 @@ PC-side audio (`pycaw`) and media-key (`pywin32`) helpers were preserved from th
 
 ## Quick start
 
+### Normal setup (no corporate proxy)
+
 ```powershell
 cd Companions\Windows
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
 qnob-companion
+```
+
+### Corporate proxy / air-gapped setup
+
+The corporate proxy typically blocks large downloads (PySide6 Essentials ~78 MB, Addons ~169 MB).
+Use the provided script to **download all wheels while on a hotspot/home network**, then install
+them offline back on the corporate network:
+
+```powershell
+cd Companions\Windows
+
+# Step 1 – while connected to a network without the intercepting proxy:
+.\scripts\install-deps.ps1 -Download -WheelDir C:\qnob_wheels
+
+# Step 2 – install from the saved wheels (works on any network):
+.\scripts\install-deps.ps1 -Install -WheelDir C:\qnob_wheels
+```
+
+Or combine both steps in one go (requires unrestricted internet access):
+
+```powershell
+.\scripts\install-deps.ps1 -WheelDir C:\qnob_wheels
+```
+
+#### Manual install order (if the script is unavailable)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 1. Download all wheels to a local directory (on unrestricted network)
+pip download shiboken6 PySide6_Essentials PySide6_Addons qasync zeroconf bleak platformdirs `
+    keyring "jaraco.context" "jaraco.functools" "jaraco.classes" `
+    importlib_metadata pywin32-ctypes annotated-types typing-inspection `
+    -d C:\qnob_wheels\
+
+# 2. Install from local wheels (no network required)
+pip install --no-index --find-links C:\qnob_wheels\ `
+    shiboken6 PySide6_Essentials PySide6_Addons qasync zeroconf bleak platformdirs `
+    keyring "jaraco.context" "jaraco.functools" "jaraco.classes" `
+    importlib_metadata pywin32-ctypes annotated-types typing-inspection
+
+# 3. Install the package itself
+pip install -e .[dev] --no-deps
 ```
 
 ## Development
