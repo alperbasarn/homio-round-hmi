@@ -649,7 +649,25 @@ void BluetoothManager::onSerialGattEvent(int event, int gattsIf, void* rawParam)
                     const uint16_t cfg = param->write.value[0] | (param->write.value[1] << 8);
                     serialNotifyEnabled = (cfg & 0x0001) != 0;
                 } else if (param->write.handle == serialHandles[SERIAL_IDX_RX_VAL]) {
-                    ESP_LOGI(TAG, "BLE serial RX %u bytes", static_cast<unsigned>(param->write.len));
+                    // Accumulate incoming bytes; dispatch complete lines to the callback.
+                    const char* incoming = reinterpret_cast<const char*>(param->write.value);
+                    ble_rx_buf_.append(incoming, param->write.len);
+
+                    size_t pos;
+                    while ((pos = ble_rx_buf_.find('\n')) != std::string::npos) {
+                        std::string line = ble_rx_buf_.substr(0, pos);
+                        ble_rx_buf_.erase(0, pos + 1);
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        if (!line.empty() && serial_line_cb_) {
+                            ESP_LOGD(TAG, "BLE serial RX line (%zu bytes)", line.size());
+                            serial_line_cb_(line);
+                        }
+                    }
+                    // Guard against a client that never sends a newline.
+                    if (ble_rx_buf_.size() > 2048) {
+                        ESP_LOGW(TAG, "BLE RX buffer overflow — discarding %zu bytes", ble_rx_buf_.size());
+                        ble_rx_buf_.clear();
+                    }
                 }
             }
             break;
@@ -760,6 +778,10 @@ esp_err_t BluetoothManager::sendSerialLine(const std::string& line) {
     std::string payload = line;
     payload += "\r\n";
     return sendSerial(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+}
+
+void BluetoothManager::setSerialLineCallback(SerialLineCallback cb) {
+    serial_line_cb_ = std::move(cb);
 }
 
 void BluetoothManager::requestAdvertisingHold(const char* reason) {

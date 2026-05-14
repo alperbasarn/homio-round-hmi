@@ -659,6 +659,20 @@ extern "C" void app_main(void) {
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
     commandHandler->begin();
 
+    // Bridge BLE Nordic-UART RX → CommandHandler → BLE TX (A4).
+    // The callback fires from the BT event task; handleExternalCommand is
+    // guarded by dispatch_mutex_ so concurrent TCP/BLE calls are safe.
+    if (bluetoothManager != nullptr) {
+        bluetoothManager->setSerialLineCallback([](const std::string& line) {
+            if (commandHandler == nullptr) return;
+            std::string response;
+            commandHandler->handleExternalCommand(line, response);
+            if (!response.empty() && bluetoothManager != nullptr) {
+                bluetoothManager->sendSerialLine(response);
+            }
+        });
+    }
+
     mdnsAdvertiser = new MdnsAdvertiser();
     wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
         if (mdnsAdvertiser == nullptr) return;
