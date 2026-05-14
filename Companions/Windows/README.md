@@ -19,11 +19,25 @@ PC-side audio (`pycaw`) and media-key (`pywin32`) helpers were preserved from th
 
 ## Quick start
 
-### Normal setup (no corporate proxy)
+### Easiest — one-click launcher
+
+Right-click `launch.ps1` → **Run with PowerShell**.  
+On first run it creates the `.venv` and installs all deps automatically.
+Subsequent runs just open the app window.
+
+```powershell
+.\launch.ps1
+```
+
+> Requires **Python 3.12** installed from [python.org](https://python.org/downloads).  
+> If you have Anaconda/conda as your system Python, the launcher will still pick up
+> Python 3.12 via the `py -3.12` launcher — no PATH changes needed.
+
+### Manual setup (dev / testing)
 
 ```powershell
 cd Companions\Windows
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
 qnob-companion
@@ -51,49 +65,45 @@ Or combine both steps in one go (requires unrestricted internet access):
 .\scripts\install-deps.ps1 -WheelDir C:\qnob_wheels
 ```
 
-#### Manual install order (if the script is unavailable)
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 1. Download all wheels to a local directory (on unrestricted network)
-pip download shiboken6 PySide6_Essentials PySide6_Addons qasync zeroconf bleak platformdirs `
-    keyring "jaraco.context" "jaraco.functools" "jaraco.classes" `
-    importlib_metadata pywin32-ctypes annotated-types typing-inspection `
-    -d C:\qnob_wheels\
-
-# 2. Install from local wheels (no network required)
-pip install --no-index --find-links C:\qnob_wheels\ `
-    shiboken6 PySide6_Essentials PySide6_Addons qasync zeroconf bleak platformdirs `
-    keyring "jaraco.context" "jaraco.functools" "jaraco.classes" `
-    importlib_metadata pywin32-ctypes annotated-types typing-inspection
-
-# 3. Install the package itself
-pip install -e .[dev] --no-deps
-```
-
 ## Development
 
 ```powershell
-pytest                  # tests
+pytest                  # run tests
 ruff check src tests    # lint
 mypy src                # type-check
 ```
+
+## Building a distributable
+
+```powershell
+pip install -e .[build]                          # adds pyinstaller
+pyinstaller qnob_companion.spec --clean          # → dist/qnob-companion/
+.\scripts\build_installer.ps1                    # also builds MSIX if Windows SDK present
+```
+
+Add PNG assets to `packaging/Assets/` before building MSIX (see `packaging/AppxManifest.xml` for required sizes).
 
 ## Layout
 
 ```
 Companions/Windows/
+├── launch.ps1               # one-click launcher (creates venv on first run)
 ├── pyproject.toml
-├── README.md
+├── qnob_companion.spec      # PyInstaller build spec
+├── packaging/
+│   ├── AppxManifest.xml     # MSIX manifest
+│   └── Assets/              # PNG icons (add before building MSIX)
+├── scripts/
+│   ├── install-deps.ps1     # offline/proxy wheel download+install
+│   └── build_installer.ps1  # PyInstaller + MSIX packaging
 ├── src/qnob_companion/
-│   ├── app/         # Entry point, settings, logging
+│   ├── app/         # Entry point, settings, logging, auto-updater
 │   ├── protocol/    # Envelope dataclasses (matches docs/protocol.md)
-│   ├── discovery/   # mDNS + BLE scanner (#61 B2)
-│   ├── transport/   # TCP + BLE clients + DeviceClient (#62 B3)
-│   ├── pairing/     # Token wizard + Credential Manager (#65 B4)
-│   ├── ui/          # PySide6 windows and pages
+│   ├── discovery/   # mDNS + BLE scanner
+│   ├── transport/   # TCP + BLE transports + DeviceClient
+│   ├── pairing/     # Token wizard + Credential Manager
+│   ├── ota/         # Chunked firmware upload (otaBegin/otaChunk)
+│   ├── ui/          # PySide6 windows, pages, and device-detail tabs
 │   └── pc/          # PC-side helpers (audio, media keys)
 └── tests/
 ```

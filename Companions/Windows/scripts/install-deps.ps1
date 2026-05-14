@@ -54,8 +54,11 @@ $PipExe = Join-Path $VenvDir "Scripts\python.exe"
 function Ensure-Venv {
     if (-not (Test-Path $PipExe)) {
         Write-Host "Creating virtual environment at $VenvDir ..." -ForegroundColor Cyan
-        python -m venv $VenvDir
-        if ($LASTEXITCODE -ne 0) { throw "Failed to create venv. Is Python 3.11+ on PATH?" }
+        # Prefer py -3.12 to avoid picking up Anaconda or other system Pythons.
+        $pyExe = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { "python" }
+        $pyArgs = if ($pyExe -eq "py") { @("-3.12", "-m", "venv", $VenvDir) } else { @("-m", "venv", $VenvDir) }
+        & $pyExe @pyArgs
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create venv. Install Python 3.12 from python.org." }
     }
 }
 
@@ -65,7 +68,9 @@ function Run-Pip {
     if ($LASTEXITCODE -ne 0) { throw "pip failed with exit code $LASTEXITCODE" }
 }
 
-# All packages required (direct + known transitive deps that pip may miss)
+# All packages required (direct + known transitive deps that pip may miss).
+# winrt-* packages are native extensions — must be force-reinstalled if the
+# .pyd files are missing (happens when pip reuses cached pure-Python metadata).
 $Packages = @(
     "shiboken6",
     "PySide6_Essentials",
@@ -75,13 +80,28 @@ $Packages = @(
     "bleak",
     "platformdirs",
     "keyring",
+    "pydantic",
+    "pydantic-core",
     "jaraco.context",
     "jaraco.functools",
     "jaraco.classes",
     "importlib_metadata",
+    "pywin32",
     "pywin32-ctypes",
+    "pycaw",
+    "comtypes",
     "annotated-types",
-    "typing-inspection"
+    "typing-inspection",
+    # bleak WinRT backend — native .pyd files, must come from cp312 wheels
+    "winrt-runtime",
+    "winrt-windows-devices-bluetooth",
+    "winrt-windows-devices-bluetooth-advertisement",
+    "winrt-windows-devices-bluetooth-genericattributeprofile",
+    "winrt-windows-devices-enumeration",
+    "winrt-windows-devices-radios",
+    "winrt-windows-foundation",
+    "winrt-windows-foundation-collections",
+    "winrt-windows-storage-streams"
 )
 
 # ── Download ────────────────────────────────────────────────────────────────────
