@@ -10,6 +10,8 @@ import qasync
 from PySide6.QtWidgets import QApplication
 
 from qnob_companion.app import logging_config, settings as settings_module
+from qnob_companion.discovery.service import DiscoveryService
+from qnob_companion.pairing.secret_store import KeyringSecretStore
 from qnob_companion.ui.main_window import MainWindow
 
 log = logging.getLogger(__name__)
@@ -26,11 +28,25 @@ def main() -> int:
     loop = qasync.QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
 
-    window = MainWindow(settings)
+    discovery = DiscoveryService()
+    secret_store = KeyringSecretStore()
+
+    window = MainWindow(settings, discovery=discovery, secret_store=secret_store)
     window.show()
 
+    async def _boot() -> None:
+        await discovery.start()
+        log.info("DiscoveryService started")
+
     with loop:
+        loop.run_until_complete(_boot())
         loop.run_forever()
+
+    async def _shutdown() -> None:
+        await discovery.stop()
+        log.info("DiscoveryService stopped")
+
+    loop.run_until_complete(_shutdown())
 
     settings_module.save(window.current_settings())
     log.info("Qnob companion exiting")
