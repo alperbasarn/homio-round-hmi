@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from qnob_companion.discovery.descriptor import DeviceDescriptor
@@ -19,8 +20,10 @@ from qnob_companion.transport.client import DeviceClient
 from qnob_companion.ui.tabs.bluetooth_tab import BluetoothTab
 from qnob_companion.ui.tabs.device_tab import DeviceTab
 from qnob_companion.ui.tabs.display_tab import DisplayTab
+from qnob_companion.ui.tabs.log_tab import LogTab
 from qnob_companion.ui.tabs.mqtt_tab import MqttTab
 from qnob_companion.ui.tabs.ota_tab import OtaTab
+from qnob_companion.ui.tabs.status_tab import StatusTab
 from qnob_companion.ui.tabs.wifi_tab import WiFiTab
 
 
@@ -52,7 +55,7 @@ class DeviceDetailDialog(QDialog):
 
         # ── Tab widget ───────────────────────────────────────────────────
         self._tabs = QTabWidget()
-        self._tab_widgets: list[WiFiTab | MqttTab | BluetoothTab | DisplayTab | DeviceTab] = []
+        self._tab_widgets: list[QWidget] = []
 
         for label, tab_cls in [
             ("Wi-Fi",     WiFiTab),
@@ -61,6 +64,8 @@ class DeviceDetailDialog(QDialog):
             ("Display",   DisplayTab),
             ("Device",    DeviceTab),
             ("OTA",       OtaTab),
+            ("Status",    StatusTab),
+            ("Log",       LogTab),
         ]:
             tab = tab_cls(client)
             self._tab_widgets.append(tab)
