@@ -357,8 +357,28 @@ class DevicesPage(QWidget):
 
     @Slot(object)
     def _on_open_requested(self, device: DeviceDescriptor) -> None:
-        # Device detail page lands in C2.
-        log.info("Open requested for %s — device detail page lands in #67 C2", device.mac)
+        asyncio.ensure_future(self._open_device(device))
+
+    async def _open_device(self, device: DeviceDescriptor) -> None:
+        from qnob_companion.transport import DeviceClient, TcpTransport
+        from qnob_companion.ui.device_detail import DeviceDetailDialog
+
+        if device.ip is None or device.tcp_port is None:
+            log.warning("No TCP endpoint for %s — cannot open detail view", device.mac)
+            return
+
+        tcp = TcpTransport(str(device.ip), device.tcp_port)
+        client = DeviceClient(tcp=tcp)
+        token = self._store.get(device.mac)
+        if token:
+            client.set_auth_token(token)
+        await client.connect()
+
+        try:
+            dialog = DeviceDetailDialog(device, client, parent=self)
+            dialog.exec()
+        finally:
+            await client.disconnect()
 
     @Slot(object)
     def _on_device_paired(self, device: DeviceDescriptor) -> None:
