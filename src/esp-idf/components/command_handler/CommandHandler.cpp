@@ -82,6 +82,10 @@ void CommandHandler::setOtaConfigUpdatedCallback(std::function<void(void)> callb
     otaConfigUpdatedCallback = std::move(callback);
 }
 
+void CommandHandler::setPairedStateCallback(std::function<void(bool)> callback) {
+    pairedStateCallback_ = std::move(callback);
+}
+
 void CommandHandler::update() {
     // Process serial commands from console (stdin)
     char data[128];
@@ -1199,6 +1203,7 @@ void CommandHandler::cmdPair(const std::string& params) {
     if (!nvsManager->isPaired) {
         nvsManager->isPaired = true;
         nvsManager->savePairingState();
+        if (pairedStateCallback_) pairedStateCallback_(true);
     }
     cJSON* obj = cJSON_CreateObject();
     cJSON_AddStringToObject(obj, "token", nvsManager->pairToken.c_str());

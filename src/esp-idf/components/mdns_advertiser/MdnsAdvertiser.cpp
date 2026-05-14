@@ -37,6 +37,11 @@ void MdnsAdvertiser::start(const NVSManager* nvs, const uint8_t mac[6]) {
 
     const char* fw_version = esp_app_get_description()->version;
 
+    // Reflect the persisted pairing state in the initial TXT record so the
+    // companion can distinguish paired from unpaired devices at first sight.
+    paired_ = (nvs != nullptr && nvs->isPaired);
+    const char* paired_str = paired_ ? "1" : "0";
+
     // mdns_txt_item_t uses non-const char* — cast is safe, values are read-only.
     mdns_txt_item_t txt[] = {
         { (char*)"name",   (char*)device_name },
@@ -44,7 +49,7 @@ void MdnsAdvertiser::start(const NVSManager* nvs, const uint8_t mac[6]) {
         { (char*)"mac",    (char*)mac_str      },
         { (char*)"caps",   (char*)"tcp,ble"   },
         { (char*)"proto",  (char*)"1"          },
-        { (char*)"paired", (char*)"0"          }, // updated by A6/A7 via updatePaired()
+        { (char*)"paired", (char*)paired_str   },
     };
     constexpr size_t kTxtCount = sizeof(txt) / sizeof(txt[0]);
 
@@ -56,7 +61,6 @@ void MdnsAdvertiser::start(const NVSManager* nvs, const uint8_t mac[6]) {
     }
 
     running_ = true;
-    paired_  = false;
     ESP_LOGI(TAG, "Advertising _qnob._tcp on %s.local:%d (name=%s fw=%s)",
              hostname_, kTcpPort, device_name, fw_version);
 }

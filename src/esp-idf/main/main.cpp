@@ -664,6 +664,9 @@ extern "C" void app_main(void) {
     commandHandler->registerOTAManager(otaManager);
     commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
+    commandHandler->setPairedStateCallback([](bool paired) {
+        if (mdnsAdvertiser != nullptr) mdnsAdvertiser->updatePaired(paired);
+    });
     commandHandler->begin();
 
     // Bridge BLE Nordic-UART RX → CommandHandler → BLE TX (A4).

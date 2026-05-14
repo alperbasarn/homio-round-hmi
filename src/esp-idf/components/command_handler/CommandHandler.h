@@ -32,6 +32,8 @@ public:
     void registerOTAManager(OTAManager* ota);
     void registerBluetoothManager(BluetoothManager* bt);
     void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
+    // Called with true when a pair command succeeds; use to update mDNS (A7).
+    void setPairedStateCallback(std::function<void(bool)> callback);
 
 private:
     using CommandFunction = std::function<void(const std::string& params)>;
@@ -51,6 +53,7 @@ private:
     OTAManager* otaManager;
     BluetoothManager* bluetoothManager;
     std::function<void(void)> otaConfigUpdatedCallback;
+    std::function<void(bool)> pairedStateCallback_;
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
