@@ -2,27 +2,26 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtCore import Qt
 
 from qnob_companion.app.settings import Settings
-from qnob_companion.discovery.descriptor import DeviceDescriptor
 from qnob_companion.discovery.service import DiscoveryService
 from qnob_companion.pairing.secret_store import KeyringSecretStore, SecretStore
+from qnob_companion.ui.devices_page import DevicesPage
 
 
 class _PlaceholderPage(QWidget):
-    """Stub page shown while real pages land in later tickets."""
+    """Stub page for sidebar items without a real implementation yet."""
 
     def __init__(self, title: str, message: str) -> None:
         super().__init__()
@@ -30,63 +29,6 @@ class _PlaceholderPage(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(QLabel(f"<h2>{title}</h2>", alignment=Qt.AlignmentFlag.AlignCenter))
         layout.addWidget(QLabel(message, alignment=Qt.AlignmentFlag.AlignCenter))
-
-
-class _DevicesPage(QWidget):
-    """Device list placeholder with a 'Pair New Device' button.
-
-    The full device dashboard lands in #66 C1.
-    """
-
-    def __init__(
-        self,
-        discovery: DiscoveryService,
-        secret_store: SecretStore,
-    ) -> None:
-        super().__init__()
-        self._discovery = discovery
-        self._secret_store = secret_store
-
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(
-            QLabel(
-                "<h2>Devices</h2>",
-                alignment=Qt.AlignmentFlag.AlignCenter,
-            )
-        )
-        layout.addWidget(
-            QLabel(
-                "Discover and pair Qnob devices on your network or in BLE range.\n"
-                "(Full dashboard lands in #66 C1.)",
-                alignment=Qt.AlignmentFlag.AlignCenter,
-            )
-        )
-        layout.addSpacing(16)
-
-        pair_btn = QPushButton("Pair New Device…")
-        pair_btn.clicked.connect(self._open_pairing_wizard)
-        layout.addWidget(pair_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-
-    @Slot()
-    def _open_pairing_wizard(self) -> None:
-        # Import here to avoid a circular dependency at module load time.
-        from qnob_companion.ui.pairing_wizard import PairingWizard
-
-        wizard = PairingWizard(
-            self._discovery,
-            self._secret_store,
-            parent=self,
-        )
-        wizard.paired.connect(self._on_paired)
-        wizard.exec()
-
-    @Slot(object)
-    def _on_paired(self, device: DeviceDescriptor) -> None:
-        name = device.name or device.mac
-        # Notify parent window (or log) — full UI feedback lands in #66.
-        import logging
-        logging.getLogger(__name__).info("Paired device: %s", name)
 
 
 class MainWindow(QMainWindow):
@@ -119,18 +61,17 @@ class MainWindow(QMainWindow):
 
         self._stack = QStackedWidget()
 
-        # Devices page — has "Pair New Device" button.
+        # Devices page — live dashboard (C1).
+        self.devices_page = DevicesPage(self._discovery, self._secret_store)
         QListWidgetItem("Devices", self._sidebar)
-        self._stack.addWidget(
-            _DevicesPage(self._discovery, self._secret_store)
-        )
+        self._stack.addWidget(self.devices_page)
 
-        # Settings page — placeholder pending #66.
+        # Settings page — placeholder pending later C-tickets.
         QListWidgetItem("Settings", self._sidebar)
         self._stack.addWidget(
             _PlaceholderPage(
                 "Settings",
-                "Companion app preferences.\n(Coming with #66+ once dashboard exists.)",
+                "Companion app preferences.\n(Coming in a later ticket.)",
             )
         )
 
@@ -141,6 +82,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._stack, 1)
         self.setCentralWidget(central)
 
+    # ----- lifecycle -----
+
+    def start(self) -> None:
+        """Start background tasks (call after asyncio event loop is running)."""
+        self.devices_page.start()
+
+    def stop(self) -> None:
+        """Stop background tasks (call before event loop shuts down)."""
+        self.devices_page.stop()
+
+    # ----- settings persistence -----
+
     def current_settings(self) -> Settings:
-        """Return the (possibly modified) settings document for persistence on shutdown."""
         return self._settings
