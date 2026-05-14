@@ -36,15 +36,17 @@ def main() -> int:
 
     async def _boot() -> None:
         await discovery.start()
-        log.info("DiscoveryService started")
+        window.start()
+        log.info("Discovery and dashboard started")
+
+    async def _shutdown() -> None:
+        window.stop()
+        await discovery.stop()
+        log.info("Discovery and dashboard stopped")
 
     with loop:
         loop.run_until_complete(_boot())
         loop.run_forever()
-
-    async def _shutdown() -> None:
-        await discovery.stop()
-        log.info("DiscoveryService stopped")
 
     loop.run_until_complete(_shutdown())
 
