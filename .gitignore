@@ -5,7 +5,7 @@ __pycache__/
 *.pyc
 **/.claude/settings.local.json
 Binaries/
-OTA/
+/OTA/
 esp-idf/NUL
 esp-idf/build/
 esp-idf/screen-test/build/
