@@ -332,6 +332,13 @@ extern "C" void app_main(void) {
     nvsManager = new NVSManager();
     ESP_ERROR_CHECK(nvsManager->begin());
 
+    // Generate pairing token on first boot (A6).
+    if (nvsManager->pairToken.empty()) {
+        if (nvsManager->generateAndSavePairToken() == ESP_OK) {
+            ESP_LOGI(TAG, "Generated new pairing token");
+        }
+    }
+
     // Recovery mode: if PWR_KEY is held LOW for ≥3 s during boot, force
     // wifi_ap_enabled and portal_enabled to true for this session (does NOT
     // write NVS) so the user can always reach the portal even if they

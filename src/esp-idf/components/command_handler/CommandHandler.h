@@ -63,6 +63,10 @@ private:
     static std::string urlDecode(const std::string& value);
     static std::string getFormValue(const std::string& body, const std::string& key);
     void publishResponse(const std::string& response);
+    // Wrap a raw command-response string in a JSON envelope with the given id.
+    static std::string wrapResponse_(uint32_t id, const std::string& raw);
+    // Extract a named value from either JSON params or nth colon-delimited legacy field.
+    static std::string cmdParam(const std::string& params, const char* json_key, unsigned legacy_pos = 0);
 
     // Command handlers
     void cmdIncrementSetpoint(const std::string& params);
@@ -108,6 +112,9 @@ private:
     void cmdPortalOta(const std::string& params);
     void cmdPortalWifiCredential(const std::string& params);
     void cmdForgetBtDevice(const std::string& params);
+    void cmdPair(const std::string& params);
+    void cmdPing(const std::string& params);
+    void cmdStatus(const std::string& params);
 };
 
 #endif // COMMAND_HANDLER_H
