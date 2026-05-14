@@ -4,6 +4,7 @@
 #include "esp_bt_defs.h"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,11 @@ public:
     esp_err_t sendSerial(const uint8_t* data, size_t length);
     esp_err_t sendSerialLine(const std::string& line);
 
+    // Called with each complete newline-terminated line received on the RX
+    // characteristic.  Set once at startup; invoked from the BT event task.
+    using SerialLineCallback = std::function<void(const std::string& line)>;
+    void setSerialLineCallback(SerialLineCallback cb);
+
     // Advertising hold — delegates to ConnectivityManager (T-15).
     // Ref-counted: advertising resumes only when all holds are released.
     void requestAdvertisingHold(const char* reason);
@@ -62,6 +68,9 @@ private:
     void stopAdvertising();
     void registerSerialProfile();
     void disconnectKnownPeers();
+
+    SerialLineCallback serial_line_cb_;
+    std::string ble_rx_buf_;
 
     bool enabled = true;
     bool initialized = false;
