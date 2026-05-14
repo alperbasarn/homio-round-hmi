@@ -10,6 +10,7 @@ import qasync
 from PySide6.QtWidgets import QApplication
 
 from qnob_companion.app import logging_config, settings as settings_module
+from qnob_companion.app.updater import Updater
 from qnob_companion.discovery.service import DiscoveryService
 from qnob_companion.pairing.secret_store import KeyringSecretStore
 from qnob_companion.ui.main_window import MainWindow
@@ -34,9 +35,15 @@ def main() -> int:
     window = MainWindow(settings, discovery=discovery, secret_store=secret_store)
     window.show()
 
+    async def _check_for_update() -> None:
+        info = await Updater().check()
+        if info is not None:
+            window.show_update(info)
+
     async def _boot() -> None:
         await discovery.start()
         window.start()
+        asyncio.ensure_future(_check_for_update())
         log.info("Discovery and dashboard started")
 
     async def _shutdown() -> None:

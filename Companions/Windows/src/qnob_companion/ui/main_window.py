@@ -2,22 +2,63 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
 
 from qnob_companion.app.settings import Settings
+from qnob_companion.app.updater import UpdateInfo
 from qnob_companion.discovery.service import DiscoveryService
 from qnob_companion.pairing.secret_store import KeyringSecretStore, SecretStore
 from qnob_companion.ui.devices_page import DevicesPage
+
+
+class _UpdateBanner(QFrame):
+    """Dismissable banner shown at the top of the window when an update is available."""
+
+    def __init__(self, info: UpdateInfo, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._url = info.release_url
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            "QFrame { background: #2980b9; padding: 0; }"
+            "QLabel { color: white; font-size: 12px; }"
+            "QPushButton { color: white; background: transparent; border: 1px solid rgba(255,255,255,0.6);"
+            "  border-radius: 3px; padding: 2px 10px; font-size: 12px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.15); }"
+        )
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 6, 12, 6)
+
+        lbl = QLabel(
+            f"Qnob Companion {info.version} is available. "
+            "Download and install from the GitHub release."
+        )
+        row.addWidget(lbl, 1)
+
+        view_btn = QPushButton("View Release")
+        view_btn.clicked.connect(self._open_release)
+        row.addWidget(view_btn)
+
+        dismiss_btn = QPushButton("Later")
+        dismiss_btn.clicked.connect(self.hide)
+        row.addWidget(dismiss_btn)
+
+    def _open_release(self) -> None:
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(self._url))
 
 
 class _PlaceholderPage(QWidget):
@@ -51,7 +92,19 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(720, 480)
 
         central = QWidget()
-        layout = QHBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Update banner — hidden until show_update() is called.
+        self._update_banner: _UpdateBanner | None = None
+        self._banner_slot = QWidget()  # placeholder; replaced by banner when needed
+        self._banner_slot.hide()
+        root.addWidget(self._banner_slot)
+
+        # Main body: sidebar + page stack.
+        body = QWidget()
+        layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -80,6 +133,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._sidebar)
         layout.addWidget(self._stack, 1)
+        root.addWidget(body, 1)
         self.setCentralWidget(central)
 
     # ----- lifecycle -----
@@ -91,6 +145,21 @@ class MainWindow(QMainWindow):
     def stop(self) -> None:
         """Stop background tasks (call before event loop shuts down)."""
         self.devices_page.stop()
+
+    # ----- update notification -----
+
+    def show_update(self, info: UpdateInfo) -> None:
+        """Display the update banner. Safe to call from any asyncio coroutine."""
+        if self._update_banner is not None:
+            return  # already shown
+
+        central = self.centralWidget()
+        root_layout = central.layout()
+
+        banner = _UpdateBanner(info, central)
+        self._update_banner = banner
+        root_layout.insertWidget(0, banner)
+        self._banner_slot.hide()
 
     # ----- settings persistence -----
 

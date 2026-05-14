@@ -32,6 +32,9 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+build = [
+    "pyinstaller>=6.6",
+]
 
 [project.scripts]
 qnob-companion = "qnob_companion.app.main:main"
