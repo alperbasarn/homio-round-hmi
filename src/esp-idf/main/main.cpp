@@ -33,6 +33,8 @@
 
 // Controllers
 #include "CommandHandler.h"
+#include "MdnsAdvertiser.h"
+#include "esp_wifi.h"
 #include "SoundController.h"
 #include "LightController.h"
 #include "MediaController.h"
@@ -112,6 +114,7 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+static MdnsAdvertiser* mdnsAdvertiser = nullptr;
 
 static std::string resolveManifestUrl(const std::string& variantId,
                                       const std::string& configuredManifestUrl) {
@@ -516,132 +519,6 @@ extern "C" void app_main(void) {
     otaManager = new OTAManager(wifiManager);
     applyOtaConfigFromNvs();
     } // !BootGuard::isInSafeMode (MQTT / internet / OTA)
-    wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
-        applyOtaConfigFromNvs();
-    });
-    wifiManager->setSetupPortalOtaStatusCallback([]() -> std::string {
-        if (otaManager == nullptr) {
-            return "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA manager unavailable\"}";
-        }
-
-        const OtaReleaseInfo info = otaManager->getReleaseInfo();
-        auto escape = [](const std::string& value) {
-            std::string out;
-            out.reserve(value.size());
-            for (char c : value) {
-                if (c == '\\' || c == '"') {
-                    out.push_back('\\');
-                }
-                out.push_back(c);
-            }
-            return out;
-        };
-
-        std::ostringstream os;
-        os << "{";
-        os << "\"configured\":" << (info.configured ? "true" : "false") << ",";
-        os << "\"busy\":" << (info.busy ? "true" : "false") << ",";
-        os << "\"update_available\":" << (info.updateAvailable ? "true" : "false") << ",";
-        os << "\"current_version\":\"" << escape(info.currentVersion) << "\",";
-        os << "\"available_version\":\"" << escape(info.availableVersion) << "\",";
-        os << "\"status_message\":\"" << escape(info.statusMessage) << "\"";
-        os << "}";
-        return os.str();
-    });
-    wifiManager->setSetupPortalOtaActionCallback([](const std::string& action) -> esp_err_t {
-        if (otaManager == nullptr) {
-            return ESP_ERR_INVALID_STATE;
-        }
-
-        if (action == "check") {
-            return otaManager->checkForReleaseUpdate();
-        }
-        if (action == "update") {
-            return otaManager->startReleaseUpdate(true);
-        }
-        return ESP_ERR_INVALID_ARG;
-    });
-    wifiManager->setSetupPortalDeviceInfoStatusCallback([]() -> std::string {
-        auto escape = [](const std::string& value) {
-            std::string out;
-            out.reserve(value.size());
-            for (char c : value) {
-                if (c == '\\' || c == '"') {
-                    out.push_back('\\');
-                }
-                out.push_back(c);
-            }
-            return out;
-        };
-
-        bool wifi = wifiManager != nullptr && wifiManager->isConnected();
-        bool internet = internetHandler != nullptr && internetHandler->isInternetAvailable();
-        bool mqtt = mqttManager != nullptr && mqttManager->isConnected();
-        bool bluetoothEnabled = bluetoothManager != nullptr && bluetoothManager->isEnabled();
-        bool bluetoothReady = bluetoothManager != nullptr && bluetoothManager->isReady();
-        bool bluetoothConnected = bluetoothManager != nullptr && bluetoothManager->isConnected();
-        bool bluetoothHidConnected = bluetoothManager != nullptr && bluetoothManager->isHidConnected();
-        bool bluetoothSerialConnected = bluetoothManager != nullptr && bluetoothManager->isSerialConnected();
-        int strength = wifiManager != nullptr ? wifiManager->getSignalStrength() : 0;
-
-        bool batteryPresenceKnown = false;
-        bool batteryConnected = false;
-        bool batteryPercentageAvailable = false;
-        float batteryPercentage = -1.0f;
-        float batteryVoltage = -1.0f;
-        if (batteryHandler != nullptr && batteryHandler->isInitialized()) {
-            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
-            batteryConnected = batteryHandler->isBatteryConnected();
-            batteryPercentage = telemetry.percentage;
-            batteryPercentageAvailable = telemetry.percentage >= 0.0f;
-            batteryVoltage = telemetry.voltageVolts;
-        }
-
-        bool softwareConfigured = false;
-        bool softwareBusy = false;
-        bool softwareUpdateAvailable = false;
-        std::string currentVersion = "unknown";
-        std::string availableVersion;
-        std::string statusText = "OTA unavailable";
-        if (otaManager != nullptr) {
-            const OtaReleaseInfo info = otaManager->getReleaseInfo();
-            softwareConfigured = info.configured;
-            softwareBusy = info.busy;
-            softwareUpdateAvailable = info.updateAvailable;
-            currentVersion = info.currentVersion;
-            availableVersion = info.availableVersion;
-            statusText = info.statusMessage;
-        }
-
-        std::ostringstream os;
-        os << "{";
-        os << "\"wifi_connected\":" << (wifi ? "true" : "false") << ",";
-        os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
-        os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
-        const std::string btName = (nvsManager != nullptr) ? nvsManager->bluetoothName : "Qnob PC Control";
-        const int btBondCount = bluetoothManager != nullptr ? bluetoothManager->getBondedDeviceCount() : 0;
-        os << "\"bluetooth_name\":\"" << escape(btName) << "\",";
-        os << "\"bluetooth_bond_count\":" << btBondCount << ",";
-        os << "\"bluetooth_enabled\":" << (bluetoothEnabled ? "true" : "false") << ",";
-        os << "\"bluetooth_ready\":" << (bluetoothReady ? "true" : "false") << ",";
-        os << "\"bluetooth_connected\":" << (bluetoothConnected ? "true" : "false") << ",";
-        os << "\"bluetooth_hid_connected\":" << (bluetoothHidConnected ? "true" : "false") << ",";
-        os << "\"bluetooth_serial_connected\":" << (bluetoothSerialConnected ? "true" : "false") << ",";
-        os << "\"wifi_strength_bars\":" << strength << ",";
-        os << "\"battery_presence_known\":" << (batteryPresenceKnown ? "true" : "false") << ",";
-        os << "\"battery_connected\":" << (batteryConnected ? "true" : "false") << ",";
-        os << "\"battery_percentage_available\":" << (batteryPercentageAvailable ? "true" : "false") << ",";
-        os << "\"battery_percentage\":" << batteryPercentage << ",";
-        os << "\"battery_voltage\":" << batteryVoltage << ",";
-        os << "\"software_configured\":" << (softwareConfigured ? "true" : "false") << ",";
-        os << "\"software_busy\":" << (softwareBusy ? "true" : "false") << ",";
-        os << "\"software_update_available\":" << (softwareUpdateAvailable ? "true" : "false") << ",";
-        os << "\"current_version\":\"" << escape(currentVersion) << "\",";
-        os << "\"available_version\":\"" << escape(availableVersion) << "\",";
-        os << "\"status_text\":\"" << escape(statusText) << "\"";
-        os << "}";
-        return os.str();
-    });
 
     // Initialize UI controllers
     // In safe-mode levels the full controller tree is not needed; a minimal
@@ -743,45 +620,8 @@ extern "C" void app_main(void) {
                 soundController->updateSetpoint(percent);
             }
         });
-    wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
-        if (commandHandler != nullptr) {
-            commandHandler->handleExternalCommand("screen:" + screen);
-            return true;
-        }
-        return displayController != nullptr && displayController->showNamedScreen(screen);
-    });
-    wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
-        return displayController != nullptr ? displayController->getModeName() : "unknown";
-    });
     wifiManager->setSetupPortalCommandCallback([](const std::string& cmd) {
         if (commandHandler != nullptr) commandHandler->handleExternalCommand(cmd);
-    });
-    wifiManager->setSetupPortalBtScanResultsCallback([]() -> std::string {
-        auto escape = [](const std::string& v) {
-            std::string out;
-            for (char c : v) { if (c == '\\' || c == '"') out.push_back('\\'); out.push_back(c); }
-            return out;
-        };
-        const bool scanning = bluetoothManager != nullptr && bluetoothManager->isScanning();
-        const bool btReady = bluetoothManager != nullptr && bluetoothManager->isReady();
-        const std::string scanStatus = bluetoothManager != nullptr ? bluetoothManager->getScanStatus() : "unavailable";
-        std::string json = "{\"scanning\":";
-        json += scanning ? "true" : "false";
-        json += ",\"bt_ready\":";
-        json += btReady ? "true" : "false";
-        json += ",\"scan_status\":\"" + escape(scanStatus) + "\"";
-        json += ",\"devices\":[";
-        if (bluetoothManager != nullptr) {
-            const auto results = bluetoothManager->getScanResults();
-            for (size_t i = 0; i < results.size(); ++i) {
-                if (i > 0) json += ",";
-                json += "{\"address\":\"" + escape(results[i].address) + "\",";
-                json += "\"name\":\"" + escape(results[i].name) + "\",";
-                json += "\"rssi\":" + std::to_string(results[i].rssi) + "}";
-            }
-        }
-        json += "]}";
-        return json;
     });
 
     // Initialize Sleep Handler (power management)
@@ -818,6 +658,17 @@ extern "C" void app_main(void) {
     commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
     commandHandler->begin();
+
+    mdnsAdvertiser = new MdnsAdvertiser();
+    wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
+        if (mdnsAdvertiser == nullptr) return;
+        uint8_t mac[6] = {};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        mdnsAdvertiser->start(nvsManager, mac);
+    });
+    wifiManager->setDisconnectedCallback([]() {
+        if (mdnsAdvertiser != nullptr) mdnsAdvertiser->stop();
+    });
 
     // Set MQTT callbacks for sound controller
     soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
