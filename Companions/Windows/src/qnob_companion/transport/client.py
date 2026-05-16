@@ -9,6 +9,7 @@ from typing import Any
 from qnob_companion.protocol import Response
 from qnob_companion.transport.base import Transport, TransportError, TransportState
 from qnob_companion.transport.ble import BleTransport
+from qnob_companion.transport.serial import SerialTransport
 from qnob_companion.transport.tcp import TcpTransport
 
 log = logging.getLogger(__name__)
@@ -17,8 +18,8 @@ log = logging.getLogger(__name__)
 class DeviceClient:
     """Holds 0..2 transports for a single device and picks the active one.
 
-    Transport preference: TCP > BLE (TCP is faster and OTA-capable). Auto
-    fail-over to BLE happens implicitly via ``active_transport`` lookups.
+    Transport preference: TCP > BLE > Serial (serial is used for initial
+    pairing before network transports are available).
 
     The pairing token is held here (set via ``set_auth_token``) and injected
     into every outbound envelope.
@@ -29,11 +30,13 @@ class DeviceClient:
         *,
         tcp: TcpTransport | None = None,
         ble: BleTransport | None = None,
+        serial: SerialTransport | None = None,
     ) -> None:
-        if tcp is None and ble is None:
+        if tcp is None and ble is None and serial is None:
             raise ValueError("DeviceClient needs at least one transport")
         self._tcp = tcp
         self._ble = ble
+        self._serial = serial
         self._auth_token: str | None = None
 
     # ----- pairing -----
@@ -53,6 +56,8 @@ class DeviceClient:
             return self._tcp
         if self._ble is not None and self._ble.state == TransportState.CONNECTED:
             return self._ble
+        if self._serial is not None and self._serial.state == TransportState.CONNECTED:
+            return self._serial
         return None
 
     @property
@@ -73,6 +78,8 @@ class DeviceClient:
             tasks.append(asyncio.create_task(self._tcp.connect(), name="dc-tcp-connect"))
         if self._ble is not None:
             tasks.append(asyncio.create_task(self._ble.connect(), name="dc-ble-connect"))
+        if self._serial is not None:
+            tasks.append(asyncio.create_task(self._serial.connect(), name="dc-serial-connect"))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -82,6 +89,8 @@ class DeviceClient:
             tasks.append(asyncio.create_task(self._tcp.disconnect(), name="dc-tcp-disconnect"))
         if self._ble is not None:
             tasks.append(asyncio.create_task(self._ble.disconnect(), name="dc-ble-disconnect"))
+        if self._serial is not None:
+            tasks.append(asyncio.create_task(self._serial.disconnect(), name="dc-serial-disconnect"))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

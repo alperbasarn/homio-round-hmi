@@ -38,6 +38,11 @@ class DiscoveryService:
     Emits ``Added`` immediately for new MACs, debounced ``Updated`` events
     when descriptor fields change, and ``Removed`` when a device hasn't been
     re-seen within ``STALE_AFTER_S``.
+
+    Multiple independent consumers can subscribe via ``subscribe()``.  Each
+    subscriber receives its own copy of every event so they don't compete for
+    the same queue.  ``__aiter__`` returns a subscriber iterator as a
+    convenience for the common single-consumer case.
     """
 
     def __init__(
@@ -51,7 +56,7 @@ class DiscoveryService:
         self._mdns: MdnsBrowser | None = None
         self._ble: BleScanner | None = None
         self._devices: dict[str, DeviceDescriptor] = {}
-        self._events: asyncio.Queue[DiscoveryEvent] = asyncio.Queue()
+        self._subscribers: list[asyncio.Queue[DiscoveryEvent]] = []
         self._pending_updates: dict[str, asyncio.Task[None]] = {}
         self._stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -103,11 +108,29 @@ class DiscoveryService:
         """Snapshot of all currently-known devices, keyed by canonical MAC."""
         return dict(self._devices)
 
-    def __aiter__(self) -> AsyncIterator[DiscoveryEvent]:
-        return self
+    def subscribe(self) -> _Subscription:
+        """Return an async iterator that receives every future discovery event.
 
-    async def __anext__(self) -> DiscoveryEvent:
-        return await self._events.get()
+        Each call returns an independent subscription; events are broadcast to
+        all active subscriptions so consumers don't compete for the same queue.
+        The subscription seeds its queue with ``Added`` events for every device
+        already known at the time of subscription.
+        """
+        q: asyncio.Queue[DiscoveryEvent] = asyncio.Queue()
+        # Replay existing devices so late subscribers see current state.
+        for desc in self._devices.values():
+            q.put_nowait(Added(desc))
+        self._subscribers.append(q)
+        return _Subscription(q, self._subscribers)
+
+    def __aiter__(self) -> AsyncIterator[DiscoveryEvent]:
+        return self.subscribe()
+
+    # ----- internal broadcast -----
+
+    def _broadcast(self, event: DiscoveryEvent) -> None:
+        for q in self._subscribers:
+            q.put_nowait(event)
 
     # ----- merge / debounce -----
 
@@ -115,7 +138,7 @@ class DiscoveryService:
         existing = self._devices.get(partial.mac)
         if existing is None:
             self._devices[partial.mac] = partial
-            self._events.put_nowait(Added(partial))
+            self._broadcast(Added(partial))
             return
 
         merged = existing.merged_with(partial)
@@ -140,7 +163,7 @@ class DiscoveryService:
             return
         device = self._devices.get(mac)
         if device is not None:
-            self._events.put_nowait(Updated(device))
+            self._broadcast(Updated(device))
         self._pending_updates.pop(mac, None)
 
     # ----- stale cleanup -----
@@ -161,7 +184,33 @@ class DiscoveryService:
                     age = (now - device.last_seen).total_seconds()
                     if age > STALE_AFTER_S:
                         self._devices.pop(mac, None)
-                        self._events.put_nowait(Removed(mac))
+                        self._broadcast(Removed(mac))
                         log.debug("Removed stale device %s (last seen %.0fs ago)", mac, age)
         except asyncio.CancelledError:
             raise
+
+
+class _Subscription:
+    """Per-consumer async iterator returned by ``DiscoveryService.subscribe()``."""
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[DiscoveryEvent],
+        registry: list[asyncio.Queue[DiscoveryEvent]],
+    ) -> None:
+        self._queue = queue
+        self._registry = registry
+
+    def __aiter__(self) -> _Subscription:
+        return self
+
+    async def __anext__(self) -> DiscoveryEvent:
+        return await self._queue.get()
+
+    def close(self) -> None:
+        """Unregister this subscription so it no longer receives events."""
+        try:
+            self._registry.remove(self._queue)
+        except ValueError:
+            pass
+

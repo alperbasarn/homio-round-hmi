@@ -1,6 +1,7 @@
-"""Transport layer — TCP + BLE + DeviceClient (#62 B3).
+"""Transport layer — TCP + BLE + Serial + DeviceClient (#62 B3).
 
-TCP transport is fully implemented; BLE is a stub pending the BLE half of #62.
+TCP and BLE transports are fully implemented; Serial provides wired USB-CDC
+pairing bootstrap and an interactive terminal.
 """
 
 from qnob_companion.transport.base import (
@@ -12,6 +13,7 @@ from qnob_companion.transport.base import (
 )
 from qnob_companion.transport.ble import BLE_AVAILABLE, BleTransport
 from qnob_companion.transport.client import DeviceClient
+from qnob_companion.transport.serial import SERIAL_AVAILABLE, SerialTransport
 from qnob_companion.transport.tcp import TcpTransport
 
 __all__ = [
@@ -20,6 +22,8 @@ __all__ = [
     "BleTransport",
     "DeviceClient",
     "IdGenerator",
+    "SERIAL_AVAILABLE",
+    "SerialTransport",
     "TcpTransport",
     "Transport",
     "TransportError",
