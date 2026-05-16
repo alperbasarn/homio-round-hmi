@@ -715,10 +715,10 @@ esp_err_t NVSManager::saveEnabledFlags()
 esp_err_t NVSManager::generateAndSavePairToken()
 {
     if (!initialized) return ESP_ERR_INVALID_STATE;
-    uint8_t rand_bytes[16];
+    uint8_t rand_bytes[4];
     esp_fill_random(rand_bytes, sizeof(rand_bytes));
-    char token[33];
-    for (int i = 0; i < 16; ++i) {
+    char token[9];
+    for (int i = 0; i < 4; ++i) {
         snprintf(token + i * 2, 3, "%02x", rand_bytes[i]);
     }
     pairToken = token;
