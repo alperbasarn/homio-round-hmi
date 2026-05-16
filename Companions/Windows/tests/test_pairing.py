@@ -59,7 +59,7 @@ def _make_client() -> tuple[DeviceClient, _MockTransport]:
 
 
 _MAC = "aabbccddeeff"
-_TOKEN = "A" * 44  # valid 44-char token placeholder
+_TOKEN = "A" * 8  # valid 8-char token placeholder
 
 
 # ===========================================================================

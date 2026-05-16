@@ -11,6 +11,7 @@ static const char* TAG = "BootGuard";
 // ---------- static member definitions ----------
 BootGuard::SafeMode BootGuard::s_mode        = BootGuard::SafeMode::Normal;
 bool                BootGuard::s_timerArmed  = false;
+TaskHandle_t        BootGuard::s_markHealthyTask = nullptr;
 
 // ---------- public API ----------
 
@@ -150,7 +151,21 @@ const char* BootGuard::modeName()
 
 // ---------- private ----------
 
+// Task body: waits for a notification from the timer callback, then writes NVS.
+void BootGuard::markHealthyTask(void* /*arg*/)
+{
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // block until timer fires
+    markHealthy();
+    vTaskDelete(nullptr);  // self-delete after single use
+}
+
 void BootGuard::healthTimerCallback(TimerHandle_t /*xTimer*/)
 {
-    markHealthy();
+    // Only notify — never touch NVS from the Timer Service task context.
+    if (s_markHealthyTask != nullptr) {
+        xTaskNotifyGive(s_markHealthyTask);
+    } else {
+        // Fallback: task wasn't created (shouldn't happen, but be safe).
+        markHealthy();
+    }
 }

@@ -23,6 +23,7 @@ from qnob_companion.ui.tabs.display_tab import DisplayTab
 from qnob_companion.ui.tabs.log_tab import LogTab
 from qnob_companion.ui.tabs.mqtt_tab import MqttTab
 from qnob_companion.ui.tabs.ota_tab import OtaTab
+from qnob_companion.ui.tabs.serial_tab import SerialTab
 from qnob_companion.ui.tabs.status_tab import StatusTab
 from qnob_companion.ui.tabs.wifi_tab import WiFiTab
 
@@ -70,6 +71,10 @@ class DeviceDetailDialog(QDialog):
             tab = tab_cls(client)
             self._tab_widgets.append(tab)
             self._tabs.addTab(tab, label)
+
+        # Serial tab owns its own transport — no client needed.
+        serial_tab = SerialTab()
+        self._tabs.addTab(serial_tab, "Serial")
 
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, 1)

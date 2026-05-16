@@ -7,6 +7,12 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=y
 # FreeRTOS settings
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# Increase Timer Service task stack — timer callbacks (e.g. BootGuard) may
+# indirectly call NVS or other stack-heavy functions via task notifications.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+# Increase system event loop task stack — WiFi event handlers call into
+# ConnectivityManager and std::string ops which overflow the 2304-byte default.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=8192
 
 # Log level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

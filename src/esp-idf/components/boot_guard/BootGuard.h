@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/timers.h"
 #include <cstdint>
 
@@ -82,6 +83,7 @@ private:
 
     static SafeMode  s_mode;
     static bool      s_timerArmed;
+    static TaskHandle_t s_markHealthyTask;
 
     // NVS key strings (max 15 chars per ESP-IDF requirement)
     static constexpr const char* NVS_NS          = "boot_guard";
@@ -98,4 +100,5 @@ private:
     static constexpr uint32_t HEALTH_TIMER_MS = 15000;
 
     static void healthTimerCallback(TimerHandle_t xTimer);
+    static void markHealthyTask(void* arg);  // runs in dedicated task context
 };

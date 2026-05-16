@@ -226,7 +226,7 @@ void ConnectivityManager::connMgrTask(void* arg) {
 
 // ── WiFi stack lifecycle ─────────────────────────────────────────────────────
 
-esp_err_t ConnectivityManager::initWifiStack() {
+esp_err_t ConnectivityManager::initWifiStack(const wifi_config_t* initial_ap_cfg) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t err = esp_wifi_init(&cfg);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -237,6 +237,11 @@ esp_err_t ConnectivityManager::initWifiStack() {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) failed: %s", esp_err_to_name(err));
         return err;
+    }
+    // Configure AP before start to avoid triggering AP_STOP/AP_START events
+    // mid-initialization, which causes a spinlock assertion in the event loop.
+    if (initial_ap_cfg != nullptr) {
+        esp_wifi_set_config(WIFI_IF_AP, const_cast<wifi_config_t*>(initial_ap_cfg));
     }
     err = esp_wifi_start();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {

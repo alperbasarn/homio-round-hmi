@@ -82,6 +82,7 @@ private:
 
     bool initialized;
     bool internet_available;
+    bool ap_configured_pre_start_;  // true after initWifiStack configures AP; skips configureAP on first startAPMode()
     bool prev_sta_connected_;    // edge detection for callbacks in update()
     bool prev_sta_connecting_;    // edge detection: StaConnecting → fail in update()
     bool prev_portal_guest_;      // edge detection: PortalGuestActive → off in update()

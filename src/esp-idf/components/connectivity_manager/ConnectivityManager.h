@@ -114,7 +114,7 @@ public:
     // ── WiFi stack lifecycle ─────────────────────────────────────────────────
     // Called from WiFiManager::initialize() / destructor so that all
     // esp_wifi_* symbols remain inside this component.
-    esp_err_t initWifiStack();
+    esp_err_t initWifiStack(const wifi_config_t* initial_ap_cfg = nullptr);
     void      stopWifiStack();
 
     // ── Radio mutators (synchronous) ─────────────────────────────────────────

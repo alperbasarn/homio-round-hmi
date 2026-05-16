@@ -1,7 +1,9 @@
 """Pairing wizard — 3-page QDialog for first-time device pairing.
 
-Page 0 — Find device:    lists unpaired devices from DiscoveryService.
-Page 1 — Get token:      instructs the user to open the portal and request a token.
+Page 0 — Find device:    lists unpaired devices from DiscoveryService;
+                          also offers a USB serial path for direct wired pairing.
+Page 1 — Get token:      instructs the user to open the portal (or check the
+                          device screen after a serial reset) and request a token.
 Page 2 — Enter token:    4-char-grouped input; submits ``pair`` command to firmware.
 
 On success the ``paired`` signal is emitted with the paired ``DeviceDescriptor``
@@ -17,7 +19,9 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,20 +39,26 @@ from qnob_companion.discovery.descriptor import (
     DeviceDescriptor,
     Removed,
     Updated,
+    canonical_mac,
 )
 from qnob_companion.discovery.service import DiscoveryService
 from qnob_companion.pairing.secret_store import SecretStore
 from qnob_companion.pairing.service import PairingResult, PairingService
+from qnob_companion.transport.base import TransportError
 from qnob_companion.transport.client import DeviceClient
+from qnob_companion.transport.serial import (
+    SerialTransport,
+    list_serial_ports,
+)
 from qnob_companion.transport.tcp import TcpTransport
 from qnob_companion.transport.ble import BleTransport
 
 log = logging.getLogger(__name__)
 
-_TOKEN_LEN = 44  # 32 random bytes → urlsafe-base64 → 44 ASCII chars
+_TOKEN_LEN = 8  # 4 random bytes → 8 hex chars
 
 # How to display the expected token format to the user.
-_TOKEN_HINT = "e.g. XXXX XXXX XXXX XXXX XXXX XXXX XXXX XXXX XXXX XXXX XXXX"
+_TOKEN_HINT = "e.g. XXXXXXXX"
 
 
 def _format_token_grouped(token: str) -> str:
@@ -122,6 +132,8 @@ class PairingWizard(QDialog):
         self._client: DeviceClient | None = None
         self._pairing_svc: PairingService | None = None
         self._disc_task: asyncio.Task[None] | None = None
+        self._serial_transport: SerialTransport | None = None
+        self._via_serial: bool = False
 
         self.setWindowTitle("Pair New Device")
         self.setMinimumSize(520, 400)
@@ -199,7 +211,14 @@ class PairingWizard(QDialog):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self._instr_label)
-
+        self._instr_serial_note = QLabel(
+            "\u2139\ufe0f  After pressing <b>Reset Pairing State</b> the device will "
+            "display a fresh token on its screen."
+        )
+        self._instr_serial_note.setWordWrap(True)
+        self._instr_serial_note.setStyleSheet("color: #2980b9;")
+        self._instr_serial_note.hide()
+        layout.addWidget(self._instr_serial_note)
         layout.addSpacing(12)
         layout.addWidget(
             QLabel(
@@ -274,24 +293,43 @@ class PairingWizard(QDialog):
             if self._selected is None:
                 return
             # Build client + pairing service for the selected device.
-            try:
-                self._client = self._client_factory(self._selected)
-            except ValueError as exc:
-                self._find_status.setText(str(exc))
-                return
+            if self._via_serial and self._serial_transport is not None:
+                # Serial path: use serial-only DeviceClient.
+                self._client = DeviceClient(serial=self._serial_transport)
+                asyncio.ensure_future(self._ensure_serial_connected())
+            else:
+                try:
+                    self._client = self._client_factory(self._selected)
+                except ValueError as exc:
+                    self._find_status.setText(str(exc))
+                    return
+                # Start the TCP connection in the background.
+                asyncio.ensure_future(self._connect_client())
             self._pairing_svc = PairingService(
                 self._client, self._secret_store, self._selected.mac
             )
             # Populate instructions for this device.
             name = self._selected.name or self._selected.mac
-            self._instr_label.setText(
-                f"1. On your computer or phone, open:\n\n"
-                f"   <b>http://{name}.local/</b>\n\n"
-                f"2. On the portal page, press <b>\"Pair PC App\"</b>.\n\n"
-                f"3. A {_TOKEN_LEN}-character token will appear on the device screen."
-            )
-            # Start the TCP connection in the background.
-            asyncio.ensure_future(self._connect_client())
+            if self._via_serial:
+                self._instr_label.setText(
+                    f"Device <b>{name}</b> is connected via USB serial.\n\n"
+                    f"If a token is not yet displayed on the device screen, "
+                    f"go back and press <b>Reset Pairing State</b> to generate one."
+                )
+                self._instr_serial_note.show()
+            else:
+                portal_url = (
+                    f"http://{self._selected.ip}/"
+                    if self._selected.ip is not None
+                    else f"http://{name}.local/"
+                )
+                self._instr_label.setText(
+                    f"1. On your computer or phone, open:\n\n"
+                    f"   <b>{portal_url}</b>\n\n"
+                    f"2. On the portal page, click <b>\"Pair PC App\"</b>.\n\n"
+                    f"3. Copy the {_TOKEN_LEN}-character token shown on the portal page."
+                )
+                self._instr_serial_note.hide()
             self._go_to(self._PAGE_INSTRUCTIONS)
 
         elif current == self._PAGE_INSTRUCTIONS:
@@ -366,6 +404,150 @@ class PairingWizard(QDialog):
         else:
             self._pair_btn.setText("Pair")
 
+    # ------------------------------------------------------------------ serial helpers
+
+    @Slot()
+    def _refresh_serial_ports(self) -> None:
+        current = self._serial_port_combo.currentText()
+        self._serial_port_combo.clear()
+        ports = list_serial_ports()
+        for p in ports:
+            self._serial_port_combo.addItem(p)
+        if current in ports:
+            self._serial_port_combo.setCurrentText(current)
+
+    @Slot()
+    def _on_serial_connect_clicked(self) -> None:
+        if self._serial_transport is not None:
+            asyncio.ensure_future(self._do_serial_disconnect())
+        else:
+            port = self._serial_port_combo.currentText()
+            if not port:
+                self._serial_status.setText("No port selected")
+                return
+            asyncio.ensure_future(self._do_serial_connect(port))
+
+    @Slot()
+    def _on_serial_reset_clicked(self) -> None:
+        asyncio.ensure_future(self._do_serial_unpair())
+
+    def _set_serial_connected(self, connected: bool) -> None:
+        self._serial_connect_btn.setText(
+            "Disconnect Serial" if connected else "Connect via Serial"
+        )
+        self._serial_port_combo.setEnabled(not connected)
+        self._serial_refresh_btn.setEnabled(not connected)
+        self._serial_reset_btn.setEnabled(connected)
+        if connected:
+            self._serial_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+        else:
+            self._serial_status.setStyleSheet("color: gray; font-style: italic;")
+
+    async def _do_serial_connect(self, port: str) -> None:
+        self._serial_connect_btn.setEnabled(False)
+        self._serial_status.setText(f"Connecting to {port}…")
+        transport = SerialTransport(port)
+        try:
+            await transport.connect()
+        except TransportError as exc:
+            self._serial_status.setText(f"Error: {exc}")
+            self._serial_status.setStyleSheet("color: #c0392b;")
+            self._serial_connect_btn.setEnabled(True)
+            return
+
+        # Identify the device via ping.
+        try:
+            temp_client = DeviceClient(serial=transport)
+            resp = await temp_client.send_command("ping", timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            self._serial_status.setText(f"Ping failed: {exc}")
+            self._serial_status.setStyleSheet("color: #c0392b;")
+            await transport.disconnect()
+            self._serial_connect_btn.setEnabled(True)
+            return
+
+        data = resp.data or {}
+        raw_mac = data.get("mac", "")
+        name = data.get("name", "") or port
+        try:
+            mac = canonical_mac(raw_mac) if raw_mac else f"serial_{port.replace(':', '_').lower()}"
+        except ValueError:
+            mac = f"serial_{port.replace(':', '_').lower()}"
+
+        # Store transport and flag serial path.
+        self._serial_transport = transport
+        self._via_serial = True
+        self._set_serial_connected(True)
+        self._serial_status.setText(f"Connected: {name} ({port})")
+        self._serial_connect_btn.setEnabled(True)
+
+        # Auto-select or synthesise a device descriptor.
+        existing = self._discovery.devices.get(mac)
+        if existing is not None:
+            desc = existing
+        else:
+            desc = DeviceDescriptor(mac=mac, name=name, is_paired=False)
+            # Add to list so the user can select it.
+        self._add_or_select_device(desc)
+        # Enable Next since we now have a device.
+        self._next_btn.setEnabled(True)
+        self._find_status.setText("")
+
+    async def _do_serial_disconnect(self) -> None:
+        if self._serial_transport is not None:
+            await self._serial_transport.disconnect()
+            self._serial_transport = None
+        self._via_serial = False
+        self._set_serial_connected(False)
+        self._serial_status.setText("Disconnected")
+        # If the selected item was the serial device and it's not in discovery, deselect.
+        self._populate_device_list()
+
+    async def _do_serial_unpair(self) -> None:
+        if self._serial_transport is None:
+            return
+        self._serial_reset_btn.setEnabled(False)
+        self._serial_status.setText("Sending unpair…")
+        try:
+            temp_client = DeviceClient(serial=self._serial_transport)
+            resp = await temp_client.send_command("unpair", timeout=5.0)
+            if resp.is_ok:
+                self._serial_status.setText(
+                    "Pairing state reset — a new token is shown on the device screen."
+                )
+                self._serial_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+            else:
+                self._serial_status.setText(f"Unpair failed: {resp.error}")
+                self._serial_status.setStyleSheet("color: #c0392b;")
+        except TransportError as exc:
+            self._serial_status.setText(f"Error: {exc}")
+            self._serial_status.setStyleSheet("color: #c0392b;")
+        finally:
+            self._serial_reset_btn.setEnabled(True)
+
+    def _add_or_select_device(self, desc: DeviceDescriptor) -> None:
+        """Select existing item for this MAC or insert a new one and select it."""
+        for i in range(self._device_list.count()):
+            item = self._device_list.item(i)
+            if item is not None:
+                d = item.data(Qt.ItemDataRole.UserRole)
+                if d is not None and d.mac == desc.mac:
+                    self._device_list.setCurrentItem(item)
+                    return
+        self._add_list_item(desc)
+        self._device_list.setCurrentRow(self._device_list.count() - 1)
+
+    async def _ensure_serial_connected(self) -> None:
+        """Make sure the serial transport is CONNECTED before pairing."""
+        if (
+            self._serial_transport is not None
+            and self._serial_transport.state.value != "connected"
+        ):
+            try:
+                await self._serial_transport.connect()
+            except TransportError as exc:
+                log.warning("Serial re-connect failed: %s", exc)
+
     # ------------------------------------------------------------------ async work
 
     async def _connect_client(self) -> None:
@@ -407,8 +589,9 @@ class PairingWizard(QDialog):
 
     async def _listen_discovery(self) -> None:
         """Background task: consume DiscoveryService events and refresh the list."""
+        sub = self._discovery.subscribe()
         try:
-            async for event in self._discovery:
+            async for event in sub:
                 if isinstance(event, (Added, Updated)):
                     if not event.device.is_paired:
                         self._populate_device_list()
@@ -419,10 +602,15 @@ class PairingWizard(QDialog):
                     self._populate_device_list()
         except asyncio.CancelledError:
             pass
+        finally:
+            sub.close()
 
     # ------------------------------------------------------------------ cleanup
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         if self._disc_task is not None and not self._disc_task.done():
             self._disc_task.cancel()
+        if self._serial_transport is not None:
+            asyncio.ensure_future(self._serial_transport.disconnect())
+            self._serial_transport = None
         super().closeEvent(event)  # type: ignore[misc]

@@ -22,6 +22,7 @@ from qnob_companion.app.updater import UpdateInfo
 from qnob_companion.discovery.service import DiscoveryService
 from qnob_companion.pairing.secret_store import KeyringSecretStore, SecretStore
 from qnob_companion.ui.devices_page import DevicesPage
+from qnob_companion.ui.serial_terminal import SerialTerminalPage
 
 
 class _UpdateBanner(QFrame):
@@ -118,6 +119,11 @@ class MainWindow(QMainWindow):
         self.devices_page = DevicesPage(self._discovery, self._secret_store)
         QListWidgetItem("Devices", self._sidebar)
         self._stack.addWidget(self.devices_page)
+
+        # Serial terminal page.
+        self._serial_page = SerialTerminalPage()
+        QListWidgetItem("Serial", self._sidebar)
+        self._stack.addWidget(self._serial_page)
 
         # Settings page — placeholder pending later C-tickets.
         QListWidgetItem("Settings", self._sidebar)

@@ -129,6 +129,13 @@ esp_err_t SetupPortal::startHttpServer() {
     factoryResetPost.user_ctx = this;
     httpd_register_uri_handler(httpServer, &factoryResetPost);
 
+    httpd_uri_t pairTokenGet = {};
+    pairTokenGet.uri = "/api/pair-token";
+    pairTokenGet.method = HTTP_GET;
+    pairTokenGet.handler = pairTokenGetHandler;
+    pairTokenGet.user_ctx = this;
+    httpd_register_uri_handler(httpServer, &pairTokenGet);
+
     const char* captiveUris[] = {
         "/generate_204",
         "/gen_204",
@@ -220,11 +227,16 @@ void SetupPortal::dnsTask(void* arg) {
 }
 
 void SetupPortal::dnsLoop() {
+    ESP_LOGI(TAG, "DNS server task starting");
     dnsSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (dnsSocket < 0) {
+        ESP_LOGE(TAG, "DNS socket create failed, errno=%d", errno);
         dnsRunning.store(false);
         return;
     }
+
+    int reuse = 1;
+    setsockopt(dnsSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     sockaddr_in bindAddr = {};
     bindAddr.sin_family = AF_INET;
@@ -232,11 +244,14 @@ void SetupPortal::dnsLoop() {
     bindAddr.sin_port = htons(DNS_PORT);
 
     if (bind(dnsSocket, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) != 0) {
+        ESP_LOGE(TAG, "DNS bind to port %d failed, errno=%d", DNS_PORT, errno);
         close(dnsSocket);
         dnsSocket = -1;
         dnsRunning.store(false);
         return;
     }
+
+    ESP_LOGI(TAG, "DNS server listening on port %d", DNS_PORT);
 
     struct timeval timeout = {};
     timeout.tv_sec = 1;
@@ -257,6 +272,7 @@ void SetupPortal::dnsLoop() {
             continue;
         }
 
+        ESP_LOGD(TAG, "DNS query received (%d bytes)", len);
         sendDnsResponse(request, static_cast<size_t>(len), clientAddr, clientLen);
     }
 
@@ -407,6 +423,22 @@ esp_err_t SetupPortal::factoryResetPostHandler(httpd_req_t* req) {
     return ESP_OK;
 }
 
+esp_err_t SetupPortal::pairTokenGetHandler(httpd_req_t* req) {
+    auto* self = static_cast<SetupPortal*>(req->user_ctx);
+    if (self == nullptr) return ESP_FAIL;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    if (self->nvsManager == nullptr || self->nvsManager->pairToken.empty()) {
+        const char* err = "{\"ok\":false,\"message\":\"Token not available\"}";
+        return httpd_resp_send(req, err, static_cast<ssize_t>(strlen(err)));
+    }
+
+    std::string resp = "{\"ok\":true,\"token\":\"" + self->nvsManager->pairToken + "\"}";
+    return httpd_resp_send(req, resp.c_str(), static_cast<ssize_t>(resp.size()));
+}
+
 esp_err_t SetupPortal::captiveRedirectHandler(httpd_req_t* req) {
     auto* self = static_cast<SetupPortal*>(req->user_ctx);
     if (self == nullptr) return ESP_FAIL;
@@ -549,6 +581,12 @@ std::string SetupPortal::renderRootPage() const {
 
          << "<section><h2>Saved Networks</h2><div id='wifiSlots'><small style='color:#666;'>Loading...</small></div></section>"
 
+         << "<section><h2>Pair PC App</h2>"
+         << "<small style='color:#888;'>Shows a one-time token to enter in the Qnob Companion app on your PC.</small>"
+         << "<button id='pairAppBtn' type='button' style='margin-top:8px;'>Show Pairing Token</button>"
+         << "<div id='pairTokenDisplay' style='display:none;margin-top:10px;font-size:24px;letter-spacing:4px;text-align:center;border:1px solid #555;padding:12px;background:#111;font-family:monospace;'></div>"
+         << "</section>"
+
          << "<section><h2>Factory Reset</h2>"
          << "<small style='color:#888;'>Wipes all saved data (WiFi, settings, pairing). Use only to recover a misconfigured device.</small>"
          << "<button id='factoryResetBtn' type='button' class='danger' style='margin-top:8px;'>Factory Reset (Wipe All &amp; Restart)</button>"
@@ -598,6 +636,13 @@ std::string SetupPortal::renderRootPage() const {
          << "document.getElementById('factoryResetBtn').addEventListener('click',()=>{"
          << "if(!confirm('Factory reset will erase ALL saved data and restart. Continue?'))return;"
          << "post('/api/factory-reset','');});"
+
+         << "document.getElementById('pairAppBtn').addEventListener('click',async()=>{"
+         << "try{const r=await fetch('/api/pair-token');const d=await r.json();"
+         << "const el=document.getElementById('pairTokenDisplay');"
+         << "if(d.ok&&d.token){el.textContent=d.token;el.style.display='block';}"
+         << "else{R.textContent=JSON.stringify(d,null,2);}}"
+         << "catch(e){R.textContent=String(e);}});"
 
          << "refreshStatus();loadWifiSlots();"
          << "</script></body></html>";

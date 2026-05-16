@@ -29,7 +29,6 @@ uint32_t s_perfFrameCount = 0;
 uint32_t s_perfFlushChunkCount = 0;
 uint32_t s_perfFlushPixelCount = 0;
 uint32_t s_perfFlushTimeUs = 0;
-uint32_t s_perfTaskLogCount = 0;
 
 }  // namespace
 
@@ -58,8 +57,13 @@ bool LvglDisplay::init() {
         }
         const uint32_t pixelCountTry = width * lines;
         const size_t bufferBytesTry = pixelCountTry * sizeof(lv_color_t);
+        // Prefer DMA-capable internal RAM; fall back to SPIRAM if unavailable.
         s_bufferA = static_cast<lv_color_t*>(
             heap_caps_malloc(bufferBytesTry, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (s_bufferA == nullptr) {
+            s_bufferA = static_cast<lv_color_t*>(
+                heap_caps_malloc(bufferBytesTry, MALLOC_CAP_SPIRAM));
+        }
         if (s_bufferA == nullptr) {
             ESP_LOGW(TAG, "LVGL buffer A alloc failed (%u bytes, %u lines). Retrying smaller...",
                      static_cast<unsigned>(bufferBytesTry),
@@ -68,6 +72,10 @@ bool LvglDisplay::init() {
         }
         s_bufferB = static_cast<lv_color_t*>(
             heap_caps_malloc(bufferBytesTry, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (s_bufferB == nullptr) {
+            s_bufferB = static_cast<lv_color_t*>(
+                heap_caps_malloc(bufferBytesTry, MALLOC_CAP_SPIRAM));
+        }
         if (s_bufferB == nullptr) {
             ESP_LOGW(TAG, "Draw buffer B allocation failed (%u bytes, %u lines), single buffering",
                      static_cast<unsigned>(bufferBytesTry),
@@ -139,10 +147,7 @@ void LvglDisplay::taskHandler() {
     const int64_t startUs = esp_timer_get_time();
     lv_timer_handler();
     const int64_t elapsedUs = esp_timer_get_time() - startUs;
-    if (elapsedUs > 5000 && s_perfTaskLogCount < PERF_LOG_FRAME_LIMIT) {
-        ++s_perfTaskLogCount;
-        ESP_LOGI(TAG, "lv_timer_handler took %lld us", static_cast<long long>(elapsedUs));
-    }
+    (void)elapsedUs;
 }
 
 void LvglDisplay::invalidateScreen() {
@@ -172,7 +177,7 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
 #if LV_COLOR_DEPTH == 16
 #if LV_COLOR_16_SWAP
     // LVGL already stores RGB565 bytes in swapped order.
-    s_gfx->pushImageDMA(
+    s_gfx->pushImage(
         area->x1,
         area->y1,
         width,
@@ -180,7 +185,7 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
         reinterpret_cast<const lgfx::swap565_t*>(colorBuffer));
 #else
     // LVGL stores native RGB565, pass it as plain 16-bit pixels.
-    s_gfx->pushImageDMA(
+    s_gfx->pushImage(
         area->x1,
         area->y1,
         width,
@@ -202,7 +207,7 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
             (color32.ch.blue >> 3));
     }
 
-    s_gfx->pushImageDMA(
+    s_gfx->pushImage(
         area->x1,
         area->y1,
         width,

@@ -49,6 +49,7 @@ private:
     static esp_err_t wifiEnabledPostHandler(httpd_req_t* req);   // T-18
     static esp_err_t portalEnabledPostHandler(httpd_req_t* req); // T-19
     static esp_err_t factoryResetPostHandler(httpd_req_t* req);
+    static esp_err_t pairTokenGetHandler(httpd_req_t* req);
     static esp_err_t captiveRedirectHandler(httpd_req_t* req);
 
     std::string renderRootPage() const;

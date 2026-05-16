@@ -229,6 +229,7 @@ class DevicesPage(QWidget):
         self._discovery = discovery
         self._store = secret_store
         self._task: asyncio.Task[None] | None = None
+        self._sub: object | None = None  # _Subscription
         self._rows: dict[str, tuple[QListWidgetItem, _DeviceRow]] = {}
 
         root = QVBoxLayout(self)
@@ -283,14 +284,18 @@ class DevicesPage(QWidget):
         if self._task is not None and not self._task.done():
             self._task.cancel()
             self._task = None
+        if self._sub is not None:
+            self._sub.close()  # type: ignore[union-attr]
+            self._sub = None
 
     # ----- asyncio event consumer -----
 
     async def _discovery_loop(self) -> None:
         from qnob_companion.discovery.descriptor import Added, Removed, Updated
 
+        self._sub = self._discovery.subscribe()
         try:
-            async for event in self._discovery:
+            async for event in self._sub:
                 if isinstance(event, Added):
                     self._add_device(event.device)
                 elif isinstance(event, Updated):
@@ -301,6 +306,10 @@ class DevicesPage(QWidget):
             raise
         except Exception:
             log.exception("DevicesPage discovery loop crashed")
+        finally:
+            if self._sub is not None:
+                self._sub.close()  # type: ignore[union-attr]
+                self._sub = None
 
     # ----- list manipulation (called from asyncio/Qt main thread) -----
 
