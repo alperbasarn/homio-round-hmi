@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -173,7 +174,8 @@ void CommandHandler::handleExternalCommand(const std::string& commandLine, std::
     // For JSON envelopes only: validate auth before dispatching.
     if (!env.is_legacy) {
         const bool skip_auth = (strcmp(env.cmd, "pair") == 0 ||
-                                strcmp(env.cmd, "ping") == 0);
+                                strcmp(env.cmd, "ping") == 0 ||
+                                strcmp(env.cmd, "unpair") == 0);
         if (!skip_auth && nvsManager != nullptr && !nvsManager->pairToken.empty()) {
             if (strcmp(env.auth, nvsManager->pairToken.c_str()) != 0) {
                 char buf[128];
@@ -386,6 +388,7 @@ void CommandHandler::registerCommands() {
     commands["forgetBtDevice"] = {"forgetBtDevice", [this](const std::string& p) { this->cmdForgetBtDevice(p); }, "forgetBtDevice:ADDR - Remove bonded BT device"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
     commands["pair"]   = {"pair",   [this](const std::string& p) { this->cmdPair(p); },   "Return pairing token (no auth required)"};
+    commands["unpair"] = {"unpair", [this](const std::string& p) { this->cmdUnpair(p); }, "Clear pairing state and regenerate token (no auth required)"};
     commands["ping"]   = {"ping",   [this](const std::string& p) { this->cmdPing(p); },   "Heartbeat — returns uptime_ms (no auth required)"};
     commands["status"] = {"status", [this](const std::string& p) { this->cmdStatus(p); }, "Device status: WiFi, MQTT, BLE, heap, uptime"};
     commands["screen"] = {"screen", [this](const std::string& p) {
@@ -1213,11 +1216,40 @@ void CommandHandler::cmdPair(const std::string& params) {
     cJSON_Delete(obj);
 }
 
+void CommandHandler::cmdUnpair(const std::string& params) {
+    (void)params;
+    if (nvsManager == nullptr) {
+        publishResponse("unpair:ERR:no_nvs");
+        return;
+    }
+    nvsManager->isPaired = false;
+    nvsManager->savePairingState();
+    // Regenerate the token so the old one is no longer usable.
+    nvsManager->generateAndSavePairToken();
+    if (pairedStateCallback_) pairedStateCallback_(false);
+    publishResponse("unpair:OK");
+    ESP_LOGI(TAG, "Device unpaired via unpair command.");
+}
+
 void CommandHandler::cmdPing(const std::string& params) {
     (void)params;
     const uint32_t uptime_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
     cJSON* obj = cJSON_CreateObject();
     cJSON_AddNumberToObject(obj, "uptime_ms", uptime_ms);
+
+    // Include WiFi STA MAC so the companion can identify the device over serial.
+    uint8_t mac_bytes[6] = {};
+    esp_read_mac(mac_bytes, ESP_MAC_WIFI_STA);
+    char mac_str[13];
+    snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
+             mac_bytes[0], mac_bytes[1], mac_bytes[2], mac_bytes[3],
+             mac_bytes[4], mac_bytes[5]);
+    cJSON_AddStringToObject(obj, "mac", mac_str);
+
+    if (nvsManager != nullptr && !nvsManager->deviceName.empty()) {
+        cJSON_AddStringToObject(obj, "name", nvsManager->deviceName.c_str());
+    }
+
     char* s = cJSON_PrintUnformatted(obj);
     publishResponse(s ? s : "{}");
     cJSON_free(s);

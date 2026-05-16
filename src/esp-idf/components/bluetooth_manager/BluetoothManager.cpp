@@ -24,7 +24,16 @@ namespace {
 
 constexpr const char* TAG = "BluetoothManager";
 constexpr size_t kMaxBleAdvNameLen = 16;
-constexpr size_t kMaxBleScanRspNameLen = 29;
+// Scan response carries the 128-bit QNOB service UUID (18 bytes) + name;
+// cap name at 11 chars so the total stays within the 31-byte limit.
+constexpr size_t kMaxBleScanRspNameLen = 11;
+
+// QNOB serial-service UUID in little-endian byte order (Bluetooth 128-bit UUID).
+// Matches QNOB_SERVICE_UUID = "0000abf0-0000-1000-8000-00805f9b34fb"
+static const uint8_t kQnobServiceUuid128Le[16] = {
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0xf0, 0xab, 0x00, 0x00,
+};
 constexpr uint16_t kSerialAppId = 0x56;
 constexpr uint16_t kSerialServiceUuid = 0xABF0;
 constexpr uint16_t kSerialRxUuid = 0xABF1;
@@ -299,12 +308,19 @@ void BluetoothManager::configureAdvertising() {
         advRawLen = static_cast<uint8_t>(advRawLen + advName.size());
     }
 
-    scanRspRaw[0] = static_cast<uint8_t>(scanRspName.size() + 1);
-    scanRspRaw[1] = 0x09;  // Complete local name
+    scanRspRawLen = 0;
+    // AD structure: Complete List of 128-bit Service UUIDs (type 0x07)
+    scanRspRaw[scanRspRawLen++] = 17;    // length = 1 type + 16 UUID bytes
+    scanRspRaw[scanRspRawLen++] = 0x07;  // Complete List of 128-bit Service UUIDs
+    std::memcpy(&scanRspRaw[scanRspRawLen], kQnobServiceUuid128Le, 16);
+    scanRspRawLen = static_cast<uint8_t>(scanRspRawLen + 16);
+    // AD structure: Complete Local Name (type 0x09) — up to 11 chars to fit in 31 bytes
     if (!scanRspName.empty()) {
-        std::memcpy(&scanRspRaw[2], scanRspName.data(), scanRspName.size());
+        scanRspRaw[scanRspRawLen++] = static_cast<uint8_t>(scanRspName.size() + 1);
+        scanRspRaw[scanRspRawLen++] = 0x09;  // Complete local name
+        std::memcpy(&scanRspRaw[scanRspRawLen], scanRspName.data(), scanRspName.size());
+        scanRspRawLen = static_cast<uint8_t>(scanRspRawLen + scanRspName.size());
     }
-    scanRspRawLen = static_cast<uint8_t>(scanRspName.size() + 2);
 
     esp_ble_gap_set_device_name(localName.c_str());
     // Override the Generic HID appearance set by hid_device_le_prf.c —

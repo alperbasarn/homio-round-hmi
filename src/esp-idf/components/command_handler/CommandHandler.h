@@ -116,6 +116,7 @@ private:
     void cmdPortalWifiCredential(const std::string& params);
     void cmdForgetBtDevice(const std::string& params);
     void cmdPair(const std::string& params);
+    void cmdUnpair(const std::string& params);
     void cmdPing(const std::string& params);
     void cmdStatus(const std::string& params);
 };
