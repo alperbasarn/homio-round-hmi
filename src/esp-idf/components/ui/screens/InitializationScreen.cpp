@@ -132,7 +132,6 @@ void InitializationScreen::arcAnimExec(void* var, int32_t value) {
 
 void InitializationScreen::setProgress(int progress) {
     const int clamped = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
-    ESP_LOGI(TAG, "Progress: %d", clamped);
 
     if (clamped == targetArcValue) return;
     targetArcValue = clamped;
