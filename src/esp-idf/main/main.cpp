@@ -5,6 +5,8 @@
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
@@ -219,11 +221,37 @@ static void startDisplayTaskIfNeeded() {
         return;
     }
 
+    // Allocate the display task stack from PSRAM — after gfx->init() the
+    // QSPI DMA buffers leave very little internal/DMA-capable RAM available.
+    BaseType_t result;
 #if DUAL_CORE_AVAILABLE
-    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+    result = xTaskCreatePinnedToCoreWithCaps(
+        displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr,
+        DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE,
+        MALLOC_CAP_SPIRAM);
 #else
-    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+    result = xTaskCreateWithCaps(
+        displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr,
+        DISPLAY_TASK_PRIORITY, &displayTaskHandle,
+        MALLOC_CAP_SPIRAM);
 #endif
+    if (result != pdPASS) {
+        // PSRAM fallback failed — try internal RAM anyway
+        ESP_LOGW(TAG, "SPIRAM display task failed (err=%d), retrying internal RAM", result);
+#if DUAL_CORE_AVAILABLE
+        result = xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+#else
+        result = xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+#endif
+    }
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create DisplayTask (err=%d, stack=%u, DMA=%u)",
+                 static_cast<int>(result),
+                 static_cast<unsigned>(DISPLAY_STACK_SIZE),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
+    } else {
+        ESP_LOGI(TAG, "DisplayTask created OK (SPIRAM stack)");
+    }
 }
 
 // Main task for network-related activities
@@ -511,12 +539,18 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ConnectivityManager::instance().begin());
 
     // Initialize networking
-    // OfflineRecovery (level 3) skips all networking — AP flags were already
-    // cleared in the safe-mode override block above, so WiFiManager is still
-    // created (for stability of downstream pointers) but will not connect/start.
+    // OfflineRecovery (level 3) skips all networking — AP and portal flags are
+    // already cleared by the safe-mode override block above.  WiFiManager is
+    // created for pointer stability but NOT initialized; calling initialize()
+    // in this mode triggers the lockout-prevention path (AP forced on despite
+    // all flags being false) which crashes the event loop on an AP restart.
     ESP_LOGI(TAG, "Initializing networking...");
     wifiManager = new WiFiManager(nvsManager);
-    wifiManager->initialize();
+    if (BootGuard::getMode() != BootGuard::SafeMode::OfflineRecovery) {
+        wifiManager->initialize();
+    } else {
+        ESP_LOGW(TAG, "Networking skipped in OfflineRecovery mode");
+    }
     if (!BootGuard::isInSafeMode()) {
     mqttManager = new MQTTManager(wifiManager, nvsManager);
     if (mqttManager->initialize() != ESP_OK) {
@@ -684,14 +718,24 @@ extern "C" void app_main(void) {
     }
 
     mdnsAdvertiser = new MdnsAdvertiser();
+
+    // mDNS start is deferred to after gfx->init() below — starting mDNS here
+    // would consume the last ~200 bytes of DMA RAM and cause spi_bus_initialize
+    // to fail (blank screen). Callbacks are safe to register now because
+    // connectToWiFi() runs after display HW init.
+
     wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
         if (mdnsAdvertiser == nullptr) return;
         uint8_t mac[6] = {};
         esp_wifi_get_mac(WIFI_IF_STA, mac);
-        mdnsAdvertiser->start(nvsManager, mac);
+        mdnsAdvertiser->start(nvsManager, mac);  // restarts with same MAC on STA connect
     });
     wifiManager->setDisconnectedCallback([]() {
-        if (mdnsAdvertiser != nullptr) mdnsAdvertiser->stop();
+        // Restart mDNS on AP only when STA disconnects (keeps it alive on AP).
+        if (mdnsAdvertiser == nullptr) return;
+        uint8_t mac[6] = {};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        mdnsAdvertiser->start(nvsManager, mac);
     });
 
     // Set MQTT callbacks for sound controller
@@ -739,6 +783,9 @@ extern "C" void app_main(void) {
     if (!BootGuard::isInSafeMode()) {
         // Initialize display hardware here — immediately before the display task
         // starts so the gap between gfx->init() and the first draw is <100 ms.
+        ESP_LOGI(TAG, "Display HW init: free heap=%u DMA=%u",
+                 static_cast<unsigned>(esp_get_free_heap_size()),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
         gfx->init();
         gfx->setRotation(0);
         LvglDisplay::setHardware(static_cast<void*>(gfx));
@@ -750,6 +797,13 @@ extern "C" void app_main(void) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         gfx->setBrightness(255);
+        // Start mDNS here — after SPI bus has claimed its DMA descriptors,
+        // so mDNS internal allocations don't starve the DMA pool.
+        if (mdnsAdvertiser != nullptr) {
+            uint8_t mac[6] = {};
+            esp_wifi_get_mac(WIFI_IF_STA, mac);
+            mdnsAdvertiser->start(nvsManager, mac);
+        }
         displayController->init();
         startDisplayTaskIfNeeded();
     } else if (useDisplay) {
