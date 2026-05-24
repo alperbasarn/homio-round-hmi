@@ -64,14 +64,7 @@ public:
     esp_err_t connectToNetwork(const std::string& ssid, const std::string& password, bool remember = true);
     esp_err_t syncAccessPointConfig();
     esp_err_t saveCurrentConnectionAsStaticIP();
-    void setSetupPortalScreenControlCallback(std::function<bool(const std::string&)> callback);
-    void setSetupPortalScreenStatusCallback(std::function<std::string(void)> callback);
-    void setSetupPortalOtaConfigUpdatedCallback(std::function<void(void)> callback);
-    void setSetupPortalOtaStatusCallback(std::function<std::string(void)> callback);
-    void setSetupPortalOtaActionCallback(std::function<esp_err_t(const std::string&)> callback);
-    void setSetupPortalDeviceInfoStatusCallback(std::function<std::string(void)> callback);
     void setSetupPortalCommandCallback(std::function<void(const std::string&)> callback);
-    void setSetupPortalBtScanResultsCallback(std::function<std::string(void)> callback);
 
     // Callbacks
     void setConnectedCallback(WiFiConnectedCallback callback) { on_connected = callback; }
@@ -89,6 +82,7 @@ private:
 
     bool initialized;
     bool internet_available;
+    bool ap_configured_pre_start_;  // true after initWifiStack configures AP; skips configureAP on first startAPMode()
     bool prev_sta_connected_;    // edge detection for callbacks in update()
     bool prev_sta_connecting_;    // edge detection: StaConnecting → fail in update()
     bool prev_portal_guest_;      // edge detection: PortalGuestActive → off in update()
@@ -109,14 +103,7 @@ private:
     WiFiConnectedCallback on_connected;
     WiFiDisconnectedCallback on_disconnected;
     SetupPortal* setup_portal;
-    std::function<bool(const std::string&)> portal_screen_control_callback;
-    std::function<std::string(void)> portal_screen_status_callback;
-    std::function<void(void)> portal_ota_config_updated_callback;
-    std::function<std::string(void)> portal_ota_status_callback;
-    std::function<esp_err_t(const std::string&)> portal_ota_action_callback;
-    std::function<std::string(void)> portal_device_info_status_callback;
     std::function<void(const std::string&)> portal_command_callback;
-    std::function<std::string(void)> portal_bt_scan_results_callback;
 
     // Event handler
     static void eventHandler(void* arg, esp_event_base_t event_base,

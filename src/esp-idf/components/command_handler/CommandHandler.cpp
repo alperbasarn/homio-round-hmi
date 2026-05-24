@@ -1,4 +1,5 @@
 #include "CommandHandler.h"
+#include "CommandEnvelope.h"
 #include "DisplayController.h"
 #include "NVSManager.h"
 #include "KnobController.h"
@@ -7,14 +8,18 @@
 #include "MediaController.h"
 #include "OTAManager.h"
 #include "BluetoothManager.h"
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "esp_mac.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <algorithm>
 #include <cctype>
+#include <cinttypes>
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
@@ -33,7 +38,9 @@ CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManag
       mqttManager(mqtt),
       mediaController(nullptr),
       otaManager(nullptr),
-      bluetoothManager(nullptr) {
+      bluetoothManager(nullptr),
+      dispatch_mutex_(xSemaphoreCreateMutex()),
+      response_capture_(nullptr) {
 }
 
 void CommandHandler::begin() {
@@ -74,6 +81,10 @@ void CommandHandler::registerBluetoothManager(BluetoothManager* bt) {
 
 void CommandHandler::setOtaConfigUpdatedCallback(std::function<void(void)> callback) {
     otaConfigUpdatedCallback = std::move(callback);
+}
+
+void CommandHandler::setPairedStateCallback(std::function<void(bool)> callback) {
+    pairedStateCallback_ = std::move(callback);
 }
 
 void CommandHandler::update() {
@@ -140,7 +151,123 @@ void CommandHandler::handleExternalCommand(const std::string& commandLine) {
         return;
     }
     ESP_LOGI(TAG, "External command: %s", command.c_str());
+    if (dispatch_mutex_) xSemaphoreTake(dispatch_mutex_, portMAX_DELAY);
     processCommand(command);
+    if (dispatch_mutex_) xSemaphoreGive(dispatch_mutex_);
+}
+
+void CommandHandler::handleExternalCommand(const std::string& commandLine, std::string& responseOut) {
+    const std::string trimmed = trimCommand(commandLine);
+    if (trimmed.empty()) {
+        ESP_LOGW(TAG, "Ignoring empty external command");
+        return;
+    }
+    ESP_LOGI(TAG, "External command (captured): %.80s", trimmed.c_str());
+
+    // Decode the envelope (JSON or legacy colon-delimited).
+    QnobEnvelope env;
+    if (!qnob_envelope_decode(trimmed.c_str(), &env)) {
+        ESP_LOGW(TAG, "Cannot decode command envelope");
+        return;
+    }
+
+    // For JSON envelopes only: validate auth before dispatching.
+    if (!env.is_legacy) {
+        const bool skip_auth = (strcmp(env.cmd, "pair") == 0 ||
+                                strcmp(env.cmd, "ping") == 0 ||
+                                strcmp(env.cmd, "unpair") == 0);
+        if (!skip_auth && nvsManager != nullptr && !nvsManager->pairToken.empty()) {
+            if (strcmp(env.auth, nvsManager->pairToken.c_str()) != 0) {
+                char buf[128];
+                qnob_envelope_encode_err(env.id, "unauthorized",
+                                         "invalid or missing auth token", buf, sizeof(buf));
+                responseOut = buf;
+                ESP_LOGW(TAG, "Auth rejected for cmd=%s", env.cmd);
+                return;
+            }
+        }
+    }
+
+    // Reconstruct legacy-style "cmd[:params]" for processCommand.
+    std::string cmd_line = env.cmd;
+    const char* params = env.is_legacy ? env.legacy_param : env.params_json;
+    if (params[0] != '\0') {
+        cmd_line += ':';
+        cmd_line += params;
+    }
+
+    // Dispatch under mutex, capturing raw response.
+    std::string raw;
+    if (dispatch_mutex_) xSemaphoreTake(dispatch_mutex_, portMAX_DELAY);
+    response_capture_ = &raw;
+    processCommand(cmd_line);
+    response_capture_ = nullptr;
+    if (dispatch_mutex_) xSemaphoreGive(dispatch_mutex_);
+
+    // For JSON envelopes: wrap raw response in a proper JSON envelope.
+    responseOut = env.is_legacy ? raw : wrapResponse_(env.id, raw);
+}
+
+// static
+std::string CommandHandler::wrapResponse_(uint32_t id, const std::string& raw) {
+    char buf[1024];
+    // JSON object published by the command → use as data payload.
+    if (!raw.empty() && raw[0] == '{') {
+        if (qnob_envelope_encode_ok(id, raw.c_str(), buf, sizeof(buf))) return buf;
+    }
+    // Contains ":ERR:" (legacy error marker) → error envelope.
+    const size_t err_pos = raw.find(":ERR:");
+    if (err_pos != std::string::npos) {
+        const std::string detail = raw.substr(err_pos + 5);
+        if (qnob_envelope_encode_err(id, "command_failed", detail.c_str(), buf, sizeof(buf))) return buf;
+    }
+    // Anything else (empty, ":OK", plain text) → generic ok.
+    if (qnob_envelope_encode_ok(id, nullptr, buf, sizeof(buf))) return buf;
+    return "";
+}
+
+// static
+std::string CommandHandler::cmdParam(const std::string& params,
+                                     const char* json_key,
+                                     unsigned legacy_pos) {
+    // Try JSON object first.
+    if (!params.empty() && params[0] == '{') {
+        cJSON* root = cJSON_Parse(params.c_str());
+        if (root) {
+            cJSON* item = cJSON_GetObjectItemCaseSensitive(root, json_key);
+            std::string result;
+            if (cJSON_IsString(item) && item->valuestring) {
+                result = item->valuestring;
+            } else if (cJSON_IsNumber(item)) {
+                char num[32];
+                const double d = item->valuedouble;
+                if (d == static_cast<double>(static_cast<int64_t>(d))) {
+                    snprintf(num, sizeof(num), "%" PRId64, static_cast<int64_t>(d));
+                } else {
+                    snprintf(num, sizeof(num), "%g", d);
+                }
+                result = num;
+            } else if (cJSON_IsTrue(item)) {
+                result = "on";
+            } else if (cJSON_IsFalse(item)) {
+                result = "off";
+            }
+            cJSON_Delete(root);
+            return result;
+        }
+    }
+    // Legacy: nth colon-delimited field.
+    unsigned idx = 0;
+    size_t start = 0;
+    while (true) {
+        const size_t colon = params.find(':', start);
+        if (colon == std::string::npos) {
+            return (idx == legacy_pos) ? params.substr(start) : "";
+        }
+        if (idx == legacy_pos) return params.substr(start, colon - start);
+        start = colon + 1;
+        ++idx;
+    }
 }
 
 void CommandHandler::processCommand(const std::string& command_line) {
@@ -203,13 +330,15 @@ std::string CommandHandler::getFormValue(const std::string& body, const std::str
 }
 
 void CommandHandler::publishResponse(const std::string& response) {
-    if (!mqttManager || !mqttManager->isConnected()) {
-        return;
-    }
     if (response.empty()) {
         return;
     }
-    mqttManager->publish(MQTT_TOPIC_COMMAND_RESPONSE, response);
+    if (response_capture_) {
+        *response_capture_ = response;
+    }
+    if (mqttManager && mqttManager->isConnected()) {
+        mqttManager->publish(MQTT_TOPIC_COMMAND_RESPONSE, response);
+    }
 }
 
 void CommandHandler::registerCommands() {
@@ -258,6 +387,10 @@ void CommandHandler::registerCommands() {
     commands["portalWifiCredential"] = {"portalWifiCredential", [this](const std::string& p) { this->cmdPortalWifiCredential(p); }, "Web portal save wifi credential slot"};
     commands["forgetBtDevice"] = {"forgetBtDevice", [this](const std::string& p) { this->cmdForgetBtDevice(p); }, "forgetBtDevice:ADDR - Remove bonded BT device"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
+    commands["pair"]   = {"pair",   [this](const std::string& p) { this->cmdPair(p); },   "Return pairing token (no auth required)"};
+    commands["unpair"] = {"unpair", [this](const std::string& p) { this->cmdUnpair(p); }, "Clear pairing state and regenerate token (no auth required)"};
+    commands["ping"]   = {"ping",   [this](const std::string& p) { this->cmdPing(p); },   "Heartbeat — returns uptime_ms (no auth required)"};
+    commands["status"] = {"status", [this](const std::string& p) { this->cmdStatus(p); }, "Device status: WiFi, MQTT, BLE, heap, uptime"};
     commands["screen"] = {"screen", [this](const std::string& p) {
         if (displayController) {
             displayController->showNamedScreen(p);
@@ -326,37 +459,19 @@ void CommandHandler::cmdFactoryReset(const std::string& params) {
 }
 
 void CommandHandler::cmdConnectWifi(const std::string& params) {
-    std::vector<std::string> parts;
-    size_t start = 0;
-    size_t end = params.find(':');
-    while (end != std::string::npos) {
-        parts.push_back(params.substr(start, end - start));
-        start = end + 1;
-        end = params.find(':', start);
-    }
-    if (start < params.size()) {
-        parts.push_back(params.substr(start));
-    }
-
-    if (parts.size() < 2) {
-        ESP_LOGE(TAG, "[WiFi] Invalid format! Use: connectWifi:SSID:Password[:Slot]");
-        return;
-    }
-
-    std::string ssid = parts[0];
-    std::string password = parts[1];
+    const std::string ssid     = cmdParam(params, "ssid",     0);
+    const std::string password = cmdParam(params, "password", 1);
+    const std::string slot_s   = cmdParam(params, "slot",     2);
     int slot = 0;
-    if (parts.size() >= 3) {
-        try {
-            slot = std::stoi(parts[2]);
-        } catch (...) {
-            ESP_LOGE(TAG, "[WiFi] Invalid slot: %s", parts[2].c_str());
-            return;
-        }
-        if (slot < 0 || slot >= NUM_WIFI_CREDENTIALS) {
-            ESP_LOGE(TAG, "[WiFi] Slot out of range: %d", slot);
-            return;
-        }
+    if (!slot_s.empty()) {
+        try { slot = std::stoi(slot_s); } catch (...) {}
+        if (slot < 0 || slot >= NUM_WIFI_CREDENTIALS) slot = 0;
+    }
+
+    if (ssid.empty()) {
+        ESP_LOGE(TAG, "[WiFi] ssid required");
+        publishResponse("connectWifi:ERR:missing_ssid");
+        return;
     }
 
     // Save credentials to NVS via NVSManager
@@ -369,6 +484,7 @@ void CommandHandler::cmdConnectWifi(const std::string& params) {
 
     // Connect to WiFi
     wifiManager->connectToWiFi();
+    publishResponse("connectWifi:OK");
 }
 
 void CommandHandler::cmdShowNetworks(const std::string& params) {
@@ -399,15 +515,35 @@ void CommandHandler::cmdGetDeviceName(const std::string& params) {
 }
 
 void CommandHandler::cmdSetDeviceName(const std::string& params) {
-    if (params.empty()) {
+    const std::string name = cmdParam(params, "name", 0);
+    if (name.empty()) {
         ESP_LOGE(TAG, "Device name cannot be empty!");
+        publishResponse("setDeviceName:ERR:empty_name");
         return;
     }
-    nvsManager->saveDeviceName(params);
-    ESP_LOGI(TAG, "Device name set to: %s", params.c_str());
+    nvsManager->saveDeviceName(name);
+    ESP_LOGI(TAG, "Device name set to: %s", name.c_str());
+    publishResponse("setDeviceName:OK");
 }
 
 void CommandHandler::cmdConfigureMQTTServer(const std::string& params) {
+    // Accept JSON params: {"host":"...","port":N,"user":"...","pass":"..."}
+    if (!params.empty() && params[0] == '{') {
+        const std::string host = cmdParam(params, "host", 0);
+        const std::string port_s = cmdParam(params, "port", 1);
+        const std::string user = cmdParam(params, "user", 2);
+        const std::string pass = cmdParam(params, "pass", 3);
+        if (host.empty()) {
+            publishResponse("configureMQTTServer:ERR:empty_host");
+            return;
+        }
+        int port = 1883;
+        if (!port_s.empty()) { try { port = std::stoi(port_s); } catch (...) {} }
+        nvsManager->saveSoundMQTTServer(host, port, user, pass);
+        publishResponse("configureMQTTServer:OK:restart_required");
+        return;
+    }
+
     // Host:Port[:Username:Password]
     auto parsePort = [](const std::string& value, int& portOut) -> bool {
         if (value.empty()) {
@@ -658,7 +794,7 @@ void CommandHandler::cmdSetBrightness(const std::string& params) {
         return;
     }
 
-    const std::string value = trimCommand(params);
+    const std::string value = cmdParam(params, "brightness", 0);
     if (value.empty()) {
         ESP_LOGE(TAG, "Usage: setBrightness:0-100");
         publishResponse("setBrightness:ERR:missing_percentage");
@@ -685,7 +821,7 @@ void CommandHandler::cmdSetBluetooth(const std::string& params) {
         return;
     }
 
-    std::string value = trimCommand(params);
+    std::string value = cmdParam(params, "enabled", 0);
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -723,8 +859,9 @@ void CommandHandler::cmdStartBtScan(const std::string& params) {
         return;
     }
     int duration = 5;
-    if (!params.empty()) {
-        const int parsed = std::atoi(params.c_str());
+    const std::string dur_s = cmdParam(params, "duration", 0);
+    if (!dur_s.empty()) {
+        const int parsed = std::atoi(dur_s.c_str());
         if (parsed > 0 && parsed <= 30) duration = parsed;
     }
     const esp_err_t err = bluetoothManager->startScan(duration);
@@ -786,7 +923,7 @@ void CommandHandler::cmdDisconnectBtDevice(const std::string& params) {
 }
 
 void CommandHandler::cmdSetBluetoothName(const std::string& params) {
-    const std::string name = trimCommand(params);
+    const std::string name = cmdParam(params, "name", 0);
     if (name.empty()) {
         ESP_LOGE(TAG, "Usage: setBluetoothName:name");
         publishResponse("setBluetoothName:ERR:empty_name");
@@ -834,15 +971,19 @@ void CommandHandler::cmdOTAUpdate(const std::string& params) {
 void CommandHandler::cmdOTAInfo(const std::string& params) {
     (void)params;
     if (otaManager == nullptr) {
-        ESP_LOGE(TAG, "OTAManager not registered.");
         publishResponse("otaInfo:ERR:ota_manager_not_registered");
         return;
     }
     const std::string version = otaManager->getRunningVersion();
     const std::string partition = otaManager->getRunningPartitionLabel();
-    printf("OTA version: %s\n", version.c_str());
-    printf("OTA partition: %s\n", partition.c_str());
-    publishResponse("otaInfo:version=" + version + ",partition=" + partition);
+    // JSON response so the companion can parse it.
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "version", version.c_str());
+    cJSON_AddStringToObject(obj, "partition", partition.c_str());
+    char* s = cJSON_PrintUnformatted(obj);
+    publishResponse(s ? s : "{}");
+    cJSON_free(s);
+    cJSON_Delete(obj);
 }
 
 void CommandHandler::cmdOTAStatus(const std::string& params) {
@@ -1050,4 +1191,107 @@ void CommandHandler::cmdPortalOta(const std::string& params) {
     if (otaConfigUpdatedCallback) {
         otaConfigUpdatedCallback();
     }
+}
+
+// ---------------------------------------------------------------------------
+// A6: pair / ping / status
+// ---------------------------------------------------------------------------
+
+void CommandHandler::cmdPair(const std::string& params) {
+    (void)params;
+    if (nvsManager == nullptr || nvsManager->pairToken.empty()) {
+        publishResponse("pair:ERR:token_not_ready");
+        return;
+    }
+    if (!nvsManager->isPaired) {
+        nvsManager->isPaired = true;
+        nvsManager->savePairingState();
+        if (pairedStateCallback_) pairedStateCallback_(true);
+    }
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "token", nvsManager->pairToken.c_str());
+    char* s = cJSON_PrintUnformatted(obj);
+    publishResponse(s ? s : "{}");
+    cJSON_free(s);
+    cJSON_Delete(obj);
+}
+
+void CommandHandler::cmdUnpair(const std::string& params) {
+    (void)params;
+    if (nvsManager == nullptr) {
+        publishResponse("unpair:ERR:no_nvs");
+        return;
+    }
+    nvsManager->isPaired = false;
+    nvsManager->savePairingState();
+    // Regenerate the token so the old one is no longer usable.
+    nvsManager->generateAndSavePairToken();
+    if (pairedStateCallback_) pairedStateCallback_(false);
+    publishResponse("unpair:OK");
+    ESP_LOGI(TAG, "Device unpaired via unpair command.");
+}
+
+void CommandHandler::cmdPing(const std::string& params) {
+    (void)params;
+    const uint32_t uptime_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "uptime_ms", uptime_ms);
+
+    // Include WiFi STA MAC so the companion can identify the device over serial.
+    uint8_t mac_bytes[6] = {};
+    esp_read_mac(mac_bytes, ESP_MAC_WIFI_STA);
+    char mac_str[13];
+    snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
+             mac_bytes[0], mac_bytes[1], mac_bytes[2], mac_bytes[3],
+             mac_bytes[4], mac_bytes[5]);
+    cJSON_AddStringToObject(obj, "mac", mac_str);
+
+    if (nvsManager != nullptr && !nvsManager->deviceName.empty()) {
+        cJSON_AddStringToObject(obj, "name", nvsManager->deviceName.c_str());
+    }
+
+    char* s = cJSON_PrintUnformatted(obj);
+    publishResponse(s ? s : "{}");
+    cJSON_free(s);
+    cJSON_Delete(obj);
+}
+
+void CommandHandler::cmdStatus(const std::string& params) {
+    (void)params;
+    const uint32_t uptime_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    const uint32_t free_heap = esp_get_free_heap_size();
+
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "uptime_ms", uptime_ms);
+    cJSON_AddNumberToObject(obj, "free_heap", free_heap);
+
+    // Wi-Fi
+    if (wifiManager != nullptr && wifiManager->isConnected()) {
+        cJSON_AddStringToObject(obj, "wifi_ssid", wifiManager->getSSID().c_str());
+        cJSON_AddNumberToObject(obj, "wifi_rssi", wifiManager->getSignalStrength());
+        cJSON_AddStringToObject(obj, "ip", wifiManager->getIPAddress().c_str());
+    } else {
+        cJSON_AddStringToObject(obj, "wifi_ssid", "");
+        cJSON_AddNullToObject(obj, "wifi_rssi");
+        cJSON_AddStringToObject(obj, "ip", "");
+    }
+
+    // MQTT
+    const bool mqtt_ok = (mqttManager != nullptr && mqttManager->isConnected());
+    cJSON_AddBoolToObject(obj, "mqtt_connected", mqtt_ok);
+
+    // BLE serial centrals
+    cJSON* centrals = cJSON_CreateArray();
+    if (bluetoothManager != nullptr && bluetoothManager->isSerialConnected()) {
+        const std::string addr = bluetoothManager->getConnectedSerialAddress();
+        if (!addr.empty()) {
+            cJSON_AddItemToArray(centrals, cJSON_CreateString(addr.c_str()));
+        }
+    }
+    cJSON_AddItemToObject(obj, "ble_centrals", centrals);
+
+    char* s = cJSON_PrintUnformatted(obj);
+    publishResponse(s ? s : "{}");
+    cJSON_free(s);
+    cJSON_Delete(obj);
 }

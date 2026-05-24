@@ -24,6 +24,7 @@ WiFiManager::WiFiManager(NVSManager* nvsManager)
     : nvs_manager(nvsManager),
       initialized(false),
       internet_available(false),
+      ap_configured_pre_start_(false),
       prev_sta_connected_(false),
       prev_sta_connecting_(false),
       prev_portal_guest_(false),
@@ -226,7 +227,39 @@ esp_err_t WiFiManager::initialize()
 
     // WiFi stack init (esp_wifi_*) delegated to ConnMgr so that no esp_wifi_*
     // symbols are referenced outside the connectivity_manager component.
-    err = ConnectivityManager::instance().initWifiStack();
+    // Build the initial AP config BEFORE starting WiFi to avoid the spinlock
+    // crash caused by calling esp_wifi_set_config on a running AP interface.
+    {
+        const bool apEnabled = !nvs_manager || nvs_manager->wifiApEnabled ||
+                               (nvs_manager && nvs_manager->recoveryModeActive) ||
+                               (!nvs_manager->wifiApEnabled && !nvs_manager->wifiStaEnabled &&
+                                !nvs_manager->recoveryModeActive); // lockout safety
+        if (apEnabled) {
+            std::string ap_name = generateAPName();
+            if (ap_name.empty()) ap_name = "Homio-0000";
+            if (ap_name.size() > 32) ap_name.resize(32);
+            std::string ap_password = nvs_manager ? nvs_manager->accessPointPassword : "";
+            if (!ap_password.empty() && (ap_password.size() < 8 || ap_password.size() > 63)) {
+                ap_password.clear();
+            }
+            const bool use_password = ap_password.size() >= 8;
+            const int ap_channel = (wifi_channel >= 1 && wifi_channel <= 13) ? wifi_channel : WIFI_AP_CHANNEL;
+            wifi_channel = ap_channel;
+            wifi_config_t pre_ap_cfg = {};
+            strncpy((char*)pre_ap_cfg.ap.ssid, ap_name.c_str(), sizeof(pre_ap_cfg.ap.ssid) - 1);
+            if (use_password) {
+                strncpy((char*)pre_ap_cfg.ap.password, ap_password.c_str(), sizeof(pre_ap_cfg.ap.password) - 1);
+            }
+            pre_ap_cfg.ap.ssid_len      = ap_name.length();
+            pre_ap_cfg.ap.channel       = ap_channel;
+            pre_ap_cfg.ap.max_connection = WIFI_AP_MAX_CONNECTIONS;
+            pre_ap_cfg.ap.authmode      = use_password ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+            err = ConnectivityManager::instance().initWifiStack(&pre_ap_cfg);
+            ap_configured_pre_start_ = (err == ESP_OK);
+        } else {
+            err = ConnectivityManager::instance().initWifiStack();
+        }
+    }
     if (err != ESP_OK) {
         return err;
     }
@@ -267,29 +300,8 @@ esp_err_t WiFiManager::initialize()
     if (setup_portal == nullptr && portalAllowed) {
         setup_portal = new SetupPortal(this, nvs_manager);
         if (setup_portal != nullptr) {
-            if (portal_screen_control_callback) {
-                setup_portal->setScreenControlCallback(portal_screen_control_callback);
-            }
-            if (portal_screen_status_callback) {
-                setup_portal->setScreenStatusCallback(portal_screen_status_callback);
-            }
-            if (portal_ota_config_updated_callback) {
-                setup_portal->setOtaConfigUpdatedCallback(portal_ota_config_updated_callback);
-            }
-            if (portal_ota_status_callback) {
-                setup_portal->setOtaStatusCallback(portal_ota_status_callback);
-            }
-            if (portal_ota_action_callback) {
-                setup_portal->setOtaActionCallback(portal_ota_action_callback);
-            }
-            if (portal_device_info_status_callback) {
-                setup_portal->setDeviceInfoStatusCallback(portal_device_info_status_callback);
-            }
             if (portal_command_callback) {
                 setup_portal->setCommandCallback(portal_command_callback);
-            }
-            if (portal_bt_scan_results_callback) {
-                setup_portal->setBtScanResultsCallback(portal_bt_scan_results_callback);
             }
             err = setup_portal->start();
             if (err != ESP_OK) {
@@ -351,10 +363,17 @@ esp_err_t WiFiManager::startAPMode()
     ap_config.ap.max_connection = WIFI_AP_MAX_CONNECTIONS;
     ap_config.ap.authmode = use_password ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
-    esp_err_t err = ConnectivityManager::instance().configureAP(ap_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure AP %s: %s", ap_name.c_str(), esp_err_to_name(err));
-        return err;
+    // Skip configureAP if the AP was already configured before esp_wifi_start()
+    // to avoid the spinlock crash from AP_STOP/AP_START events mid-init.
+    if (ap_configured_pre_start_) {
+        ap_configured_pre_start_ = false;
+        ESP_LOGI(TAG, "AP pre-configured before WiFi start — skipping configureAP");
+    } else {
+        esp_err_t err = ConnectivityManager::instance().configureAP(ap_config);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to configure AP %s: %s", ap_name.c_str(), esp_err_to_name(err));
+            return err;
+        }
     }
 
     ESP_LOGI(TAG, "AP started: %s (channel %d)", ap_name.c_str(), ap_channel);
@@ -636,67 +655,11 @@ esp_err_t WiFiManager::saveCurrentConnectionAsStaticIP()
                                            current_ssid);
 }
 
-void WiFiManager::setSetupPortalScreenControlCallback(std::function<bool(const std::string&)> callback)
-{
-    portal_screen_control_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setScreenControlCallback(portal_screen_control_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalScreenStatusCallback(std::function<std::string(void)> callback)
-{
-    portal_screen_status_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setScreenStatusCallback(portal_screen_status_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalOtaConfigUpdatedCallback(std::function<void(void)> callback)
-{
-    portal_ota_config_updated_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setOtaConfigUpdatedCallback(portal_ota_config_updated_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalOtaStatusCallback(std::function<std::string(void)> callback)
-{
-    portal_ota_status_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setOtaStatusCallback(portal_ota_status_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalOtaActionCallback(std::function<esp_err_t(const std::string&)> callback)
-{
-    portal_ota_action_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setOtaActionCallback(portal_ota_action_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalDeviceInfoStatusCallback(std::function<std::string(void)> callback)
-{
-    portal_device_info_status_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setDeviceInfoStatusCallback(portal_device_info_status_callback);
-    }
-}
-
 void WiFiManager::setSetupPortalCommandCallback(std::function<void(const std::string&)> callback)
 {
     portal_command_callback = std::move(callback);
     if (setup_portal != nullptr) {
         setup_portal->setCommandCallback(portal_command_callback);
-    }
-}
-
-void WiFiManager::setSetupPortalBtScanResultsCallback(std::function<std::string(void)> callback)
-{
-    portal_bt_scan_results_callback = std::move(callback);
-    if (setup_portal != nullptr) {
-        setup_portal->setBtScanResultsCallback(portal_bt_scan_results_callback);
     }
 }
 

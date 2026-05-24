@@ -5,6 +5,8 @@
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
@@ -33,6 +35,8 @@
 
 // Controllers
 #include "CommandHandler.h"
+#include "MdnsAdvertiser.h"
+#include "esp_wifi.h"
 #include "SoundController.h"
 #include "LightController.h"
 #include "MediaController.h"
@@ -112,6 +116,7 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+static MdnsAdvertiser* mdnsAdvertiser = nullptr;
 
 static std::string resolveManifestUrl(const std::string& variantId,
                                       const std::string& configuredManifestUrl) {
@@ -216,11 +221,37 @@ static void startDisplayTaskIfNeeded() {
         return;
     }
 
+    // Allocate the display task stack from PSRAM — after gfx->init() the
+    // QSPI DMA buffers leave very little internal/DMA-capable RAM available.
+    BaseType_t result;
 #if DUAL_CORE_AVAILABLE
-    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+    result = xTaskCreatePinnedToCoreWithCaps(
+        displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr,
+        DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE,
+        MALLOC_CAP_SPIRAM);
 #else
-    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+    result = xTaskCreateWithCaps(
+        displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr,
+        DISPLAY_TASK_PRIORITY, &displayTaskHandle,
+        MALLOC_CAP_SPIRAM);
 #endif
+    if (result != pdPASS) {
+        // PSRAM fallback failed — try internal RAM anyway
+        ESP_LOGW(TAG, "SPIRAM display task failed (err=%d), retrying internal RAM", result);
+#if DUAL_CORE_AVAILABLE
+        result = xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+#else
+        result = xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+#endif
+    }
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create DisplayTask (err=%d, stack=%u, DMA=%u)",
+                 static_cast<int>(result),
+                 static_cast<unsigned>(DISPLAY_STACK_SIZE),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
+    } else {
+        ESP_LOGI(TAG, "DisplayTask created OK (SPIRAM stack)");
+    }
 }
 
 // Main task for network-related activities
@@ -328,6 +359,13 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Initializing NVS...");
     nvsManager = new NVSManager();
     ESP_ERROR_CHECK(nvsManager->begin());
+
+    // Generate pairing token on first boot (A6).
+    if (nvsManager->pairToken.empty()) {
+        if (nvsManager->generateAndSavePairToken() == ESP_OK) {
+            ESP_LOGI(TAG, "Generated new pairing token");
+        }
+    }
 
     // Recovery mode: if PWR_KEY is held LOW for ≥3 s during boot, force
     // wifi_ap_enabled and portal_enabled to true for this session (does NOT
@@ -501,12 +539,18 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ConnectivityManager::instance().begin());
 
     // Initialize networking
-    // OfflineRecovery (level 3) skips all networking — AP flags were already
-    // cleared in the safe-mode override block above, so WiFiManager is still
-    // created (for stability of downstream pointers) but will not connect/start.
+    // OfflineRecovery (level 3) skips all networking — AP and portal flags are
+    // already cleared by the safe-mode override block above.  WiFiManager is
+    // created for pointer stability but NOT initialized; calling initialize()
+    // in this mode triggers the lockout-prevention path (AP forced on despite
+    // all flags being false) which crashes the event loop on an AP restart.
     ESP_LOGI(TAG, "Initializing networking...");
     wifiManager = new WiFiManager(nvsManager);
-    wifiManager->initialize();
+    if (BootGuard::getMode() != BootGuard::SafeMode::OfflineRecovery) {
+        wifiManager->initialize();
+    } else {
+        ESP_LOGW(TAG, "Networking skipped in OfflineRecovery mode");
+    }
     if (!BootGuard::isInSafeMode()) {
     mqttManager = new MQTTManager(wifiManager, nvsManager);
     if (mqttManager->initialize() != ESP_OK) {
@@ -516,132 +560,6 @@ extern "C" void app_main(void) {
     otaManager = new OTAManager(wifiManager);
     applyOtaConfigFromNvs();
     } // !BootGuard::isInSafeMode (MQTT / internet / OTA)
-    wifiManager->setSetupPortalOtaConfigUpdatedCallback([]() {
-        applyOtaConfigFromNvs();
-    });
-    wifiManager->setSetupPortalOtaStatusCallback([]() -> std::string {
-        if (otaManager == nullptr) {
-            return "{\"configured\":false,\"busy\":false,\"update_available\":false,\"current_version\":\"unknown\",\"available_version\":\"\",\"status_message\":\"OTA manager unavailable\"}";
-        }
-
-        const OtaReleaseInfo info = otaManager->getReleaseInfo();
-        auto escape = [](const std::string& value) {
-            std::string out;
-            out.reserve(value.size());
-            for (char c : value) {
-                if (c == '\\' || c == '"') {
-                    out.push_back('\\');
-                }
-                out.push_back(c);
-            }
-            return out;
-        };
-
-        std::ostringstream os;
-        os << "{";
-        os << "\"configured\":" << (info.configured ? "true" : "false") << ",";
-        os << "\"busy\":" << (info.busy ? "true" : "false") << ",";
-        os << "\"update_available\":" << (info.updateAvailable ? "true" : "false") << ",";
-        os << "\"current_version\":\"" << escape(info.currentVersion) << "\",";
-        os << "\"available_version\":\"" << escape(info.availableVersion) << "\",";
-        os << "\"status_message\":\"" << escape(info.statusMessage) << "\"";
-        os << "}";
-        return os.str();
-    });
-    wifiManager->setSetupPortalOtaActionCallback([](const std::string& action) -> esp_err_t {
-        if (otaManager == nullptr) {
-            return ESP_ERR_INVALID_STATE;
-        }
-
-        if (action == "check") {
-            return otaManager->checkForReleaseUpdate();
-        }
-        if (action == "update") {
-            return otaManager->startReleaseUpdate(true);
-        }
-        return ESP_ERR_INVALID_ARG;
-    });
-    wifiManager->setSetupPortalDeviceInfoStatusCallback([]() -> std::string {
-        auto escape = [](const std::string& value) {
-            std::string out;
-            out.reserve(value.size());
-            for (char c : value) {
-                if (c == '\\' || c == '"') {
-                    out.push_back('\\');
-                }
-                out.push_back(c);
-            }
-            return out;
-        };
-
-        bool wifi = wifiManager != nullptr && wifiManager->isConnected();
-        bool internet = internetHandler != nullptr && internetHandler->isInternetAvailable();
-        bool mqtt = mqttManager != nullptr && mqttManager->isConnected();
-        bool bluetoothEnabled = bluetoothManager != nullptr && bluetoothManager->isEnabled();
-        bool bluetoothReady = bluetoothManager != nullptr && bluetoothManager->isReady();
-        bool bluetoothConnected = bluetoothManager != nullptr && bluetoothManager->isConnected();
-        bool bluetoothHidConnected = bluetoothManager != nullptr && bluetoothManager->isHidConnected();
-        bool bluetoothSerialConnected = bluetoothManager != nullptr && bluetoothManager->isSerialConnected();
-        int strength = wifiManager != nullptr ? wifiManager->getSignalStrength() : 0;
-
-        bool batteryPresenceKnown = false;
-        bool batteryConnected = false;
-        bool batteryPercentageAvailable = false;
-        float batteryPercentage = -1.0f;
-        float batteryVoltage = -1.0f;
-        if (batteryHandler != nullptr && batteryHandler->isInitialized()) {
-            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
-            batteryConnected = batteryHandler->isBatteryConnected();
-            batteryPercentage = telemetry.percentage;
-            batteryPercentageAvailable = telemetry.percentage >= 0.0f;
-            batteryVoltage = telemetry.voltageVolts;
-        }
-
-        bool softwareConfigured = false;
-        bool softwareBusy = false;
-        bool softwareUpdateAvailable = false;
-        std::string currentVersion = "unknown";
-        std::string availableVersion;
-        std::string statusText = "OTA unavailable";
-        if (otaManager != nullptr) {
-            const OtaReleaseInfo info = otaManager->getReleaseInfo();
-            softwareConfigured = info.configured;
-            softwareBusy = info.busy;
-            softwareUpdateAvailable = info.updateAvailable;
-            currentVersion = info.currentVersion;
-            availableVersion = info.availableVersion;
-            statusText = info.statusMessage;
-        }
-
-        std::ostringstream os;
-        os << "{";
-        os << "\"wifi_connected\":" << (wifi ? "true" : "false") << ",";
-        os << "\"internet_connected\":" << (internet ? "true" : "false") << ",";
-        os << "\"mqtt_connected\":" << (mqtt ? "true" : "false") << ",";
-        const std::string btName = (nvsManager != nullptr) ? nvsManager->bluetoothName : "Qnob PC Control";
-        const int btBondCount = bluetoothManager != nullptr ? bluetoothManager->getBondedDeviceCount() : 0;
-        os << "\"bluetooth_name\":\"" << escape(btName) << "\",";
-        os << "\"bluetooth_bond_count\":" << btBondCount << ",";
-        os << "\"bluetooth_enabled\":" << (bluetoothEnabled ? "true" : "false") << ",";
-        os << "\"bluetooth_ready\":" << (bluetoothReady ? "true" : "false") << ",";
-        os << "\"bluetooth_connected\":" << (bluetoothConnected ? "true" : "false") << ",";
-        os << "\"bluetooth_hid_connected\":" << (bluetoothHidConnected ? "true" : "false") << ",";
-        os << "\"bluetooth_serial_connected\":" << (bluetoothSerialConnected ? "true" : "false") << ",";
-        os << "\"wifi_strength_bars\":" << strength << ",";
-        os << "\"battery_presence_known\":" << (batteryPresenceKnown ? "true" : "false") << ",";
-        os << "\"battery_connected\":" << (batteryConnected ? "true" : "false") << ",";
-        os << "\"battery_percentage_available\":" << (batteryPercentageAvailable ? "true" : "false") << ",";
-        os << "\"battery_percentage\":" << batteryPercentage << ",";
-        os << "\"battery_voltage\":" << batteryVoltage << ",";
-        os << "\"software_configured\":" << (softwareConfigured ? "true" : "false") << ",";
-        os << "\"software_busy\":" << (softwareBusy ? "true" : "false") << ",";
-        os << "\"software_update_available\":" << (softwareUpdateAvailable ? "true" : "false") << ",";
-        os << "\"current_version\":\"" << escape(currentVersion) << "\",";
-        os << "\"available_version\":\"" << escape(availableVersion) << "\",";
-        os << "\"status_text\":\"" << escape(statusText) << "\"";
-        os << "}";
-        return os.str();
-    });
 
     // Initialize UI controllers
     // In safe-mode levels the full controller tree is not needed; a minimal
@@ -743,45 +661,8 @@ extern "C" void app_main(void) {
                 soundController->updateSetpoint(percent);
             }
         });
-    wifiManager->setSetupPortalScreenControlCallback([](const std::string& screen) {
-        if (commandHandler != nullptr) {
-            commandHandler->handleExternalCommand("screen:" + screen);
-            return true;
-        }
-        return displayController != nullptr && displayController->showNamedScreen(screen);
-    });
-    wifiManager->setSetupPortalScreenStatusCallback([]() -> std::string {
-        return displayController != nullptr ? displayController->getModeName() : "unknown";
-    });
     wifiManager->setSetupPortalCommandCallback([](const std::string& cmd) {
         if (commandHandler != nullptr) commandHandler->handleExternalCommand(cmd);
-    });
-    wifiManager->setSetupPortalBtScanResultsCallback([]() -> std::string {
-        auto escape = [](const std::string& v) {
-            std::string out;
-            for (char c : v) { if (c == '\\' || c == '"') out.push_back('\\'); out.push_back(c); }
-            return out;
-        };
-        const bool scanning = bluetoothManager != nullptr && bluetoothManager->isScanning();
-        const bool btReady = bluetoothManager != nullptr && bluetoothManager->isReady();
-        const std::string scanStatus = bluetoothManager != nullptr ? bluetoothManager->getScanStatus() : "unavailable";
-        std::string json = "{\"scanning\":";
-        json += scanning ? "true" : "false";
-        json += ",\"bt_ready\":";
-        json += btReady ? "true" : "false";
-        json += ",\"scan_status\":\"" + escape(scanStatus) + "\"";
-        json += ",\"devices\":[";
-        if (bluetoothManager != nullptr) {
-            const auto results = bluetoothManager->getScanResults();
-            for (size_t i = 0; i < results.size(); ++i) {
-                if (i > 0) json += ",";
-                json += "{\"address\":\"" + escape(results[i].address) + "\",";
-                json += "\"name\":\"" + escape(results[i].name) + "\",";
-                json += "\"rssi\":" + std::to_string(results[i].rssi) + "}";
-            }
-        }
-        json += "]}";
-        return json;
     });
 
     // Initialize Sleep Handler (power management)
@@ -817,7 +698,45 @@ extern "C" void app_main(void) {
     commandHandler->registerOTAManager(otaManager);
     commandHandler->registerBluetoothManager(bluetoothManager);
     commandHandler->setOtaConfigUpdatedCallback([]() { applyOtaConfigFromNvs(); });
+    commandHandler->setPairedStateCallback([](bool paired) {
+        if (mdnsAdvertiser != nullptr) mdnsAdvertiser->updatePaired(paired);
+    });
     commandHandler->begin();
+
+    // Bridge BLE Nordic-UART RX → CommandHandler → BLE TX (A4).
+    // The callback fires from the BT event task; handleExternalCommand is
+    // guarded by dispatch_mutex_ so concurrent TCP/BLE calls are safe.
+    if (bluetoothManager != nullptr) {
+        bluetoothManager->setSerialLineCallback([](const std::string& line) {
+            if (commandHandler == nullptr) return;
+            std::string response;
+            commandHandler->handleExternalCommand(line, response);
+            if (!response.empty() && bluetoothManager != nullptr) {
+                bluetoothManager->sendSerialLine(response);
+            }
+        });
+    }
+
+    mdnsAdvertiser = new MdnsAdvertiser();
+
+    // mDNS start is deferred to after gfx->init() below — starting mDNS here
+    // would consume the last ~200 bytes of DMA RAM and cause spi_bus_initialize
+    // to fail (blank screen). Callbacks are safe to register now because
+    // connectToWiFi() runs after display HW init.
+
+    wifiManager->setConnectedCallback([](const std::string& /*ssid*/, const std::string& /*ip*/) {
+        if (mdnsAdvertiser == nullptr) return;
+        uint8_t mac[6] = {};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        mdnsAdvertiser->start(nvsManager, mac);  // restarts with same MAC on STA connect
+    });
+    wifiManager->setDisconnectedCallback([]() {
+        // Restart mDNS on AP only when STA disconnects (keeps it alive on AP).
+        if (mdnsAdvertiser == nullptr) return;
+        uint8_t mac[6] = {};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        mdnsAdvertiser->start(nvsManager, mac);
+    });
 
     // Set MQTT callbacks for sound controller
     soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
@@ -864,6 +783,9 @@ extern "C" void app_main(void) {
     if (!BootGuard::isInSafeMode()) {
         // Initialize display hardware here — immediately before the display task
         // starts so the gap between gfx->init() and the first draw is <100 ms.
+        ESP_LOGI(TAG, "Display HW init: free heap=%u DMA=%u",
+                 static_cast<unsigned>(esp_get_free_heap_size()),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
         gfx->init();
         gfx->setRotation(0);
         LvglDisplay::setHardware(static_cast<void*>(gfx));
@@ -875,6 +797,13 @@ extern "C" void app_main(void) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         gfx->setBrightness(255);
+        // Start mDNS here — after SPI bus has claimed its DMA descriptors,
+        // so mDNS internal allocations don't starve the DMA pool.
+        if (mdnsAdvertiser != nullptr) {
+            uint8_t mac[6] = {};
+            esp_wifi_get_mac(WIFI_IF_STA, mac);
+            mdnsAdvertiser->start(nvsManager, mac);
+        }
         displayController->init();
         startDisplayTaskIfNeeded();
     } else if (useDisplay) {

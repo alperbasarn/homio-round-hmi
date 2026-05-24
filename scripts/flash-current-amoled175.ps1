@@ -19,7 +19,7 @@ foreach ($line in $exports) {
     }
 }
 
-Set-Location 'C:\repos\p\qnob\homio-round-hmi\esp-idf'
+Set-Location 'C:\repos\p\qnob\homio-round-hmi\src\esp-idf'
 
 $idfArgs = @(
     "$idf\tools\idf.py",

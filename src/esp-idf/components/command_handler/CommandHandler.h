@@ -6,6 +6,9 @@
 #include <map>
 #include <functional>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 // Forward declarations
 class DisplayController;
 class NVSManager;
@@ -22,11 +25,15 @@ public:
     void begin();
     void update();
     void handleExternalCommand(const std::string& commandLine);
+    // Thread-safe overload that also captures the publishResponse() output.
+    void handleExternalCommand(const std::string& commandLine, std::string& responseOut);
     void registerKnobController(KnobController* kc);
     void registerMediaController(MediaController* mc);
     void registerOTAManager(OTAManager* ota);
     void registerBluetoothManager(BluetoothManager* bt);
     void setOtaConfigUpdatedCallback(std::function<void(void)> callback);
+    // Called with true when a pair command succeeds; use to update mDNS (A7).
+    void setPairedStateCallback(std::function<void(bool)> callback);
 
 private:
     using CommandFunction = std::function<void(const std::string& params)>;
@@ -46,9 +53,12 @@ private:
     OTAManager* otaManager;
     BluetoothManager* bluetoothManager;
     std::function<void(void)> otaConfigUpdatedCallback;
+    std::function<void(bool)> pairedStateCallback_;
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
+    SemaphoreHandle_t dispatch_mutex_;
+    std::string* response_capture_;
 
     void registerCommands();
     void processCommand(const std::string& command);
@@ -56,6 +66,10 @@ private:
     static std::string urlDecode(const std::string& value);
     static std::string getFormValue(const std::string& body, const std::string& key);
     void publishResponse(const std::string& response);
+    // Wrap a raw command-response string in a JSON envelope with the given id.
+    static std::string wrapResponse_(uint32_t id, const std::string& raw);
+    // Extract a named value from either JSON params or nth colon-delimited legacy field.
+    static std::string cmdParam(const std::string& params, const char* json_key, unsigned legacy_pos = 0);
 
     // Command handlers
     void cmdIncrementSetpoint(const std::string& params);
@@ -101,6 +115,10 @@ private:
     void cmdPortalOta(const std::string& params);
     void cmdPortalWifiCredential(const std::string& params);
     void cmdForgetBtDevice(const std::string& params);
+    void cmdPair(const std::string& params);
+    void cmdUnpair(const std::string& params);
+    void cmdPing(const std::string& params);
+    void cmdStatus(const std::string& params);
 };
 
 #endif // COMMAND_HANDLER_H

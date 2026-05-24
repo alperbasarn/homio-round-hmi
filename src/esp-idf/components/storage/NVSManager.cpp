@@ -1,5 +1,6 @@
 #include "NVSManager.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -29,6 +30,7 @@ NVSManager::NVSManager()
     otaManifestUrl(""),
       wifiStaEnabled(true), wifiApEnabled(true), portalEnabled(true),
       bluetoothEnabled(true), recoveryModeActive(false),
+      pairToken(""), isPaired(false),
       staticIPEnabled(false),
     staticIPSSID(""),
       staticIP("192.168.4.1"), staticGateway("192.168.4.1"),
@@ -692,6 +694,10 @@ esp_err_t NVSManager::loadAllConfigurations()
     ESP_LOGI(TAG, "Enable flags: wifi_sta=%d wifi_ap=%d portal=%d bt=%d",
              wifiStaEnabled, wifiApEnabled, portalEnabled, bluetoothEnabled);
 
+    // Pairing token — empty string means not yet generated
+    readString(NVS_KEY_PAIR_TOKEN, pairToken, "");
+    readBool(NVS_KEY_IS_PAIRED, isPaired, false);
+
     ESP_LOGI(TAG, "All configurations loaded");
     return ESP_OK;
 }
@@ -703,6 +709,27 @@ esp_err_t NVSManager::saveEnabledFlags()
     writeBool(NVS_KEY_WIFI_AP_EN,  wifiApEnabled);
     writeBool(NVS_KEY_PORTAL_EN,   portalEnabled);
     writeBool(NVS_KEY_BT_ENABLED,  bluetoothEnabled);
+    return nvs_commit(nvs_handle);
+}
+
+esp_err_t NVSManager::generateAndSavePairToken()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+    uint8_t rand_bytes[4];
+    esp_fill_random(rand_bytes, sizeof(rand_bytes));
+    char token[9];
+    for (int i = 0; i < 4; ++i) {
+        snprintf(token + i * 2, 3, "%02x", rand_bytes[i]);
+    }
+    pairToken = token;
+    writeString(NVS_KEY_PAIR_TOKEN, pairToken);
+    return nvs_commit(nvs_handle);
+}
+
+esp_err_t NVSManager::savePairingState()
+{
+    if (!initialized) return ESP_ERR_INVALID_STATE;
+    writeBool(NVS_KEY_IS_PAIRED, isPaired);
     return nvs_commit(nvs_handle);
 }
 

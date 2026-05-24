@@ -61,6 +61,10 @@
 #define NVS_KEY_PORTAL_EN       "portal_en"
 #define NVS_KEY_BT_ENABLED      "bt_enabled"
 
+// Pairing (A6) — token is 32 hex chars generated once on first boot
+#define NVS_KEY_PAIR_TOKEN      "pair_token"
+#define NVS_KEY_IS_PAIRED       "is_paired"
+
 // Static IP keys
 #define NVS_KEY_STATIC_ENABLED  "static_en"
 #define NVS_KEY_STATIC_SSID     "static_ssid"
@@ -149,6 +153,10 @@ public:
     bool bluetoothEnabled;
     bool recoveryModeActive;
 
+    // Pairing (A6)
+    std::string pairToken;   // 32 hex chars, generated once, persisted in NVS
+    bool isPaired;           // true after first successful pair command
+
     // Static IP Configuration
     bool staticIPEnabled;
     std::string staticIPSSID;
@@ -187,6 +195,8 @@ public:
     esp_err_t saveAccessPointPassword(const std::string& password);
     esp_err_t saveBluetoothName(const std::string& name);
     esp_err_t saveEnabledFlags();  // Persists wifiStaEnabled/wifiApEnabled/portalEnabled/bluetoothEnabled.
+    esp_err_t generateAndSavePairToken();  // Generates a 32-hex-char token and persists it.
+    esp_err_t savePairingState();          // Persists isPaired flag.
     esp_err_t saveOtaConfig(const std::string& variantId, const std::string& manifestUrl);
 
     static std::string normalizeDeviceSuffix(const std::string& value);
