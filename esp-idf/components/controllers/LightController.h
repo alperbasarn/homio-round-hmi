@@ -42,6 +42,8 @@ private:
     bool initialized;
     bool pageBackRequested;
     bool waterLevelChange;
+    bool publishPending;                                // CTRL-04: a change is waiting for a publish slot
+    static constexpr int64_t kPublishIntervalMs = 25;   // CTRL-04: at most 40 publishes per second
     int firstTouchX;
     int firstTouchY;
     LedMode currentMode;

@@ -4,7 +4,11 @@ import os
 class ConfigHandler:
     """Handles reading and writing application configuration"""
     
-    def __init__(self, config_file="qnob_config.json"):
+    def __init__(self, config_file=None):
+        # Resolve next to this file, not the process working directory, so launching the app from
+        # another directory does not silently create a second, empty config (PCKNOB-02).
+        if config_file is None:
+            config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qnob_config.json")
         self.config_file = config_file
         self.config = self.load_config()
     
@@ -40,10 +44,10 @@ class ConfigHandler:
         """Get default configuration settings"""
         return {
             "mqtt": {
-                "broker": "4b664591e7764720a1ae5483e793dfa0.s1.eu.hivemq.cloud",
+                "broker": "",
                 "port": 8883,
-                "username": "test123",
-                "password": "Test1234"
+                "username": "",
+                "password": ""
             },
             "ota": {
                 "host": "",

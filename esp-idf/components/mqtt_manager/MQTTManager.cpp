@@ -95,13 +95,29 @@ void MQTTManager::handleMQTTEvent(esp_mqtt_event_handle_t event)
             std::string topic(event->topic, event->topic_len);
             std::string payload(event->data, event->data_len);
 
-            ESP_LOGI(TAG, "MQTT message received - Topic: %s", topic.c_str());
+            // NET-02 / CTRL-02: every publisher on this broker (the PC app, this device) prefixes
+            // "sender=<id>,". Consumers used to receive the raw payload, so nothing in the sound
+            // parser or the command table ever matched and the PC round-trip was dead; and the
+            // device received its own echoes. Strip the prefix once here and never dispatch our own.
+            const bool prefixed = payload.rfind("sender=", 0) == 0;
+            std::string sender;
+            std::string body = payload;
+            if (prefixed) {
+                const size_t comma = payload.find(',');
+                sender = payload.substr(7, comma == std::string::npos ? std::string::npos : comma - 7);
+                body = (comma == std::string::npos) ? std::string() : payload.substr(comma + 1);
+            }
+            const std::string self_name = nvs_manager ? nvs_manager->deviceName : "QNOB";
+            const bool from_self = prefixed && sender == self_name;
+            ESP_LOGI(TAG, "dispatch topic=%s prefixed=%d self=%d sender=%s len=%u",
+                     topic.c_str(), prefixed ? 1 : 0, from_self ? 1 : 0,
+                     sender.empty() ? "-" : sender.c_str(), static_cast<unsigned>(body.size()));
             ESP_LOGD(TAG, "Payload: %s", payload.c_str());
 
             processIncomingMessage(topic, payload);
 
-            if (on_message) {
-                on_message(topic, payload);
+            if (on_message && !from_self) {
+                on_message(topic, body);
             }
             break;
         }

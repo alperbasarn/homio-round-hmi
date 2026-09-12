@@ -15,6 +15,10 @@ class MQTTManager;
 class MediaController;
 class OTAManager;
 
+// Where a command line came from. Serial and the knob link are physical and trusted;
+// MQTT is an unauthenticated shared channel and only runs allowlisted commands (APP-03).
+enum class CommandSource { Serial, Knob, Mqtt };
+
 class CommandHandler {
 public:
     CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManager* wifi, MQTTManager* mqtt);
@@ -32,6 +36,7 @@ private:
         std::string name;
         CommandFunction callback;
         std::string description;
+        bool allowedFromMqtt = false;  // APP-03: set for the remote allowlist in registerCommands()
     };
 
     DisplayController* displayController;
@@ -44,10 +49,13 @@ private:
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
+    static constexpr size_t kMaxConsoleLineBytes = 512;  // APP-04: bound on the console accumulator
 
     void registerCommands();
-    void processCommand(const std::string& command);
+    void processCommand(const std::string& command, CommandSource source);
     static std::string trimCommand(const std::string& command);
+    // APP-01: the one numeric parser. The whole string must be a decimal integer within [min, max].
+    static bool parseInt(const std::string& text, int& out, int min, int max);
     void publishResponse(const std::string& response);
 
     // Command handlers

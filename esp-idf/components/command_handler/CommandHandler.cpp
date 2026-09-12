@@ -106,16 +106,26 @@ void CommandHandler::update() {
 
             command = trimCommand(command);
             if (!command.empty()) {
-                processCommand(command);
+                processCommand(command, CommandSource::Serial);
             }
         }
+    }
+
+    // APP-04: never let a newline-less stream grow the accumulator without bound.
+    if (commandFromPC.size() > kMaxConsoleLineBytes) {
+        ESP_LOGW(TAG, "Console line exceeded %u bytes without a newline; dropping %u bytes",
+                 static_cast<unsigned>(kMaxConsoleLineBytes), static_cast<unsigned>(commandFromPC.size()));
+        commandFromPC.clear();
     }
 
     // Process knob commands
     if (knobController && knobController->getHasNewMessage()) {
         const std::string command = trimCommand(knobController->getReceivedCommand());
         if (!command.empty()) {
-            processCommand(command);
+            // CTRL-01: DisplayController consumes the same token in its per-mode switch, so every
+            // detent is handled twice until InputRouter owns the link (Phase 2).
+            ESP_LOGW(TAG, "Knob token '%s' consumed by CommandHandler (DisplayController consumes it too)", command.c_str());
+            processCommand(command, CommandSource::Knob);
         }
     }
 }
@@ -127,11 +137,13 @@ void CommandHandler::handleExternalCommand(const std::string& commandLine) {
         return;
     }
     ESP_LOGI(TAG, "External command: %s", command.c_str());
-    processCommand(command);
+    processCommand(command, CommandSource::Mqtt);
 }
 
-void CommandHandler::processCommand(const std::string& command_line) {
-    ESP_LOGI(TAG, "Processing command: %s", command_line.c_str());
+void CommandHandler::processCommand(const std::string& command_line, CommandSource source) {
+    ESP_LOGI(TAG, "Processing command (%s): %s",
+             source == CommandSource::Mqtt ? "mqtt" : (source == CommandSource::Knob ? "knob" : "serial"),
+             command_line.c_str());
     std::string command;
     std::string params;
     size_t separator_pos = command_line.find(':');
@@ -143,11 +155,19 @@ void CommandHandler::processCommand(const std::string& command_line) {
     }
 
     auto it = commands.find(command);
-    if (it != commands.end()) {
-        it->second.callback(params);
-    } else {
+    if (it == commands.end()) {
         ESP_LOGE(TAG, "Unknown command: %s", command.c_str());
+        return;
     }
+    // APP-03: MQTT is an unauthenticated, shared channel. Anything that writes secrets, restarts
+    // or reflashes the device, or drives the UI into an unhandled state only runs from a
+    // physical source.
+    if (source == CommandSource::Mqtt && !it->second.allowedFromMqtt) {
+        ESP_LOGW(TAG, "Refusing '%s' from MQTT: not on the remote allowlist", command.c_str());
+        publishResponse(command + ":ERR:refused_from_mqtt");
+        return;
+    }
+    it->second.callback(params);
 }
 
 std::string CommandHandler::trimCommand(const std::string& command) {
@@ -159,6 +179,23 @@ std::string CommandHandler::trimCommand(const std::string& command) {
         return !std::isspace(c);
     }).base(), result.end());
     return result;
+}
+
+bool CommandHandler::parseInt(const std::string& text, int& out, int min, int max) {
+    if (text.empty() || text.size() > 11) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || *end != '\0' || errno == ERANGE) {
+        return false;
+    }
+    if (parsed < min || parsed > max) {
+        return false;
+    }
+    out = static_cast<int>(parsed);
+    return true;
 }
 
 void CommandHandler::publishResponse(const std::string& response) {
@@ -198,6 +235,21 @@ void CommandHandler::registerCommands() {
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
+
+    // APP-03: the remote (MQTT) allowlist. Everything not listed is refused from that source:
+    // reset, clearNVS, connectWifi, configureMQTTServer, the static-IP writers, setDeviceName,
+    // otaUpdate and calibrateOrientation.
+    static const char* const kMqttAllowed[] = {
+        "+", "-", "setpoint", "home", "info", "getDeviceName", "showNetworks", "commInfo",
+        "showStaticIP", "listNVSValues", "startSoundRecord", "stopSoundRecord",
+        "playLastSoundRecord", "otaInfo", "otaStatus", "help",
+    };
+    for (const char* name : kMqttAllowed) {
+        auto it = commands.find(name);
+        if (it != commands.end()) {
+            it->second.allowedFromMqtt = true;
+        }
+    }
 }
 
 void CommandHandler::cmdIncrementSetpoint(const std::string& params) {
@@ -251,17 +303,9 @@ void CommandHandler::cmdConnectWifi(const std::string& params) {
     std::string ssid = parts[0];
     std::string password = parts[1];
     int slot = 0;
-    if (parts.size() >= 3) {
-        try {
-            slot = std::stoi(parts[2]);
-        } catch (...) {
-            ESP_LOGE(TAG, "[WiFi] Invalid slot: %s", parts[2].c_str());
-            return;
-        }
-        if (slot < 0 || slot >= NUM_WIFI_CREDENTIALS) {
-            ESP_LOGE(TAG, "[WiFi] Slot out of range: %d", slot);
-            return;
-        }
+    if (parts.size() >= 3 && !parseInt(parts[2], slot, 0, NUM_WIFI_CREDENTIALS - 1)) {
+        ESP_LOGE(TAG, "[WiFi] Invalid slot: %s (expected 0-%d)", parts[2].c_str(), NUM_WIFI_CREDENTIALS - 1);
+        return;
     }
 
     // Save credentials to NVS via NVSManager
@@ -282,8 +326,12 @@ void CommandHandler::cmdShowNetworks(const std::string& params) {
 }
 
 void CommandHandler::cmdCalibrateOrientation(const std::string& params) {
-    displayController->setMode(CALIBRATE_ORIENTATION);
-    ESP_LOGI(TAG, "Starting orientation calibration...");
+    // CALIBRATE_ORIENTATION has no case in DisplayController::update(), so entering it stopped
+    // every screen update and the LVGL pump: a 30 s freeze until the inactivity timeout. Until a
+    // calibration screen exists (the mode is deleted for good in Phase 4) this is a logged no-op.
+    (void)params;
+    ESP_LOGW(TAG, "calibrateOrientation is not implemented; not entering an unhandled screen mode");
+    publishResponse("calibrateOrientation:ERR:not_implemented");
 }
 
 void CommandHandler::cmdHelp(const std::string& params) {
@@ -294,7 +342,13 @@ void CommandHandler::cmdHelp(const std::string& params) {
 }
 
 void CommandHandler::cmdKnobSetpoint(const std::string& params) {
-    int setPoint = std::stoi(params);
+    int setPoint = 0;
+    if (!parseInt(params, setPoint, 0, 100)) {
+        // APP-01: a bare std::stoi here aborted the chip on any non-numeric payload.
+        ESP_LOGW(TAG, "setpoint: rejected '%s' (expected an integer 0-100)", params.c_str());
+        publishResponse("setpoint:ERR:invalid_value");
+        return;
+    }
     displayController->setSetpoint(setPoint);
     ESP_LOGI(TAG, "Updated setpoint: %d", setPoint);
 }
@@ -474,10 +528,9 @@ void CommandHandler::cmdShowStaticIP(const std::string& params) {
 }
 
 void CommandHandler::cmdListNVSValues(const std::string& params) {
-    if (nvsManager != nullptr) {
-        nvsManager->loadAllConfigurations();
-    }
-
+    // APP-24: this used to reload every configuration from NVS first, silently discarding any
+    // value set in RAM but not yet committed. It now prints what the running system holds.
+    (void)params;
     for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
         printf("wifi%d_ssid=%s\n", i, nvsManager->wifiCredentials[i].ssid.c_str());
         if (!nvsManager->wifiCredentials[i].password.empty()) {

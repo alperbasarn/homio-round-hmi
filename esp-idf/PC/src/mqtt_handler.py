@@ -18,11 +18,12 @@ class MQTTHandler:
         self.message_callback = message_callback
         self.app = app
         
-        # Default MQTT broker settings
-        self.broker_address = "4b664591e7764720a1ae5483e793dfa0.s1.eu.hivemq.cloud"
+        # Broker settings come from qnob_config.json via ConfigHandler (PCKNOB-02).
+        # Nothing is hardcoded here; an unconfigured broker is reported, not guessed.
+        self.broker_address = ""
         self.broker_port = 8883
-        self.username = "test123"
-        self.password = "Test1234"
+        self.username = ""
+        self.password = ""
         
         # Client ID to identify messages from this client
         self.client_id = "PC"
@@ -77,6 +78,9 @@ class MQTTHandler:
     
     def connect(self):
         """Connect to MQTT broker"""
+        if not self.broker_address:
+            self.message_queue.put(("error", "MQTT broker not configured: set broker, port, username and password in the Configure tab (saved to qnob_config.json)", False))
+            return False
         try:
             # Create a new client instance to avoid SSL configuration issues
             self.create_new_client()

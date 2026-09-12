@@ -233,6 +233,9 @@ void SoundController::processIncomingMessage() {
         isPlaying = false;
         if (!stateReceived) stateReceived = true;
         drawSetPoint();
+    } else {
+        // CTRL-01: this branch used to be silent, which is how the dead PC round-trip went unnoticed.
+        ESP_LOGW(TAG, "Inbound sound message matched no branch: '%s'", pendingMessage.c_str());
     }
 }
 

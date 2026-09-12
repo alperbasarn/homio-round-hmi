@@ -123,6 +123,9 @@ void DisplayController::update() {
         if (knobController->getHasNewMessage()) {
             hasActivityEvent = true;
             resetActivityTime();
+            // CTRL-01: CommandHandler consumes the same token from its own task; two consumers per
+            // detent until InputRouter owns the link (Phase 2).
+            ESP_LOGI(TAG, "Knob token '%s' consumed by DisplayController", knobController->getReceivedCommand().c_str());
         }
     }
 

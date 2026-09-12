@@ -1,0 +1,12 @@
+{
+    "mqtt": {
+        "broker": "",
+        "port": 8883,
+        "username": "",
+        "password": ""
+    },
+    "ota": {
+        "host": "",
+        "port": 8070
+    }
+}

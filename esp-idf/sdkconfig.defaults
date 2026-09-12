@@ -45,5 +45,11 @@ CONFIG_FATFS_SECTOR_512=y
 CONFIG_LV_BUILD_EXAMPLES=n
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
 CONFIG_LV_MEM_BUF_MAX_NUM=32
-CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_USE_QRCODE=n
 
+
+# LVGL theme (UIX-02 / D11): dark default so an un-styled object never paints a light rectangle,
+# no press-grow and no style transitions on a single-core renderer. REFR_PERIOD stays at 30.
+CONFIG_LV_THEME_DEFAULT_DARK=y
+CONFIG_LV_THEME_DEFAULT_GROW=n
+CONFIG_LV_THEME_DEFAULT_TRANSITION_TIME=0

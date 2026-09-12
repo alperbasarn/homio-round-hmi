@@ -509,7 +509,9 @@ extern "C" void app_main(void) {
         return mqttManager->isConnected();
     });
     lightController->setMQTTConfiguredCallback([&]() {
-        return mqttManager->hasLightMQTTConfigured();
+        // CTRL-03: lightMQTTServerURL has no writer anywhere, so this gate was permanently closed
+        // and LIGHT never published. There is one MQTT client; the light topics go through it.
+        return mqttManager->hasLightMQTTConfigured() || mqttManager->hasSoundMQTTConfigured();
     });
 
     // Set global MQTT message callback
@@ -544,11 +546,11 @@ extern "C" void app_main(void) {
 #if DUAL_CORE_AVAILABLE
     xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
     xTaskCreatePinnedToCore(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle, NETWORK_CORE);
-    xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle, NETWORK_CORE);
+    xTaskCreatePinnedToCore(commandTask, "CommandTask", COMMAND_STACK_SIZE, nullptr, COMMAND_TASK_PRIORITY, &commandTaskHandle, NETWORK_CORE);
 #else
     xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
     xTaskCreate(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle);
-    xTaskCreate(commandTask, "CommandTask", 4096, nullptr, 5, &commandTaskHandle);
+    xTaskCreate(commandTask, "CommandTask", COMMAND_STACK_SIZE, nullptr, COMMAND_TASK_PRIORITY, &commandTaskHandle);
 #endif
 
     if (startupChimeReady) {

@@ -402,10 +402,14 @@
 #define DISPLAY_TASK_PRIORITY   2
 #define NETWORK_TASK_PRIORITY   3
 #define INIT_TASK_PRIORITY      4
+// APP-05: the command loop polls stdin every 20 ms. It used to run at priority 5, above the
+// renderer, and on the single-core C6 preempted every frame; it now sits below the display task.
+#define COMMAND_TASK_PRIORITY   1
 
 // Task Stack Sizes
 #define DISPLAY_STACK_SIZE      8192
 #define NETWORK_STACK_SIZE      8192
+#define COMMAND_STACK_SIZE      4096
 
 // Timeouts
 #define MQTT_CONNECT_TIMEOUT_MS     5000

@@ -36,6 +36,7 @@ LightController::LightController(DisplayPanelBackend* displayBackend, TouchPanel
       initialized(false),
       pageBackRequested(false),
       waterLevelChange(false),
+      publishPending(false),
       firstTouchX(-1),
       firstTouchY(-1),
       currentMode(LED_MODE_STATIC),
@@ -183,10 +184,19 @@ void LightController::updateScreen() {
 
     if ((waterLevelChange || colorChange) && (currentMillis - lastSetPointDrawnTime >= 10)) {
         drawSetPoint();
-        sendSetpointToServer();
+        publishPending = true;
         lastSetPointDrawnTime = currentMillis;
         colorChange = false;
         waterLevelChange = false;
+    }
+
+    // CTRL-04: a drag redraws up to 100 times a second and each publish is three topics, so the
+    // unthrottled path pushed ~300 msg/s. Publish at most every kPublishIntervalMs and always
+    // flush the last value: publishPending stays set until a slot opens.
+    if (publishPending && (currentMillis - lastWaterLevelSentTime >= kPublishIntervalMs)) {
+        sendSetpointToServer();
+        lastWaterLevelSentTime = currentMillis;
+        publishPending = false;
     }
 
     drawModeText();
@@ -241,14 +251,18 @@ void LightController::checkTouchInput() {
 }
 
 void LightController::sendSetpointToServer() {
+    // CTRL-01: both gates used to drop the publish silently; the configured gate was permanently
+    // closed until CTRL-03. Logged at most every 2 s so a drag while offline does not flood.
+    static int64_t lastGateLogMs = 0;
     const bool configured = mqttConfiguredCallback ? mqttConfiguredCallback() : false;
-    if (!configured) {
-        ESP_LOGD(TAG, "Light MQTT not configured");
-        return;
-    }
-
     const bool connected = mqttConnectedCallback ? mqttConnectedCallback() : false;
-    if (!connected || !mqttPublishCallback) {
+    if (!configured || !connected || !mqttPublishCallback) {
+        const int64_t now = millis();
+        if (now - lastGateLogMs >= 2000) {
+            lastGateLogMs = now;
+            ESP_LOGW(TAG, "light gate closed: %s, publish dropped",
+                     !configured ? "MQTT not configured" : "MQTT not connected");
+        }
         return;
     }
 
