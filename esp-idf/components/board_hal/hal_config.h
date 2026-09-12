@@ -201,11 +201,15 @@
 #define RTC_I2C_ADDR            0x51
 
 // ========== UART for Knob Communication ===========
-// The Waveshare BSP does not expose a canonical UART mapping for the 8-pin header yet.
-// Leave the external knob UART disabled until the header pins are confirmed.
+// 8-pin 2.54mm header H2 (from ESP32-S3-Touch-AMOLED-1.75-schematic.pdf, sheet 1):
+//   1 VBUS  2 GND  3 3V3  4 U0TXD/GPIO43  5 U0RXD/GPIO44  6 GPIO16  7 GPIO17  8 GPIO18
+// The knob link uses the plain GPIOs, not the UART0 pair: the ROM bootloader prints its boot
+// log on GPIO43 at every reset and the knob firmware's line reader would stall its FOC loop
+// on that spew. Wiring: knob TX -> H2 pin 7 (GPIO17), knob RX <- H2 pin 6 (GPIO16), GND -> pin 2.
+// GPIO18 (pin 8) stays free; on the GPS variant GPIO17/18 have unpopulated links to the GPS UART.
 #define KNOB_UART_NUM           UART_NUM_1
-#define KNOB_TX_PIN             -1
-#define KNOB_RX_PIN             -1
+#define KNOB_TX_PIN             16
+#define KNOB_RX_PIN             17
 #define KNOB_BAUD_RATE          9600
 
 // ========== Battery / Power ===========
@@ -350,6 +354,16 @@
 
 #else
 #error "Unsupported target board. Select a QNOB hardware platform in menuconfig."
+#endif
+
+// The knob UART can be disabled per build (CONFIG_QNOB_ENABLE_KNOB_UART). The C6 variant
+// defaults it off because its mapped pins (GPIO 1/2) collide with the TCA9554 interrupt and
+// PWR_KEY (WBS PCKNOB-03, open question Q1); main.cpp then skips the knob controller.
+#if !CONFIG_QNOB_ENABLE_KNOB_UART
+#undef KNOB_TX_PIN
+#undef KNOB_RX_PIN
+#define KNOB_TX_PIN             -1
+#define KNOB_RX_PIN             -1
 #endif
 
 #ifndef PWR_KEY_PIN

@@ -1,3 +1,6 @@
 # Waveshare ESP32-C6-Touch-AMOLED-1.43 board overlay
 
 CONFIG_QNOB_HW_ESP32C6_AMOLED_143=y
+
+# Knob UART off on this board: GPIO 1/2 collide with the TCA9554 interrupt and PWR_KEY (WBS PCKNOB-03)
+CONFIG_QNOB_ENABLE_KNOB_UART=n

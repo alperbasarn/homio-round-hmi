@@ -84,6 +84,34 @@ figure (16,383 / 16,384) is the tightest constraint on the primary board. The
 knob UART is unmapped on the 1.75 (`KNOB_TX_PIN`/`KNOB_RX_PIN` = -1); mapping it
 is task KNOB-175 in the WBS notes.
 
+## KNOB-175 and PCKNOB-03 (2026-09-12)
+
+The 1.75's 8-pin 2.54 mm header `H2`, read from the text layer of
+`ESP32-S3-Touch-AMOLED-1.75-schematic.pdf` sheet 1:
+
+| H2 pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| Net | VBUS | GND | 3V3 | U0TXD / GPIO43 | U0RXD / GPIO44 | GPIO16 | GPIO17 | GPIO18 |
+
+- **KNOB-175 done.** `KNOB_TX_PIN 16`, `KNOB_RX_PIN 17` in the 1.75 block of
+  `hal_config.h` (UART1, 9600). Not the UART0 pair: the ROM bootloader prints its
+  boot log on GPIO43 at every reset and the knob firmware's byte-by-byte line
+  reader (`serial.ino`, 3 ms per char) would stall the FOC loop for seconds on
+  that spew. Wiring: knob TX to H2-7 (GPIO17), knob RX from H2-6 (GPIO16), GND to
+  H2-2. GPIO17 is RTC-capable, so `SleepHandler`'s EXT1 wake on `KNOB_RX_PIN`
+  means a knob turn wakes the 1.75 from deep sleep. Power note: H2-1 is VBUS,
+  present only with USB attached; the V11 board's DRV8311 needs 5 V, so a
+  battery-powered knob needs its own 5 V source.
+- **PCKNOB-03 resolved by the gate path.** `CONFIG_QNOB_ENABLE_KNOB_UART` now
+  defaults off on the C6 variant (Kconfig default plus an explicit line in
+  `sdkconfig.defaults.esp32c6_amoled143`), and `hal_config.h` forces the knob
+  pins to -1 when it is off, so `main.cpp` takes its "not mapped" branch. Open
+  question Q1 (the physically correct C6 pins) stays open.
+- Verified by building both AMOLED variants: C6 binary 1,748,000 to 1,730,320
+  bytes (knob driver out), 1.75 binary 1,568,656 to 1,584,448 bytes (knob
+  driver in), both `qnob-screen`, both still showing the two component cycles.
+  Bench verification (`+`/`-` reaching `DisplayController` on the 1.75) pending.
+
 ## Owner decisions (2026-09-12)
 
 1. **Committed and tagged.** `p0-baseline` = commit `6392ed6` on `codex/multi-board-support` (592 files: the display-backend migration, dev_notes, tools, Phase 0 hygiene; 1,658,753 deletions are the vendored LovyanGFX). Not pushed.

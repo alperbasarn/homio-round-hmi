@@ -102,9 +102,13 @@ menu "QNOB Hardware Configuration"
 
     config QNOB_ENABLE_KNOB_UART
         bool "Enable Knob UART Communication"
+        default n if QNOB_HW_ESP32C6_AMOLED_143
         default y
         help
-            Enable UART communication with external knob controller.
+            Enable UART communication with the external knob controller.
+            Off by default on the ESP32-C6 AMOLED 1.43 because its mapped
+            pins (GPIO 1/2) collide with the TCA9554 interrupt line and
+            PWR_KEY; enable it only after remapping those pins.
 
     config QNOB_KNOB_BAUD_RATE
         int "Knob UART Baud Rate"
