@@ -21,6 +21,7 @@ set(QNOB_HOST_FLAGS
     -Wall -Wextra -Werror
     -g -fno-omit-frame-pointer
     -fsanitize=address,undefined -fno-sanitize=vptr
+    -DQNOB_MODEL_TRACE=1
 )
 
 add_library(model STATIC ${MODEL_SOURCES})
@@ -45,6 +46,14 @@ target_include_directories(command_parsers PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../
 target_compile_options(command_parsers PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(command_parsers PUBLIC -fsanitize=address,undefined)
 
+# NET-31: the pure poller cores compile on the host from the same files the device uses.
+include("${CMAKE_CURRENT_LIST_DIR}/../../components/adapters/sources.cmake")
+add_library(adapters_core STATIC ${ADAPTERS_PURE_SOURCES})
+target_include_directories(adapters_core PUBLIC "${ADAPTERS_INCLUDE_DIR}")
+target_compile_options(adapters_core PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(adapters_core PUBLIC -fsanitize=address,undefined)
+target_link_libraries(adapters_core PUBLIC model)
+
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -55,6 +64,6 @@ file(GLOB QNOB_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_*.
 foreach(test_source IN LISTS QNOB_TEST_SOURCES)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(${test_name} "${test_source}")
-    target_link_libraries(${test_name} PRIVATE test_support model command_parsers Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core Threads::Threads)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

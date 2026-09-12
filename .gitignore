@@ -42,3 +42,4 @@ official examples-*/**/dependencies.lock
 # PC app: the real config holds broker credentials; only the example is tracked (PCKNOB-02)
 esp-idf/PC/src/qnob_config.json
 Hardware Ref/build_host_tests/
+esp-idf/ota/

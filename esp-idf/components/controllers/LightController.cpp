@@ -42,7 +42,27 @@ LightController::LightController(DisplayPanelBackend* displayBackend, TouchPanel
       waterRect(nullptr),
       levelLabel(nullptr),
       modeLabel(nullptr),
-      hintLabel(nullptr) {
+      hintLabel(nullptr),
+      modelQueue(nullptr) {
+}
+
+void LightController::postBrightness() {
+    if (modelQueue == nullptr) return;
+    modelQueue->post(model::LightModel::make(model::LightModel::Field::Brightness, waterLevel,
+                                             static_cast<uint32_t>(millis())));
+}
+
+void LightController::postHue() {
+    if (modelQueue == nullptr) return;
+    modelQueue->post(model::LightModel::makeFloat(model::LightModel::Field::Hue, colorHue,
+                                                  static_cast<uint32_t>(millis())));
+}
+
+void LightController::postMode() {
+    if (modelQueue == nullptr) return;
+    // LED_MODE_STATIC/GLOW/RAINBOW share the model's LedMode numbering.
+    modelQueue->post(model::LightModel::make(model::LightModel::Field::Mode, static_cast<int32_t>(currentMode),
+                                             static_cast<uint32_t>(millis())));
 }
 
 void LightController::ensureUi() {
@@ -116,6 +136,7 @@ void LightController::incrementSetpoint() {
         waterLevel++;
         waterLevelChange = true;
         lastSetpointChangeTime = millis();
+        postBrightness();
     }
 }
 
@@ -124,6 +145,7 @@ void LightController::decrementSetpoint() {
         waterLevel--;
         waterLevelChange = true;
         lastSetpointChangeTime = millis();
+        postBrightness();
     }
 }
 
@@ -132,6 +154,7 @@ void LightController::setSetpoint(int value) {
         waterLevel = value;
         waterLevelChange = true;
         lastSetpointChangeTime = millis();
+        postBrightness();
     }
 }
 
@@ -194,12 +217,14 @@ void LightController::checkTouchInput() {
         if (std::abs(deltaX) > 10) {
             colorHue = constrain(static_cast<float>(touchX) / static_cast<float>(screenWidth), 0.0f, 1.0f);
             colorChange = true;
+            postHue();
         }
 
         if (std::abs(deltaY) > 10) {
             waterLevel = static_cast<int>((1.0f - (static_cast<float>(touchY) / screenHeight)) * 100.0f);
             waterLevel = constrain(waterLevel, 0, 100);
             waterLevelChange = true;
+            postBrightness();
         }
     } else {
         firstTouchX = -1;
@@ -305,6 +330,7 @@ void LightController::handleModeChange() {
         modeChangeRequested = false;
         drawModeText();
         sendSetpointToServer();
+        postMode();
     }
 }
 
@@ -313,6 +339,7 @@ void LightController::onBrightnessReceived(int brightness) {
         waterLevel = brightness;
         waterLevelChange = true;
         ESP_LOGI(TAG, "Brightness received: %d", brightness);
+        postBrightness();
     }
 }
 

@@ -4,31 +4,53 @@
 #include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 #include "sdkconfig.h"
-#include "lwip/dns.h"
-#include "lwip/sockets.h"
 #include <cstring>
 
 static const char *TAG = "WiFiManager";
 
+static_assert(NUM_WIFI_CREDENTIALS + 1 <= 4, "kMaxCandidates must hold every NVS slot plus the Kconfig default");
+
 // Static instance pointer for event handler
 static WiFiManager* s_wifi_manager = nullptr;
 
+namespace {
+
+int64_t nowMs() {
+    return esp_timer_get_time() / 1000;
+}
+
+}  // namespace
+
 WiFiManager::WiFiManager(NVSManager* nvsManager)
     : nvs_manager(nvsManager),
-      wifi_event_group(nullptr),
       initialized(false),
       wifi_connected(false),
+      sta_fail_event(false),
+      connect_requested(false),
+      scan_done(false),
       ap_mode_active(false),
-      internet_available(false),
+      last_reported_connected(false),
       scan_result_count(0),
       wifi_channel(WIFI_AP_CHANNEL),
       last_ap_check_time(0),
       last_scan_time(0),
       last_connect_attempt(0),
+      attempt_started_ms(0),
+      phase(ConnectPhase::Idle),
+      candidate_count(0),
+      candidate_index(0),
+      active_candidate(kKconfigCandidate),
       on_connected(nullptr),
       on_disconnected(nullptr)
 {
+    current_ssid[0] = '\0';
+    current_ip[0] = '\0';
+    portMUX_INITIALIZE(&text_lock);
+    for (int i = 0; i < kMaxCandidates; ++i) {
+        candidates[i] = kKconfigCandidate;
+    }
     s_wifi_manager = this;
 }
 
@@ -38,15 +60,34 @@ WiFiManager::~WiFiManager()
         esp_wifi_stop();
         esp_wifi_deinit();
     }
-    if (wifi_event_group) {
-        vEventGroupDelete(wifi_event_group);
-    }
     s_wifi_manager = nullptr;
+}
+
+void WiFiManager::setText(char* dst, size_t capacity, const char* src, size_t len)
+{
+    if (len >= capacity) {
+        len = capacity - 1;
+    }
+    portENTER_CRITICAL(&text_lock);
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    portEXIT_CRITICAL(&text_lock);
+}
+
+std::string WiFiManager::readText(const char* src) const
+{
+    char copy[33];
+    portENTER_CRITICAL(&text_lock);
+    strncpy(copy, src, sizeof(copy) - 1);
+    copy[sizeof(copy) - 1] = '\0';
+    portEXIT_CRITICAL(&text_lock);
+    return std::string(copy);
 }
 
 void WiFiManager::eventHandler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data)
 {
+    (void)arg;
     if (s_wifi_manager) {
         if (event_base == WIFI_EVENT) {
             s_wifi_manager->handleWiFiEvent(event_id, event_data);
@@ -65,24 +106,21 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
 
         case WIFI_EVENT_STA_CONNECTED: {
             wifi_event_sta_connected_t* event = (wifi_event_sta_connected_t*)event_data;
-            current_ssid = std::string((char*)event->ssid, event->ssid_len);
+            setText(current_ssid, sizeof(current_ssid), (const char*)event->ssid, event->ssid_len);
             wifi_channel = event->channel;
-            ESP_LOGI(TAG, "Connected to %s (channel %d)", current_ssid.c_str(), wifi_channel);
+            ESP_LOGI(TAG, "Associated with %.*s (channel %d)", event->ssid_len, (const char*)event->ssid, wifi_channel);
             break;
         }
 
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
             ESP_LOGW(TAG, "Disconnected from WiFi, reason: %d", event->reason);
-            wifi_connected = false;
-            internet_available = false;
-            current_ip.clear();
-
+            wifi_connected.store(false, std::memory_order_release);
+            setText(current_ip, sizeof(current_ip), "", 0);
+            sta_fail_event.store(true, std::memory_order_release);
             if (on_disconnected) {
                 on_disconnected();
             }
-
-            xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
             break;
         }
 
@@ -110,7 +148,10 @@ void WiFiManager::handleWiFiEvent(int32_t event_id, void* event_data)
 
         case WIFI_EVENT_SCAN_DONE:
             ESP_LOGI(TAG, "WiFi scan completed");
-            xEventGroupSetBits(wifi_event_group, WIFI_SCAN_DONE_BIT);
+            scan_done.store(true, std::memory_order_release);
+            break;
+
+        default:
             break;
     }
 }
@@ -121,29 +162,20 @@ void WiFiManager::handleIPEvent(int32_t event_id, void* event_data)
         ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
         char ip_str[16];
         esp_ip4addr_ntoa(&event->ip_info.ip, ip_str, sizeof(ip_str));
-        current_ip = ip_str;
+        setText(current_ip, sizeof(current_ip), ip_str, strlen(ip_str));
 
-        ESP_LOGI(TAG, "Got IP address: %s", current_ip.c_str());
-        wifi_connected = true;
+        ESP_LOGI(TAG, "Got IP address: %s", ip_str);
+        wifi_connected.store(true, std::memory_order_release);
 
         if (on_connected) {
-            on_connected(current_ssid, current_ip);
+            on_connected(readText(current_ssid), std::string(ip_str));
         }
-
-        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
 
 esp_err_t WiFiManager::initialize()
 {
     ESP_LOGI(TAG, "Initializing WiFi manager...");
-
-    // Create event group
-    wifi_event_group = xEventGroupCreate();
-    if (!wifi_event_group) {
-        ESP_LOGE(TAG, "Failed to create event group");
-        return ESP_ERR_NO_MEM;
-    }
 
 #ifdef CONFIG_ENABLE_WIFI_STATION
     // When Matter is active, the networking stack (esp_netif, event loop,
@@ -217,44 +249,9 @@ esp_err_t WiFiManager::startAPSTAMode()
     return startAPMode();
 }
 
-esp_err_t WiFiManager::connectToStoredNetwork(int index)
+void WiFiManager::requestConnect()
 {
-    if (!nvs_manager || index < 0 || index >= NUM_WIFI_CREDENTIALS) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const WifiCredential& cred = nvs_manager->wifiCredentials[index];
-    if (cred.ssid.empty()) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    ESP_LOGI(TAG, "Connecting to: %s", cred.ssid.c_str());
-
-    wifi_config_t sta_config = {};
-    strncpy((char*)sta_config.sta.ssid, cred.ssid.c_str(), sizeof(sta_config.sta.ssid) - 1);
-    strncpy((char*)sta_config.sta.password, cred.password.c_str(), sizeof(sta_config.sta.password) - 1);
-    sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
-
-    // Wait for connection
-    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
-                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdTRUE, pdFALSE,
-                                            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to %s", cred.ssid.c_str());
-        nvs_manager->lastConnectedNetworkIndex = index;
-        nvs_manager->saveWiFiCredentials();
-        return ESP_OK;
-    }
-
-    // Stop ongoing STA retries for this credential; update() will retry later.
-    esp_wifi_disconnect();
-    ESP_LOGW(TAG, "Failed to connect to %s", cred.ssid.c_str());
-    return ESP_ERR_WIFI_NOT_CONNECT;
+    connect_requested.store(true, std::memory_order_release);
 }
 
 esp_err_t WiFiManager::connectToWiFi()
@@ -263,81 +260,128 @@ esp_err_t WiFiManager::connectToWiFi()
         ESP_LOGE(TAG, "NVS manager not set");
         return ESP_ERR_INVALID_STATE;
     }
+    requestConnect();
+    return ESP_OK;
+}
 
-    // Enable STA only when we are about to actively try a connection.
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    last_connect_attempt = esp_timer_get_time() / 1000;
-
+void WiFiManager::beginSequence(int64_t now)
+{
+    candidate_count = 0;
     bool hasStoredNetworks = false;
-    for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
-        if (!nvs_manager->wifiCredentials[i].ssid.empty()) {
-            hasStoredNetworks = true;
-            break;
-        }
+    const int lastIndex = nvs_manager ? nvs_manager->lastConnectedNetworkIndex : -1;
+
+    // First the last connected network, then the other stored slots, then the Kconfig default
+    // when nothing is stored at all: the same order the blocking sequence used.
+    if (nvs_manager && lastIndex >= 0 && lastIndex < NUM_WIFI_CREDENTIALS &&
+        !nvs_manager->wifiCredentials[lastIndex].ssid.empty()) {
+        candidates[candidate_count++] = lastIndex;
+        hasStoredNetworks = true;
     }
-
-    // First try last connected network
-    int lastIndex = nvs_manager->lastConnectedNetworkIndex;
-    if (lastIndex >= 0 && lastIndex < NUM_WIFI_CREDENTIALS) {
-        if (connectToStoredNetwork(lastIndex) == ESP_OK) {
-            checkInternetConnectivity();
-            return ESP_OK;
-        }
+    for (int i = 0; nvs_manager && i < NUM_WIFI_CREDENTIALS; i++) {
+        if (i == lastIndex) continue;
+        if (nvs_manager->wifiCredentials[i].ssid.empty()) continue;
+        candidates[candidate_count++] = i;
+        hasStoredNetworks = true;
     }
-
-    // Try other stored networks
-    for (int i = 0; i < NUM_WIFI_CREDENTIALS; i++) {
-        if (i == lastIndex) continue;  // Already tried
-
-        if (connectToStoredNetwork(i) == ESP_OK) {
-            checkInternetConnectivity();
-            return ESP_OK;
-        }
-    }
-
     if (!hasStoredNetworks && strlen(CONFIG_QNOB_WIFI_SSID) > 0) {
-        ESP_LOGI(TAG, "Trying default WiFi from Kconfig: %s", CONFIG_QNOB_WIFI_SSID);
+        candidates[candidate_count++] = kKconfigCandidate;
+    }
 
-        wifi_config_t sta_config = {};
+    last_connect_attempt = now;
+    if (candidate_count == 0) {
+        ESP_LOGW(TAG, "No stored network and no Kconfig default: AP only");
+        finishSequence(false, now);
+        return;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    candidate_index = 0;
+    if (!startCandidate(candidate_index, now)) {
+        finishSequence(false, now);
+    }
+}
+
+bool WiFiManager::startCandidate(int position, int64_t now)
+{
+    if (position < 0 || position >= candidate_count) {
+        return false;
+    }
+    const int slot = candidates[position];
+    wifi_config_t sta_config = {};
+    if (slot == kKconfigCandidate) {
+        ESP_LOGI(TAG, "Trying default WiFi from Kconfig: %s", CONFIG_QNOB_WIFI_SSID);
         strncpy((char*)sta_config.sta.ssid, CONFIG_QNOB_WIFI_SSID, sizeof(sta_config.sta.ssid) - 1);
         strncpy((char*)sta_config.sta.password, CONFIG_QNOB_WIFI_PASSWORD, sizeof(sta_config.sta.password) - 1);
-        sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        const WifiCredential& cred = nvs_manager->wifiCredentials[slot];
+        ESP_LOGI(TAG, "Connecting to: %s (slot %d, %d of %d)", cred.ssid.c_str(), slot, position + 1, candidate_count);
+        strncpy((char*)sta_config.sta.ssid, cred.ssid.c_str(), sizeof(sta_config.sta.ssid) - 1);
+        strncpy((char*)sta_config.sta.password, cred.password.c_str(), sizeof(sta_config.sta.password) - 1);
+    }
+    sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-        ESP_ERROR_CHECK(esp_wifi_connect());
+    sta_fail_event.store(false, std::memory_order_release);
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    const esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    active_candidate = slot;
+    attempt_started_ms = now;
+    phase = ConnectPhase::Trying;
+    return true;
+}
 
-        EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
-                                                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                                pdTRUE, pdFALSE,
-                                                pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-
-        if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "Connected to default WiFi SSID");
+void WiFiManager::serviceSequence(int64_t now)
+{
+    if (wifi_connected.load(std::memory_order_acquire)) {
+        if (active_candidate == kKconfigCandidate) {
+            ESP_LOGI(TAG, "Connected to default WiFi SSID; storing it in slot 0");
             nvs_manager->wifiCredentials[0].ssid = CONFIG_QNOB_WIFI_SSID;
             nvs_manager->wifiCredentials[0].password = CONFIG_QNOB_WIFI_PASSWORD;
             nvs_manager->wifiCredentials[0].remember = true;
             nvs_manager->lastConnectedNetworkIndex = 0;
-            nvs_manager->saveWiFiCredentials();
-            checkInternetConnectivity();
-            return ESP_OK;
+        } else {
+            nvs_manager->lastConnectedNetworkIndex = active_candidate;
         }
-
-        esp_wifi_disconnect();
-        ESP_LOGW(TAG, "Failed to connect to default WiFi SSID");
+        nvs_manager->saveWiFiCredentials();
+        finishSequence(true, now);
+        return;
     }
 
+    const bool failed = sta_fail_event.load(std::memory_order_acquire);
+    const bool timedOut = now - attempt_started_ms > WIFI_CONNECT_TIMEOUT_MS;
+    if (!failed && !timedOut) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "Candidate %d of %d %s", candidate_index + 1, candidate_count, failed ? "failed" : "timed out");
+    esp_wifi_disconnect();
+    candidate_index++;
+    if (!startCandidate(candidate_index, now)) {
+        finishSequence(false, now);
+    }
+}
+
+void WiFiManager::finishSequence(bool connected, int64_t now)
+{
+    phase = ConnectPhase::Done;
+    last_connect_attempt = now;
+    if (connected) {
+        ESP_LOGI(TAG, "Connected to %s", readText(current_ssid).c_str());
+        return;
+    }
     // No successful STA connection: keep AP only to avoid repeated STA warning spam.
     esp_wifi_disconnect();
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_LOGW(TAG, "Failed to connect to any stored network");
-    return ESP_ERR_WIFI_NOT_CONNECT;
 }
 
 void WiFiManager::disconnect()
 {
     esp_wifi_disconnect();
-    wifi_connected = false;
-    internet_available = false;
+    wifi_connected.store(false, std::memory_order_release);
 }
 
 esp_err_t WiFiManager::scanNetworks()
@@ -354,9 +398,10 @@ esp_err_t WiFiManager::scanNetworks()
         }
     };
 
+    scan_done.store(false, std::memory_order_release);
     esp_err_t ret = esp_wifi_scan_start(&scan_config, false);  // Non-blocking
     if (ret == ESP_OK) {
-        last_scan_time = esp_timer_get_time() / 1000;
+        last_scan_time = nowMs();
     }
     return ret;
 }
@@ -373,7 +418,7 @@ int WiFiManager::getSignalStrength()
 
 int8_t WiFiManager::getRSSI() const
 {
-    if (!wifi_connected) return -100;
+    if (!isConnected()) return -100;
 
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
@@ -384,95 +429,37 @@ int8_t WiFiManager::getRSSI() const
 
 std::string WiFiManager::getIPAddress() const
 {
-    return current_ip;
+    return readText(current_ip);
 }
 
 std::string WiFiManager::getSSID() const
 {
-    return current_ssid;
-}
-
-bool WiFiManager::checkInternetConnectivity()
-{
-    if (!wifi_connected) {
-        internet_available = false;
-        return false;
-    }
-
-    // Try to resolve a well-known DNS
-    ip_addr_t dns_addr;
-    esp_err_t err = dns_gethostbyname("www.google.com", &dns_addr, nullptr, nullptr);
-
-    if (err == ESP_OK || err == ERR_INPROGRESS) {
-        // DNS resolution started/succeeded
-        internet_available = true;
-        ESP_LOGI(TAG, "Internet connectivity confirmed");
-        return true;
-    }
-
-    // Try a simple TCP connection to Google DNS
-    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) {
-        internet_available = false;
-        return false;
-    }
-
-    struct sockaddr_in dest_addr;
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(53);
-    inet_pton(AF_INET, "8.8.8.8", &dest_addr.sin_addr);
-
-    // Set non-blocking with timeout
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    int result = connect(sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
-    close(sock);
-
-    internet_available = (result == 0);
-
-    if (internet_available) {
-        ESP_LOGI(TAG, "Internet connectivity confirmed via TCP");
-    } else {
-        ESP_LOGW(TAG, "No internet connectivity");
-    }
-
-    return internet_available;
+    return readText(current_ssid);
 }
 
 void WiFiManager::update()
 {
     if (!initialized) return;
 
-    int64_t current_time = esp_timer_get_time() / 1000;
+    const int64_t current_time = nowMs();
+    const bool connected = isConnected();
 
-    // Check WiFi connection status
-    wifi_ap_record_t ap_info;
-    bool currently_connected = (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
+    if (connected && !last_reported_connected) {
+        ESP_LOGI(TAG, "WiFi link up: %s %s", readText(current_ssid).c_str(), readText(current_ip).c_str());
+    } else if (!connected && last_reported_connected) {
+        ESP_LOGW(TAG, "WiFi link down");
+    }
+    last_reported_connected = connected;
 
-    if (currently_connected && !wifi_connected) {
-        // Just connected
-        wifi_connected = true;
-        ESP_LOGI(TAG, "WiFi reconnected to: %s", (char*)ap_info.ssid);
-        checkInternetConnectivity();
-    } else if (!currently_connected && wifi_connected) {
-        // Just disconnected
-        wifi_connected = false;
-        internet_available = false;
-        ESP_LOGW(TAG, "WiFi disconnected");
-        if (on_disconnected) {
-            on_disconnected();
-        }
+    if (connect_requested.exchange(false, std::memory_order_acq_rel) && phase != ConnectPhase::Trying) {
+        beginSequence(current_time);
     }
 
-    // Periodic tasks
-    if (!wifi_connected && (current_time - last_connect_attempt > WIFI_SCAN_INTERVAL_MS)) {
-        // Try to reconnect
+    if (phase == ConnectPhase::Trying) {
+        serviceSequence(current_time);
+    } else if (!connected && current_time - last_connect_attempt > WIFI_RETRY_INTERVAL_MS) {
         ESP_LOGI(TAG, "Attempting to reconnect to WiFi...");
-        connectToWiFi();
+        beginSequence(current_time);
     }
 
     // Check AP status
@@ -499,7 +486,7 @@ void WiFiManager::update()
 // C-compatible interface
 extern "C" {
 
-static std::string g_ip_buffer;
+static char g_ip_buffer[16];
 
 wifi_manager_handle_t wifi_manager_create(void* nvs_manager)
 {
@@ -528,8 +515,10 @@ bool wifi_manager_is_connected(wifi_manager_handle_t handle)
 
 const char* wifi_manager_get_ip(wifi_manager_handle_t handle)
 {
-    g_ip_buffer = static_cast<WiFiManager*>(handle)->getIPAddress();
-    return g_ip_buffer.c_str();
+    const std::string ip = static_cast<WiFiManager*>(handle)->getIPAddress();
+    strncpy(g_ip_buffer, ip.c_str(), sizeof(g_ip_buffer) - 1);
+    g_ip_buffer[sizeof(g_ip_buffer) - 1] = '\0';
+    return g_ip_buffer;
 }
 
 }

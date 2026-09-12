@@ -1,34 +1,43 @@
 #include "TimeHandler.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 static const char* TAG = "TimeHandler";
 
-TimeHandler::TimeHandler(int timeZone)
-    : timeZone(timeZone), lastNtpSyncTime(0), lastTimeCheckTime(0), timeInitialized(false) {
+TimeHandler::TimeHandler(int utcOffsetMinutes, const char* server1, const char* server2)
+    : utcOffsetMinutes_(utcOffsetMinutes),
+      lastNtpSyncTime(0),
+      lastTimeCheckTime(0),
+      syncStartedMs(0),
+      timeInitialized(false),
+      syncInFlight(false) {
 
-    currentDate = "----/--/--";
-    currentTime = "--:--";
-    dayOfWeek = "---";
+    strcpy(currentDate, "----/--/--");
+    strcpy(currentTime, "--:--");
+    strcpy(dayOfWeek, "---");
 
-    // Configure timezone
+    // POSIX TZ strings carry the sign inverted: UTC+3 is "UTC-3".
     char tzStr[32];
-    if (timeZone >= 0) {
-        snprintf(tzStr, sizeof(tzStr), "UTC-%d", timeZone);
+    const int absMinutes = utcOffsetMinutes < 0 ? -utcOffsetMinutes : utcOffsetMinutes;
+    const char sign = utcOffsetMinutes >= 0 ? '-' : '+';
+    if (absMinutes % 60 == 0) {
+        snprintf(tzStr, sizeof(tzStr), "UTC%c%d", sign, absMinutes / 60);
     } else {
-        snprintf(tzStr, sizeof(tzStr), "UTC+%d", -timeZone);
+        snprintf(tzStr, sizeof(tzStr), "UTC%c%d:%02d", sign, absMinutes / 60, absMinutes % 60);
     }
     setenv("TZ", tzStr, 1);
     tzset();
+    ESP_LOGI(TAG, "Clock offset %+d min (TZ=%s), NTP %s / %s", utcOffsetMinutes, tzStr, server1, server2);
 
     // Configure SNTP
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_setservername(1, "time.nist.gov");
+    esp_sntp_setservername(0, server1);
+    if (server2 != nullptr && server2[0] != '\0') {
+        esp_sntp_setservername(1, server2);
+    }
 
     // Check if RTC already has valid time (from previous boot)
     time_t now = time(nullptr);
@@ -54,42 +63,32 @@ bool TimeHandler::isTimeValid(time_t timeValue) const {
     return timeValue > VALID_TIME_THRESHOLD;
 }
 
-std::string TimeHandler::getDayOfWeekString(int wday) {
+const char* TimeHandler::getDayOfWeekString(int wday) {
     static const char* days[] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
     if (wday >= 0 && wday <= 6) {
-        return std::string(days[wday]);
+        return days[wday];
     }
     return "---";
 }
 
-bool TimeHandler::syncWithNTP() {
-    ESP_LOGI(TAG, "Syncing with NTP server...");
-
-    // Initialize SNTP if not already running
+void TimeHandler::startSync() {
     if (esp_sntp_enabled() == false) {
         esp_sntp_init();
     } else {
         esp_sntp_restart();
     }
+    syncInFlight = true;
+    syncStartedMs = millis();
+    ESP_LOGI(TAG, "NTP sync started");
+}
 
-    // Wait up to 10 seconds for time to sync
-    int64_t startAttempt = millis();
-    while (millis() - startAttempt < 10000) {
-        time_t now = time(nullptr);
+bool TimeHandler::syncWithNTP() {
+    startSync();
+    return timeInitialized;
+}
 
-        if (isTimeValid(now)) {
-            timeInitialized = true;
-            updateTimeStrings();
-            ESP_LOGI(TAG, "NTP sync successful - Time: %s", currentTime.c_str());
-            lastNtpSyncTime = millis();
-            return true;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGW(TAG, "NTP sync failed after 10 seconds");
-    return false;
+time_t TimeHandler::epochNow() const {
+    return time(nullptr);
 }
 
 time_t TimeHandler::getCurrentEpochTime() {
@@ -103,8 +102,8 @@ time_t TimeHandler::getCurrentEpochTime() {
     return now;
 }
 
-struct tm TimeHandler::getTimeStruct() {
-    time_t now = getCurrentEpochTime();
+struct tm TimeHandler::getTimeStruct() const {
+    time_t now = time(nullptr);
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
     return timeinfo;
@@ -114,86 +113,90 @@ void TimeHandler::updateTimeStrings() {
     struct tm timeinfo = getTimeStruct();
 
     if (timeinfo.tm_year > 120) {  // Year is years since 1900, so 2020 = 120
+        // Format into scratch buffers wide enough for any int, then copy: the fixed members are
+        // exactly the display width and -Wformat-truncation refuses to write into them directly.
         char dateBuffer[32];
         snprintf(dateBuffer, sizeof(dateBuffer), "%04d/%02d/%02d",
-                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-        currentDate = std::string(dateBuffer);
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        strncpy(currentDate, dateBuffer, sizeof(currentDate) - 1);
+        currentDate[sizeof(currentDate) - 1] = '\0';
 
         char timeBuffer[16];
         snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-        currentTime = std::string(timeBuffer);
+        strncpy(currentTime, timeBuffer, sizeof(currentTime) - 1);
+        currentTime[sizeof(currentTime) - 1] = '\0';
 
-        dayOfWeek = getDayOfWeekString(timeinfo.tm_wday);
+        strncpy(dayOfWeek, getDayOfWeekString(timeinfo.tm_wday), sizeof(dayOfWeek) - 1);
+        dayOfWeek[sizeof(dayOfWeek) - 1] = '\0';
     }
 }
 
-std::string TimeHandler::getCurrentDate() {
-    if (timeInitialized) {
-        updateTimeStrings();
-    }
-    return currentDate;
+std::string TimeHandler::getCurrentDate() const {
+    return std::string(currentDate);
 }
 
-std::string TimeHandler::getCurrentTime() {
-    if (timeInitialized) {
-        updateTimeStrings();
-    }
-    return currentTime;
+std::string TimeHandler::getCurrentTime() const {
+    return std::string(currentTime);
 }
 
-std::string TimeHandler::getDayOfWeek() {
-    if (timeInitialized) {
-        updateTimeStrings();
-    }
-    return dayOfWeek;
+std::string TimeHandler::getDayOfWeek() const {
+    return std::string(dayOfWeek);
 }
 
-int TimeHandler::getCurrentYear() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_year + 1900;
+int TimeHandler::getCurrentYear() const {
+    return getTimeStruct().tm_year + 1900;
 }
 
-int TimeHandler::getCurrentMonth() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_mon + 1;
+int TimeHandler::getCurrentMonth() const {
+    return getTimeStruct().tm_mon + 1;
 }
 
-int TimeHandler::getCurrentDay() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_mday;
+int TimeHandler::getCurrentDay() const {
+    return getTimeStruct().tm_mday;
 }
 
-int TimeHandler::getCurrentHour() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_hour;
+int TimeHandler::getCurrentHour() const {
+    return getTimeStruct().tm_hour;
 }
 
-int TimeHandler::getCurrentMinute() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_min;
+int TimeHandler::getCurrentMinute() const {
+    return getTimeStruct().tm_min;
 }
 
-int TimeHandler::getCurrentSecond() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_sec;
+int TimeHandler::getCurrentSecond() const {
+    return getTimeStruct().tm_sec;
 }
 
-int TimeHandler::getCurrentWeekday() {
-    struct tm timeinfo = getTimeStruct();
-    return timeinfo.tm_wday;
+int TimeHandler::getCurrentWeekday() const {
+    return getTimeStruct().tm_wday;
 }
 
 void TimeHandler::update() {
-    int64_t currentMillis = millis();
+    const int64_t currentMillis = millis();
+
+    if (!timeInitialized) {
+        if (isTimeValid(time(nullptr))) {
+            timeInitialized = true;
+            syncInFlight = false;
+            lastNtpSyncTime = currentMillis;
+            updateTimeStrings();
+            ESP_LOGI(TAG, "NTP sync successful - Time: %s", currentTime);
+        } else if (syncInFlight && currentMillis - syncStartedMs > NTP_SYNC_WARN_MS) {
+            ESP_LOGW(TAG, "No NTP answer after 10 seconds; still listening");
+            syncInFlight = false;  // SNTP keeps polling on its own; log once
+        }
+        return;
+    }
 
     // Update time strings periodically
-    if (timeInitialized && (currentMillis - lastTimeCheckTime > TIME_CHECK_INTERVAL)) {
+    if (currentMillis - lastTimeCheckTime > TIME_CHECK_INTERVAL) {
         updateTimeStrings();
         lastTimeCheckTime = currentMillis;
     }
 
-    // Re-sync with NTP periodically
-    if (timeInitialized && (currentMillis - lastNtpSyncTime > NTP_SYNC_INTERVAL)) {
-        syncWithNTP();
+    // Re-sync with NTP periodically (non-blocking)
+    if (currentMillis - lastNtpSyncTime > NTP_SYNC_INTERVAL) {
+        lastNtpSyncTime = currentMillis;
+        startSync();
     }
 }

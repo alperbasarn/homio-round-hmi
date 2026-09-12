@@ -21,7 +21,8 @@ namespace model {
 // drainPendingMutations() at the top of its frame, which routes every record to its model,
 // ticks the time-driven policies, then commits every model once so subscribers see each
 // changed model exactly once per frame. Direct setter calls on the display task (the shadow
-// phase, MDL-31) are committed by the same drain.
+// phase, MDL-31) are committed by the same drain. With QNOB_MODEL_TRACE compiled in, each drain
+// that did something logs one line plus one line per committed model (MDL-32).
 class AppModel {
 public:
     using WireFn = void (*)(AppModel& app, void* context);
@@ -48,6 +49,7 @@ public:
     uint32_t unroutedRecords() const { return unrouted_; }
     uint32_t rejectedRecords() const { return rejected_; }
     size_t lastCommitCount() const { return lastCommitCount_; }
+    uint8_t lastCommitMask() const { return lastCommitMask_; }  // bit i = Aggregate i committed
 
     MediaModel& media() { return media_; }
     LightModel& light() { return light_; }
@@ -69,6 +71,7 @@ public:
 
 private:
     void apply(const ModelUpdate& record, Millis nowMs);
+    void traceDrain(size_t drained) const;
 
     MutationQueue mutations_;
     Clock clock_;
@@ -76,6 +79,7 @@ private:
     uint32_t unrouted_;
     uint32_t rejected_;
     size_t lastCommitCount_;
+    uint8_t lastCommitMask_;
 
     MediaModel media_;
     LightModel light_;

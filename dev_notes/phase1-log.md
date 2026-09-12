@@ -180,3 +180,68 @@ unchanged (2,520 / 2,524 / 3,854 B), because nothing references the eight model 
 the linker leaves unreferenced archive members out. The sources compiled on both toolchains
 (xtensa and RISC-V) under the firmware flags. The first real measurement of the model layer on
 the device comes with APP-06, which constructs the root.
+
+## WP1.4 Shadow population and ownership fixes
+
+Started 2026-09-12 after WP1.3, on the owner's go-ahead and before `p0-fixed` exists (the P1b
+comparison against it is still owed). This is the first package that changes behaviour: the
+model root is live, the network task no longer blocks, the battery leaves the render loop, and
+the four screen callbacks read the model. Every visible delta is on the section 8.2 P1b
+allow-list.
+
+**Shape.** `AppModel` is a global held by value in `main.cpp`; `adapters::model_host` installs
+the queue's spinlock, sleep, log and drain-guard hooks and the clock, and the display task
+registers itself as the single consumer with its first statement. Every existing data path that
+reaches a screen also posts a `ModelUpdate` record; nothing outside `AppModel::apply()` calls a
+model setter. Three pollers on the network task feed the connectivity, environment and power
+models by push-on-change; the screens read the model through their existing callbacks (NET-11)
+and keep their own fields until Phase 3.
+
+| Task | Status | What changed | Verification |
+|---|---|---|---|
+| APP-06 root | done | `static model::AppModel appModel` in `main.cpp`; `adapters/ModelHost` installs the hooks (portMUX critical section, `vTaskDelay` retry sleep, `ESP_LOGW` for overflow lines, `xTaskGetCurrentTaskHandle()` guard, `esp_timer` clock); `drainPendingMutations()` is the first thing the display frame does; `wireSubscriptions()` seals before the tasks start. `main` already required `model` and `adapters` (BLD-41). | builds on all three variants; with `CONFIG_QNOB_MODEL_TRACE=y` one `MODEL:` drain line plus one line per changed model |
+| MDL-31 shadow writes | done | The MQTT lambda posts `IndoorTemp` (float) and `IndoorSampled` for `qnob/indoor/temperature` and `Brightness` for the light topic, from the MQTT task, through the queue; `DisplayController`, `SoundController` and `LightController` take a queue pointer and post records (below); the four screen callbacks read model state. `grep` for a model setter outside `AppModel::apply` finds none. | code review; the trace on the bench is the runtime check |
+| MDL-32 `ModelTrace` | done | `model/TraceHooks` (hooks, enable flag, write and off-task counters, task name, log sink) and `model/ModelTrace` (one fixed-buffer formatter per state). Compile-gated by `QNOB_MODEL_TRACE`, which `components/model/CMakeLists.txt` defines from `CONFIG_QNOB_MODEL_TRACE` (a new Kconfig bool, default n); the purity guard now checks Kconfig symbols in sources only, so the CMake glue may read it. `ModelBase::mutate()` calls `trace::noteWrite()` under the gate: a write from any task but the consumer is counted. `AppModel` logs `drain task=<name> n=<records> commit=<models> unrouted= rejected= offtask=` and the changed models. The host build compiles with the trace on. | `test_model_trace`: the counter follows the guard, a drain logs 1 + N lines, formatters fit and allocate nothing |
+| INPT-05 knob shadow | done | `DisplayController::postKnobToken`: `+`/`-` → `KnobModel::Field::Delta` ±1, `setpoint=N` (the burst the command grammar drops today) → `Field::Burst`, anything else → `LinkActivity`. Navigation shadow in the same class: `ActiveScreen` on every mode change (SLEEP and CALIBRATE post nothing, D8), `Activity` on every touch or knob event, `InitProgress` on the ramp, `ModeStep` and `Mode` on the wheel. | 20 detents in SOUND move `detentCount` 1:1 (bench, trace) |
+| CTRL-07 media shadow | done | `SoundController::postMedia`: local changes post `VolumeLocal` (no echo check), inbound `setpoint:` and `state:` post `Volume` and `IsPlaying`, bare `playing`/`paused` post `IsPlaying`. | trace vs the arc and the state label (bench) |
+| CTRL-08 light shadow | done | `LightController` posts `Brightness` (the field is `brightness`; `waterLevel` stays a view word), `Hue` (float) during a drag, `Mode` on a mode change, and `Brightness` on the inbound MQTT value. | trace vs the fill and the hue (bench) |
+| NET-09 one internet owner | done | `InternetHandler` owns `internetAvailable` (an atomic); `WiFiManager` lost its copy, `checkInternetConnectivity()` and the "reconnected → re-check" branch; `MQTTManager` takes `setInternetPredicate()` and falls back to the link state without one. The probe runs immediately when the link comes up, then every 30 s. | MQTT connects as soon as the first probe answers (bench: <10 s after IP) |
+| NET-10 no cross-task strings | done | `TimeHandler` keeps date/time/day in fixed character arrays refreshed only on the network task; its getters are `const` and return copies. `WiFiManager` keeps SSID and IP in fixed arrays written under a spinlock by the event task; getters return copies. The C shim's static `std::string` is a fixed buffer too. | code review; the 30-minute soak is a bench item |
+| NET-06 `ConnectivityPoller` | done | `adapters/ConnectivityPoller`: a pure core (`poll(sample, now, queue)`) plus the driver-facing wrapper under `ESP_PLATFORM`. Posts each of wifi / internet / mqtt / light-configured on change and `Rssi` only when the mapped bars change; the mapping is `model::signalBarsFromRssi`, not the driver's. | `test_pollers`: 5 records on the first poll, 0 while steady, 0 for RSSI jitter inside a bar, all five bar values reachable |
+| NET-07 `EnvironmentPoller` + config | done | Posts `Epoch` (UTC seconds + offset minutes) only when the local minute changes and `OutdoorTemp` when the weather reading changes; `EnvironmentModel` derives the civil date. Timezone and NTP servers left the literals: `CONFIG_QNOB_UTC_OFFSET_MINUTES` (default 180), `CONFIG_QNOB_NTP_SERVER_1/2`. **DST decision (section 9 Q28):** no DST handling; the offset is fixed from config. Türkiye has used permanent UTC+3 since 2016, so the bench is correct; an NVS override is a later row. The colon blink stays in the view at 1 Hz. | `test_pollers`: nine minute boundaries in ten simulated minutes at the 100 ms cadence, no string ever posted |
+| NET-31 poller tests | done | `test_pollers.cpp` over sample structs, a real `MutationQueue` and an `AppModel`, no ESP header in the translation unit; `adapters/sources.cmake` compiles the same core files on the host. | 5 cases green |
+| PERI-05 real presence | done | `BatteryHandler::isPresenceKnown()` is true only when the AXP2101 answered the presence bit; `isBatteryConnected()` is that answer, never "telemetry present". The ADC boards report presence unknown and the DeviceInfo screen shows its `est` wording (the allow-listed delta). | C6 says estimate; `[AXP2101]` flips on cell removal (bench) |
+| PERI-06 `BatteryPoller` | done | Posts `Percent` and `Voltage` (floats, the −1 sentinel passed through so the model marks the reading invalid), `PresenceKnown`, `Connected` and `Charging` on change. | `test_pollers`: sentinel → `percentValid` false, presence known and not connected |
+| PERI-07 off the render loop | done | `batteryHandler->analyze()` runs on the network task before the poller, outside the WiFi branch, so the reading refreshes with the link down. | trace attributes the sample to NetworkTask (bench) |
+| PERI-08 dead telemetry | done, one deviation | `currentMilliamps` and `lastRawSpread` deleted. `isCharging()` is kept: the WBS row calls it never-populated, but the AXP2101 path does populate it from STATUS2 and `PowerModel.charging` consumes it. | build clean; percentage arithmetic untouched |
+| NET-11 callbacks on the model | done | Date/time/day, outdoor temperature, network status and battery status come from `appModel.<model>().state()` on the display task. The pollers run every 100 ms, so the visible refresh rates are unchanged. | bench: INFO and DEVICE_INFO identical to before |
+| NET-28 weather key out of the header | done | `CONFIG_QNOB_WEATHER_API_KEY` / `_CITY` / `_COUNTRY` (Kconfig; the key defaults to empty and belongs in `sdkconfig.defaults.local`, documented in the example overlay); the request is `https://` with `esp_crt_bundle_attach`; `weather_handler` requires `mbedtls`. The leaked literal is gone from the tree; the rotation itself (PCKNOB-02b) is still the owner's. | an empty key logs "not configured" and performs no fetch (code path); 200 over TLS is a bench item |
+| NET-29 instance-owned buffer | done | The 2 KB buffer, its length and a truncation flag are members; the event handler receives `this` through `user_data`; chunked bodies are appended like any other; a truncated body is logged and never parsed. | two back-to-back fetches are independent by construction |
+| NET-30 no blocking on the network task | done | WiFi: `connectToWiFi()` requests a sequence that `update()` runs one candidate per 15 s, reacting to the driver's events; nothing waits on an event group. NTP: `startSync()` returns at once and `update()` observes validity. HTTP: the weather fetch is `is_async` and `service()` advances it per iteration with a 10 s deadline. Internet probe: a non-blocking TCP connect polled with `select` and a 3 s deadline. The `connectWifi` command from the command task only sets a flag. | bench: no network-task iteration over 200 ms; MQTT back within 10 s after an AP power cycle |
+| PCKNOB-04 link contract | done | `components/knob_controller/knob_link_protocol.md`: framing, every v1 token with its producer and consumer cited to `file:line`, the v2 form, `=` versus `:`, and the finding that the knob's `Updated setpoint` ack goes to USB, never to the link. | every v2 token has one producer and one consumer |
+| PCKNOB-05 unread `last_setPoint` | done, not committed | Deleted from `HapticController3.ino` and `FOC.ino` in the working tree. The Motor Driver folder is in the QNOB repository, whose working tree carries the owner's uncommitted hardware edits, so this change stays uncommitted for the owner to include; the sketch was not compiled here (no Arduino toolchain). | `grep last_setPoint` empty |
+
+Host suite after WP1.4: 19 executables, 128 cases, all green with ASan/UBSan and the trace
+compiled in; purity guard clean and re-proven against an injected Kconfig token.
+
+Kconfig additions (`main/Kconfig.projbuild`): `QNOB_MODEL_TRACE`, `QNOB_UTC_OFFSET_MINUTES`,
+`QNOB_NTP_SERVER_1`, `QNOB_NTP_SERVER_2`, `QNOB_WEATHER_API_KEY`, `QNOB_WEATHER_CITY`,
+`QNOB_WEATHER_COUNTRY`.
+
+Residuals: (1) the indoor temperature still reaches `EnvironmentInfoScreen` by a direct call
+from the MQTT task (a pre-existing cross-task write into the screen) beside the record; Phase 3
+removes it with the screen. (2) The weather key has no NVS override yet. (3) The knob write path
+(`KnobModel::takeWriteRequest`) is not wired to the UART until PCKNOB-15. (4) `WiFiManager`'s
+scan and AP-STA surface is still present for NET-27.
+
+On-device (all three variants built clean after WP1.4; the Kconfig change forced full rebuilds):
+the whole model links now. `libmodel.a` is 17,951 B of flash on the 1.75 (17,967 B on the 1.28,
+26,358 B on the C6), `libadapters.a` 2,275 B; the model root is the 3,773 B `.bss` of `libmain.a`
+on the 1.75 (3,769 B on the C6), inside the 4 KB MDL-01 budget. Binaries: 1.75 1,609,488 B
+(0x188F10, +21,440 B against WP1.3, 51 % of the app partition free); 1.28 1,567,776 B (0x17EC20,
++21,520 B); C6 1,762,416 B (0x1AE470, +28,912 B, 46 % free). DIRAM on the 1.75 208,883 B used
+(61.1 %), IRAM unchanged at 16,383 / 16,384; C6 DIRAM 230,819 B (51.1 %). No new first-party
+warning beyond the pre-existing missing-field-initializer on the scan config. Bench items pending
+on the 1.75: the trace walk (knob + INFO) with `CONFIG_QNOB_MODEL_TRACE=y` and the off-task
+counter reading 0, MQTT up within 10 s of IP, recovery after an AP power cycle, the weather 200
+over TLS with a rotated key, and the P1b comparison against `p0-fixed` once that tag exists.

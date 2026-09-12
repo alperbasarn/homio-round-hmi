@@ -3,6 +3,8 @@
 #include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
+#include "model/LightModel.h"
+#include "model/MutationQueue.h"
 #include <cstdint>
 #include <functional>
 #include <lvgl.h>
@@ -54,6 +56,11 @@ private:
     lv_obj_t* levelLabel;
     lv_obj_t* modeLabel;
     lv_obj_t* hintLabel;
+    model::MutationQueue* modelQueue;   // CTRL-08: brightness (not waterLevel), hue and mode go to LightModel as records
+
+    void postBrightness();
+    void postHue();
+    void postMode();
 
     LightMQTTPublishCallback mqttPublishCallback;
     LightMQTTConnectedCallback mqttConnectedCallback;
@@ -90,6 +97,7 @@ public:
     void setMQTTPublishCallback(LightMQTTPublishCallback callback) { mqttPublishCallback = callback; }
     void setMQTTConnectedCallback(LightMQTTConnectedCallback callback) { mqttConnectedCallback = callback; }
     void setMQTTConfiguredCallback(LightMQTTConfiguredCallback callback) { mqttConfiguredCallback = callback; }
+    void setModelQueue(model::MutationQueue* queue) { modelQueue = queue; }
 
     void onBrightnessReceived(int brightness);
 };

@@ -19,4 +19,6 @@ set(MODEL_SOURCES
     "${MODEL_DIR}/src/PowerModel.cpp"
     "${MODEL_DIR}/src/NavigationModel.cpp"
     "${MODEL_DIR}/src/KnobModel.cpp"
+    "${MODEL_DIR}/src/TraceHooks.cpp"
+    "${MODEL_DIR}/src/ModelTrace.cpp"
 )

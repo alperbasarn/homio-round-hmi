@@ -23,10 +23,10 @@ public:
         float voltageDividerRatio = 2.0f;
     };
 
+    // PERI-08: currentMilliamps was never populated on either source and is gone.
     struct BatteryTelemetry {
         float percentage = -1.0f;
         float voltageVolts = -1.0f;
-        float currentMilliamps = -1.0f;
     };
 
 private:
@@ -44,8 +44,9 @@ private:
     Config config;
     BatteryTelemetry batteryTelemetry;
     int64_t lastMeasurementTime;
-    int lastRawSpread;
     bool charging;
+    bool batteryPresent;   // PERI-05: what the AXP2101 reports; meaningless on the ADC source
+    bool presenceKnown;    // PERI-05: true only when the PMU answered the presence bit
     bool initialized;
 
     static constexpr int64_t DEFAULT_MEASUREMENT_INTERVAL_MS = 30000;
@@ -74,6 +75,9 @@ public:
     void analyze();
 
     BatteryTelemetry getBatteryTelemetry() const { return batteryTelemetry; }
+    // PERI-05: presence is a fact only the AXP2101 can state. isBatteryConnected() is that fact;
+    // when presence is unknown (ADC source) it is false and the screen says "estimate".
+    bool isPresenceKnown() const;
     bool isBatteryConnected() const;
     bool isInitialized() const { return initialized; }
     bool isCharging() const;

@@ -9,7 +9,7 @@ violations=0
 if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](esp_|freertos/|driver/|lvgl|nvs_|hal/|soc/|sdkconfig)' "${MODEL_DIR}"; then
     violations=1
 fi
-if grep -rnE '\bCONFIG_[A-Z0-9_]+' "${MODEL_DIR}"; then
+if grep -rnE --include='*.h' --include='*.cpp' '\bCONFIG_[A-Z0-9_]+' "${MODEL_DIR}"; then
     violations=1
 fi
 if grep -rnE '\b(esp_[a-z_]+\(|lv_[a-z_]+\(|nvs_[a-z_]+\(|xTask[A-Za-z]+\(|vTask[A-Za-z]+\()' "${MODEL_DIR}"; then

@@ -35,7 +35,13 @@ SoundController::SoundController(DisplayPanelBackend* displayBackend, TouchPanel
       volumeLabel(nullptr),
       stateLabel(nullptr),
       hintLabel(nullptr),
-      hasPendingMessage(false) {
+      hasPendingMessage(false),
+      modelQueue(nullptr) {
+}
+
+void SoundController::postMedia(model::MediaModel::Field field, int value) {
+    if (modelQueue == nullptr) return;
+    modelQueue->post(model::MediaModel::make(field, value, static_cast<uint32_t>(millis())));
 }
 
 void SoundController::ensureUi() {
@@ -206,12 +212,14 @@ void SoundController::processIncomingMessage() {
             lastSetpointChangeTime = millis();
             lastSentSetpoint = setpoint;
             drawSetPoint();
+            postMedia(model::MediaModel::Field::Volume, setpoint);
         }
     } else if (pendingMessage.find("state:") == 0) {
         const size_t commaPos = pendingMessage.find(',');
         if (commaPos != std::string::npos) {
             const std::string playState = pendingMessage.substr(6, commaPos - 6);
             isPlaying = (playState == "playing");
+            postMedia(model::MediaModel::Field::IsPlaying, isPlaying ? 1 : 0);
 
             const size_t volPos = pendingMessage.find("volume:");
             if (volPos != std::string::npos) {
@@ -219,6 +227,7 @@ void SoundController::processIncomingMessage() {
                 if (newVol >= 0 && newVol <= 100) {
                     setpoint = newVol;
                     lastSentSetpoint = setpoint;
+                    postMedia(model::MediaModel::Field::Volume, setpoint);
                 }
             }
 
@@ -229,10 +238,12 @@ void SoundController::processIncomingMessage() {
         isPlaying = true;
         if (!stateReceived) stateReceived = true;
         drawSetPoint();
+        postMedia(model::MediaModel::Field::IsPlaying, 1);
     } else if (pendingMessage == "paused") {
         isPlaying = false;
         if (!stateReceived) stateReceived = true;
         drawSetPoint();
+        postMedia(model::MediaModel::Field::IsPlaying, 0);
     } else {
         // CTRL-01: this branch used to be silent, which is how the dead PC round-trip went unnoticed.
         ESP_LOGW(TAG, "Inbound sound message matched no branch: '%s'", pendingMessage.c_str());
@@ -271,6 +282,7 @@ void SoundController::incrementSetpoint() {
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
         drawSetPoint();
+        postMedia(model::MediaModel::Field::VolumeLocal, setpoint);
     }
 }
 
@@ -280,6 +292,7 @@ void SoundController::decrementSetpoint() {
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
         drawSetPoint();
+        postMedia(model::MediaModel::Field::VolumeLocal, setpoint);
     }
 }
 
@@ -304,6 +317,7 @@ void SoundController::updateSetpoint(int level) {
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
         drawSetPoint();
+        postMedia(model::MediaModel::Field::VolumeLocal, setpoint);
     }
 }
 

@@ -48,8 +48,9 @@ BatteryHandler::BatteryHandler()
       config{},
       batteryTelemetry{},
       lastMeasurementTime(0),
-      lastRawSpread(0),
       charging(false),
+      batteryPresent(false),
+      presenceKnown(false),
       initialized(false) {
     config.measurementIntervalMs = DEFAULT_MEASUREMENT_INTERVAL_MS;
     config.voltageDividerRatio = DEFAULT_VOLTAGE_DIVIDER_RATIO;
@@ -107,7 +108,8 @@ esp_err_t BatteryHandler::initialize(const Config& initConfig) {
 
     resetTelemetry();
     lastMeasurementTime = 0;
-    lastRawSpread = 0;
+    batteryPresent = false;
+    presenceKnown = false;
 
     esp_err_t err = ESP_OK;
     switch (config.source) {
@@ -347,7 +349,6 @@ float BatteryHandler::readVoltage() {
     }
 
     std::sort(rawSamples.begin(), rawSamples.begin() + validSamples);
-    lastRawSpread = rawSamples[validSamples - 1] - rawSamples[0];
 
     const int trim = (validSamples >= 6) ? (validSamples / 4) : 0;
     const int begin = trim;
@@ -376,7 +377,6 @@ void BatteryHandler::analyzeAdcTelemetry(int64_t currentMillis) {
     }
 
     const float measuredVoltage = readVoltage();
-    batteryTelemetry.currentMilliamps = -1.0f;
 
     if (measuredVoltage >= 0.0f) {
         if (batteryTelemetry.voltageVolts < 0.0f) {
@@ -397,8 +397,8 @@ void BatteryHandler::analyzeAdcTelemetry(int64_t currentMillis) {
             : -1.0f;
     lastMeasurementTime = currentMillis;
 
-    ESP_LOGD(TAG, "ADC VBAT estimate: %.2fV (%.0f%%, rawSpread=%d)",
-             batteryTelemetry.voltageVolts, batteryTelemetry.percentage, lastRawSpread);
+    ESP_LOGD(TAG, "ADC VBAT estimate: %.2fV (%.0f%%)",
+             batteryTelemetry.voltageVolts, batteryTelemetry.percentage);
 }
 
 void BatteryHandler::analyzePmuTelemetry(int64_t currentMillis) {
@@ -411,12 +411,13 @@ void BatteryHandler::analyzePmuTelemetry(int64_t currentMillis) {
     if (!pmuReadRegisterU8(AXP2101_REG_STATUS1, status1)) {
         ESP_LOGW(TAG, "Failed to read AXP2101 status register 1");
         charging = false;
-        batteryTelemetry.currentMilliamps = -1.0f;
+        presenceKnown = false;   // PERI-05: no answer, no claim
         lastMeasurementTime = currentMillis;
         return;
     }
 
-    const bool batteryPresent = (status1 & (1U << AXP2101_STATUS1_BAT_PRESENT_BIT)) != 0;
+    presenceKnown = true;
+    batteryPresent = (status1 & (1U << AXP2101_STATUS1_BAT_PRESENT_BIT)) != 0;
     if (!batteryPresent) {
         resetTelemetry();
         lastMeasurementTime = currentMillis;
@@ -431,8 +432,6 @@ void BatteryHandler::analyzePmuTelemetry(int64_t currentMillis) {
         ESP_LOGW(TAG, "Failed to read AXP2101 status register 2");
         charging = false;
     }
-
-    batteryTelemetry.currentMilliamps = -1.0f;
 
     uint16_t batteryMilliVolts = 0;
     if (pmuReadRegisterH5L8(AXP2101_REG_ADC_DATA_RESULT0, AXP2101_REG_ADC_DATA_RESULT1,
@@ -488,10 +487,13 @@ void BatteryHandler::analyze() {
     }
 }
 
+bool BatteryHandler::isPresenceKnown() const {
+    return initialized && config.source == TelemetrySource::AXP2101 && presenceKnown;
+}
+
 bool BatteryHandler::isBatteryConnected() const {
-    return batteryTelemetry.percentage >= 0.0f ||
-           batteryTelemetry.voltageVolts >= 0.0f ||
-           batteryTelemetry.currentMilliamps >= 0.0f;
+    // PERI-05: "telemetry present" is not "battery present". Only the PMU knows.
+    return isPresenceKnown() && batteryPresent;
 }
 
 bool BatteryHandler::isCharging() const {

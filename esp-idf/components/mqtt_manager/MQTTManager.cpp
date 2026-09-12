@@ -285,7 +285,7 @@ esp_err_t MQTTManager::connect()
     }
 
     // Check WiFi/Internet
-    if (wifi_manager && !wifi_manager->isInternetAvailable()) {
+    if (!internetAvailable()) {
         ESP_LOGW(TAG, "No internet connectivity, skipping MQTT connect");
         return ESP_ERR_WIFI_NOT_CONNECT;
     }
@@ -412,12 +412,22 @@ bool MQTTManager::hasLightMQTTConfigured() const
     return nvs_manager && !nvs_manager->lightMQTTServerURL.empty();
 }
 
+// NET-09: one owner of "internet available" (InternetHandler) answers through this predicate;
+// without one, the link state is the best available answer.
+bool MQTTManager::internetAvailable() const
+{
+    if (internet_predicate) {
+        return internet_predicate();
+    }
+    return wifi_manager != nullptr && wifi_manager->isConnected();
+}
+
 void MQTTManager::update()
 {
     if (!initialized) return;
 
     // Check WiFi/Internet connectivity
-    bool internet_available = wifi_manager && wifi_manager->isInternetAvailable();
+    bool internet_available = internetAvailable();
 
     if (!internet_available) {
         if (mqtt_connected) {

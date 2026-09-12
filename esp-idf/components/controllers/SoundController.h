@@ -3,6 +3,8 @@
 #include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
+#include "model/MediaModel.h"
+#include "model/MutationQueue.h"
 #include <cstdint>
 #include <functional>
 #include <lvgl.h>
@@ -50,7 +52,9 @@ private:
 
     std::string pendingMessage;
     bool hasPendingMessage;
+    model::MutationQueue* modelQueue;   // CTRL-07: volume and play state also go to MediaModel as records
 
+    void postMedia(model::MediaModel::Field field, int value);
     void ensureUi();
     void initializeController();
     void waitForSync();
@@ -81,6 +85,7 @@ public:
 
     void setMQTTPublishCallback(MQTTPublishCallback callback) { mqttPublishCallback = callback; }
     void setMQTTConnectedCallback(MQTTConnectedCallback callback) { mqttConnectedCallback = callback; }
+    void setModelQueue(model::MutationQueue* queue) { modelQueue = queue; }
 
     void onMQTTMessage(const std::string& message);
 };

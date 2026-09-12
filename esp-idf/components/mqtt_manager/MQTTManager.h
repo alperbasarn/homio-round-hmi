@@ -54,6 +54,8 @@ public:
 
     // Callbacks
     void setMessageCallback(MQTTMessageCallback callback) { on_message = callback; }
+    // NET-09: "internet available" has one owner (InternetHandler); it answers through this.
+    void setInternetPredicate(std::function<bool()> predicate) { internet_predicate = predicate; }
 
     // Configuration check
     bool hasSoundMQTTConfigured() const;
@@ -85,6 +87,8 @@ private:
     int64_t last_connect_attempt;
 
     MQTTMessageCallback on_message;
+    std::function<bool()> internet_predicate;
+    bool internetAvailable() const;
 
     // Event handler
     static void mqttEventHandler(void* handler_args, esp_event_base_t base,

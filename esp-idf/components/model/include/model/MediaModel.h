@@ -81,7 +81,8 @@ public:
         PendingSeek = 7,    // value = percent or -1 (coalesce)
         SeekResolution = 8, // value = SeekResolution (never-drop)
         StateSeen = 9,      // no operand; stamps lastStateMs with the drain time (coalesce)
-        Count = 10
+        VolumeLocal = 10,   // value = percent set on this device (knob/touch): no echo check (coalesce)
+        Count = 11
     };
 
     static constexpr Millis kStateStaleMs = 10000;   // a state older than this is stale

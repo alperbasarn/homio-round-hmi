@@ -4,8 +4,12 @@
 #include "WeatherHandler.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 
 static const char* TAG = "InternetHandler";
 
@@ -14,14 +18,18 @@ InternetHandler::InternetHandler(WiFiManager* wifiManager)
       timeHandler(nullptr),
       weatherHandler(nullptr),
       internetAvailable(false),
+      wifiWasConnected(false),
+      everChecked(false),
+      checkSocket(-1),
+      checkStartedMs(0),
       lastInternetCheck(0),
-      lastTimeCheck(0),
-      lastWeatherCheck(0) {
+      lastWeatherRequest(0),
+      weatherRequestedOnce(false) {
 
-    // Create TimeHandler (default timezone GMT+3 for Turkey)
-    timeHandler = new TimeHandler(3);
+    // NET-07: the offset and the NTP servers come from Kconfig, not from literals.
+    timeHandler = new TimeHandler(CONFIG_QNOB_UTC_OFFSET_MINUTES, CONFIG_QNOB_NTP_SERVER_1, CONFIG_QNOB_NTP_SERVER_2);
 
-    // Create WeatherHandler
+    // NET-28: key, city and country come from Kconfig (WeatherHandler's defaults).
     weatherHandler = new WeatherHandler();
 
     // Set up the internet check callback for WeatherHandler
@@ -33,6 +41,8 @@ InternetHandler::InternetHandler(WiFiManager* wifiManager)
 }
 
 InternetHandler::~InternetHandler() {
+    abortInternetCheck();
+
     if (timeHandler) {
         delete timeHandler;
         timeHandler = nullptr;
@@ -50,102 +60,174 @@ int64_t InternetHandler::millis() const {
     return esp_timer_get_time() / 1000;
 }
 
+void InternetHandler::requestInternetCheck() {
+    lastInternetCheck = 0;  // the next update() starts a probe
+}
+
 bool InternetHandler::checkInternetConnectivity() {
-    // Don't check if WiFi is not connected
-    if (!wifiManager || !wifiManager->isConnected()) {
-        ESP_LOGD(TAG, "Cannot check internet - WiFi not connected");
-        internetAvailable = false;
-        return false;
+    requestInternetCheck();
+    return isInternetAvailable();
+}
+
+void InternetHandler::startInternetCheck(int64_t now) {
+    if (checkSocket >= 0) {
+        return;  // a probe is already in flight
     }
 
-    ESP_LOGD(TAG, "Checking internet connectivity...");
-
-    // Try to connect to Google DNS (8.8.8.8) on port 53
+    // A non-blocking TCP connect to a public DNS server on port 53; the answer is read by
+    // serviceInternetCheck() on later iterations, so the network task never waits here.
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) {
         ESP_LOGE(TAG, "Failed to create socket");
-        internetAvailable = false;
-        return false;
+        setInternetAvailable(false, now);
+        lastInternetCheck = now;
+        return;
     }
 
-    // Set socket timeout
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    const int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 
     struct sockaddr_in dest_addr;
+    memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(53);
     inet_aton("8.8.8.8", &dest_addr.sin_addr);
 
-    bool connected = (connect(sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) == 0);
-    close(sock);
-
-    bool previousState = internetAvailable;
-    internetAvailable = connected;
-
-    if (previousState != internetAvailable) {
-        if (internetAvailable) {
-            ESP_LOGI(TAG, "Internet connectivity established");
-            // Trigger initial updates
-            if (timeHandler && !timeHandler->isTimeInitialized()) {
-                updateDateTime();
-            }
-            updateWeather();
-        } else {
-            ESP_LOGW(TAG, "Internet connectivity lost");
-        }
+    const int result = connect(sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
+    if (result == 0) {
+        close(sock);
+        setInternetAvailable(true, now);
+        lastInternetCheck = now;
+        return;
+    }
+    if (errno != EINPROGRESS) {
+        close(sock);
+        setInternetAvailable(false, now);
+        lastInternetCheck = now;
+        return;
     }
 
-    lastInternetCheck = millis();
-    return internetAvailable;
+    checkSocket = sock;
+    checkStartedMs = now;
+    everChecked = true;
+}
+
+void InternetHandler::serviceInternetCheck(int64_t now) {
+    if (checkSocket < 0) {
+        return;
+    }
+
+    fd_set writeSet;
+    FD_ZERO(&writeSet);
+    FD_SET(checkSocket, &writeSet);
+    struct timeval zero = {0, 0};
+    const int ready = select(checkSocket + 1, nullptr, &writeSet, nullptr, &zero);
+
+    if (ready > 0 && FD_ISSET(checkSocket, &writeSet)) {
+        int soError = 0;
+        socklen_t len = sizeof(soError);
+        getsockopt(checkSocket, SOL_SOCKET, SO_ERROR, &soError, &len);
+        close(checkSocket);
+        checkSocket = -1;
+        lastInternetCheck = now;
+        setInternetAvailable(soError == 0, now);
+        return;
+    }
+
+    if (ready < 0 || now - checkStartedMs > INTERNET_CHECK_TIMEOUT) {
+        close(checkSocket);
+        checkSocket = -1;
+        lastInternetCheck = now;
+        setInternetAvailable(false, now);
+    }
+}
+
+void InternetHandler::abortInternetCheck() {
+    if (checkSocket >= 0) {
+        close(checkSocket);
+        checkSocket = -1;
+    }
+}
+
+void InternetHandler::setInternetAvailable(bool available, int64_t now) {
+    const bool previous = internetAvailable.exchange(available, std::memory_order_acq_rel);
+    if (previous == available) {
+        return;
+    }
+    if (available) {
+        ESP_LOGI(TAG, "Internet connectivity established");
+        // Trigger initial updates: a clock sync when the RTC is not set, and a weather fetch.
+        if (timeHandler && !timeHandler->isTimeInitialized()) {
+            updateDateTime();
+        }
+        updateWeather();
+        lastWeatherRequest = now;
+        weatherRequestedOnce = true;
+    } else {
+        ESP_LOGW(TAG, "Internet connectivity lost");
+    }
 }
 
 bool InternetHandler::updateDateTime() {
-    if (!internetAvailable) {
+    if (!isInternetAvailable()) {
         ESP_LOGD(TAG, "Cannot update time - No internet connection");
         return false;
     }
 
-    ESP_LOGI(TAG, "Syncing time with NTP");
-    return timeHandler ? timeHandler->syncWithNTP() : false;
+    ESP_LOGI(TAG, "Starting NTP sync");
+    if (timeHandler) {
+        timeHandler->startSync();
+        return true;
+    }
+    return false;
 }
 
 bool InternetHandler::updateWeather() {
-    if (!internetAvailable) {
+    if (!isInternetAvailable()) {
         ESP_LOGD(TAG, "Cannot update weather - No internet connection");
         return false;
     }
 
-    ESP_LOGI(TAG, "Updating weather data");
-    return weatherHandler ? weatherHandler->updateWeather() : false;
+    ESP_LOGI(TAG, "Requesting weather data");
+    return weatherHandler ? weatherHandler->requestUpdate() : false;
 }
 
 void InternetHandler::update() {
-    int64_t currentMillis = millis();
+    const int64_t currentMillis = millis();
+    const bool wifiConnected = wifiManager && wifiManager->isConnected();
 
-    // Check internet connectivity periodically
-    if (currentMillis - lastInternetCheck >= INTERNET_CHECK_INTERVAL) {
-        checkInternetConnectivity();
-        lastInternetCheck = currentMillis;
+    if (!wifiConnected) {
+        abortInternetCheck();
+        setInternetAvailable(false, currentMillis);
+        wifiWasConnected = false;
+        if (weatherHandler) {
+            weatherHandler->service(currentMillis);  // lets an in-flight fetch fail cleanly
+        }
+        return;
     }
 
-    // Only perform updates if internet is available
-    if (internetAvailable) {
-        // Update time handler
-        if (timeHandler) {
-            timeHandler->update();
-        }
+    // Probe immediately when the link comes up (MQTT waits on the answer), then every 30 s.
+    if (!wifiWasConnected) {
+        wifiWasConnected = true;
+        startInternetCheck(currentMillis);
+    } else if (checkSocket < 0 && currentMillis - lastInternetCheck >= INTERNET_CHECK_INTERVAL) {
+        startInternetCheck(currentMillis);
+    }
+    serviceInternetCheck(currentMillis);
 
-        // Update weather periodically
-        if (weatherHandler) {
-            if (currentMillis - lastWeatherCheck >= WEATHER_CHECK_INTERVAL) {
-                weatherHandler->update();
-                lastWeatherCheck = currentMillis;
-            }
+    if (timeHandler) {
+        timeHandler->update();
+    }
+
+    if (isInternetAvailable() && weatherHandler) {
+        if (!weatherRequestedOnce || currentMillis - lastWeatherRequest >= WEATHER_CHECK_INTERVAL) {
+            weatherHandler->requestUpdate();
+            lastWeatherRequest = currentMillis;
+            weatherRequestedOnce = true;
         }
+    }
+    if (weatherHandler) {
+        weatherHandler->service(currentMillis);
     }
 }
 

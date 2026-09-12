@@ -2,6 +2,11 @@
  * QNOB Screen Application - ESP-IDF Version
  *
  * Main entry point for the QNOB smart knob display application.
+ *
+ * WP1.4: the model root lives here (APP-06). Every existing data path also posts mutation
+ * records into it (MDL-31), the pollers on the network task feed it (NET-06, NET-07, PERI-06),
+ * the display task drains it at the top of each frame, and the four screen callbacks read the
+ * model instead of the drivers (NET-11). The screens themselves are unchanged until Phase 3.
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -50,7 +55,15 @@
 // Power Management
 #include "SleepHandler.h"
 
+// Model and adapters
+#include "adapters/BatteryPoller.h"
+#include "adapters/ConnectivityPoller.h"
+#include "adapters/EnvironmentPoller.h"
+#include "adapters/ModelHost.h"
+#include "model/AppModel.h"
+
 #include <memory>
+#include <string>
 
 
 static const char *TAG = "QNOB_MAIN";
@@ -78,7 +91,14 @@ constexpr bool kAudioOutputSupported =
 constexpr bool kAudioInputSupported =
     (QNOB_AUDIO_INPUT_BACKEND != QNOB_AUDIO_INPUT_BACKEND_NONE);
 
+int64_t nowMs() {
+    return esp_timer_get_time() / 1000;
+}
+
 }  // namespace
+
+// The model root (APP-06): constructed before anything else in this file, held by value.
+static model::AppModel appModel;
 
 // Global objects
 static std::unique_ptr<DisplayPanelBackend> displayPanelBackend;
@@ -105,6 +125,11 @@ static SoundRecorder* soundRecorder = nullptr;
 static MediaController* mediaController = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
+
+// Pollers (network task) that push driver state into the model
+static adapters::ConnectivityPoller* connectivityPoller = nullptr;
+static adapters::EnvironmentPoller* environmentPoller = nullptr;
+static adapters::BatteryPoller* batteryPoller = nullptr;
 
 
 // Task handles
@@ -141,8 +166,10 @@ static void startupSplashTask(void* parameter) {
     vTaskDelete(nullptr);
 }
 
-// Main task for display and UI
+// Main task for display and UI: the single consumer of the mutation queue and the only writer
+// of the models (D1).
 void displayTask(void* parameter) {
+    adapters::model_host::adoptCurrentTaskAsConsumer();
     ESP_LOGI(TAG, "Display task started on core %d", xPortGetCoreID());
 
 #if defined(PWR_KEY_PIN) && (PWR_KEY_PIN >= 0)
@@ -166,9 +193,9 @@ void displayTask(void* parameter) {
         }
 #endif
 
-        if (batteryHandler && batteryHandler->isInitialized()) {
-            batteryHandler->analyze();
-        }
+        // D1: drain once at the top of the frame, before anything reads the models.
+        appModel.drainPendingMutations(nowMs());
+
         displayController->update();
 
         // Check power management
@@ -180,15 +207,32 @@ void displayTask(void* parameter) {
     }
 }
 
-// Main task for network-related activities
+// Main task for network-related activities. Nothing in this loop blocks (NET-30), so the
+// pollers keep their 100 ms cadence.
 void networkTask(void* parameter) {
     ESP_LOGI(TAG, "Network task started on core %d", xPortGetCoreID());
     while (true) {
-        wifiManager->update();
-        if (wifiManager->isConnected()) {
-            mqttManager->update();
-            internetHandler->update();
+        const int64_t now = nowMs();
+
+        // PERI-07: battery acquisition lives here, off the render loop, and runs with WiFi down.
+        if (batteryHandler && batteryHandler->isInitialized()) {
+            batteryHandler->analyze();
         }
+        if (batteryPoller) {
+            batteryPoller->poll(now);
+        }
+
+        wifiManager->update();
+        internetHandler->update();   // owns "internet available"; also services time and weather
+        mqttManager->update();
+
+        if (connectivityPoller) {
+            connectivityPoller->poll(now);
+        }
+        if (environmentPoller) {
+            environmentPoller->poll(now);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -255,12 +299,17 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Initializing HAL...");
     ESP_ERROR_CHECK(board_hal_init());
 
+    // APP-06: the model root's platform hooks, before any producer exists.
+    adapters::model_host::install(appModel);
+    model::MutationQueue& modelQueue = appModel.mutations();
+
     // Initialize Battery Handler
     ESP_LOGI(TAG, "Initializing battery handler...");
     batteryHandler = new BatteryHandler();
     if (batteryHandler->initialize(getBatteryHandlerConfig()) != ESP_OK) {
         ESP_LOGW(TAG, "Battery handler init failed - battery monitoring disabled");
     }
+    batteryPoller = new adapters::BatteryPoller(batteryHandler, modelQueue);
 
     // Initialize NVS
     ESP_LOGI(TAG, "Initializing NVS...");
@@ -391,8 +440,16 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "MQTT not configured yet (init skipped)");
     }
     internetHandler = new InternetHandler(wifiManager);
-    wifiManager->connectToWiFi();
+    // NET-09: one owner of "internet available"; MQTT asks it through a predicate.
+    mqttManager->setInternetPredicate([]() {
+        return internetHandler != nullptr && internetHandler->isInternetAvailable();
+    });
+    wifiManager->connectToWiFi();   // NET-30: a request; the network task runs the sequence
     otaManager = new OTAManager(wifiManager);
+
+    connectivityPoller = new adapters::ConnectivityPoller(wifiManager, internetHandler, mqttManager, modelQueue);
+    environmentPoller = new adapters::EnvironmentPoller(internetHandler->getTimeHandler(),
+                                                        internetHandler->getWeatherHandler(), modelQueue);
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
@@ -401,38 +458,40 @@ extern "C" void app_main(void) {
         initializationScreen = new InitializationScreen(displayPanelBackend.get());
     }
 
-    // Create EnvironmentInfoScreen (time, weather, temperature)
+    // Create EnvironmentInfoScreen (time, weather, temperature). NET-11: the callbacks read the
+    // model, which the network-task pollers fill; the screen still owns its own fields.
     infoScreen = new EnvironmentInfoScreen(displayPanelBackend.get(), touchPanel);
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
-        date = internetHandler->getCurrentDate();
-        time = internetHandler->getCurrentTime();
-        dayOfWeek = internetHandler->getDayOfWeek();
+        const model::EnvironmentState& e = appModel.environment().state();
+        date = e.date.c_str();
+        time = e.time.c_str();
+        dayOfWeek = e.day.c_str();
     });
     infoScreen->setOutdoorTempCallback([]() {
-        return internetHandler->getOutdoorTemperature();
+        const model::EnvironmentState& e = appModel.environment().state();
+        return e.outdoorValid ? e.outdoorTemp : 0.0f;   // the old "no reading" default
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
     deviceInfoScreen = new DeviceInfoScreen(displayPanelBackend.get(), touchPanel);
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
-        wifi = wifiManager->isConnected();
-        internet = internetHandler->isInternetAvailable();
-        mqtt = mqttManager->isConnected();
-        strength = wifiManager->getSignalStrength();
+        const model::ConnectivityState& c = appModel.connectivity().state();
+        wifi = c.wifiConnected;
+        internet = c.internetAvailable;
+        mqtt = c.mqttConnected;
+        strength = c.bars;
     });
     deviceInfoScreen->setBatteryCallback([]() -> DeviceBatteryStatus {
-        if (batteryHandler && batteryHandler->isInitialized()) {
-            const BatteryHandler::BatteryTelemetry telemetry = batteryHandler->getBatteryTelemetry();
-            const bool percentageAvailable = telemetry.percentage >= 0.0f;
-            return {false, batteryHandler->isBatteryConnected(), percentageAvailable,
-                    telemetry.percentage, telemetry.voltageVolts};
-        }
-        return {false, false, false, -1.0f, -1.0f};
+        const model::PowerState& p = appModel.power().state();
+        return {p.presenceKnown, p.connected, p.percentValid, p.percent, p.voltage};
     });
 
     soundController = new SoundController(displayPanelBackend.get(), touchPanel);
+    soundController->setModelQueue(&modelQueue);                       // CTRL-07
     lightController = new LightController(displayPanelBackend.get(), touchPanel);
+    lightController->setModelQueue(&modelQueue);                       // CTRL-08
     displayController = new DisplayController(touchPanel, displayPanelBackend.get());
+    displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
@@ -514,7 +573,8 @@ extern "C" void app_main(void) {
         return mqttManager->hasLightMQTTConfigured() || mqttManager->hasSoundMQTTConfigured();
     });
 
-    // Set global MQTT message callback
+    // Set global MQTT message callback (runs on the MQTT task). MDL-31: every value that reaches
+    // a screen from here also reaches the model as a record; nothing writes a model directly.
     mqttManager->setMessageCallback([&](const std::string& topic, const std::string& payload) {
         if (topic == MQTT_TOPIC_COMMAND) {
             if (commandHandler) {
@@ -527,6 +587,9 @@ extern "C" void app_main(void) {
                 if (infoScreen) {
                     infoScreen->updateIndoorTemperature(indoorTemp);
                 }
+                const uint32_t atMs = static_cast<uint32_t>(nowMs());
+                appModel.mutations().post(model::EnvironmentModel::makeFloat(model::EnvironmentModel::Field::IndoorTemp, indoorTemp, atMs));
+                appModel.mutations().post(model::ClimateModel::make(model::ClimateModel::Field::IndoorSampled, 0, atMs));
             } catch (...) {
                 ESP_LOGW(TAG, "Invalid indoor temperature payload: %s", payload.c_str());
             }
@@ -536,9 +599,15 @@ extern "C" void app_main(void) {
             try {
                 int brightness = std::stoi(payload);
                 lightController->onBrightnessReceived(brightness);
+                appModel.mutations().post(model::LightModel::make(model::LightModel::Field::Brightness, brightness,
+                                                        static_cast<uint32_t>(nowMs())));
             } catch (...) {}
         }
     });
+
+    // MDL-30: no subscribers yet (the trace logs from inside the drain); sealing now guarantees
+    // nothing re-wires in the render path.
+    appModel.wireSubscriptions();
 
     ESP_LOGI(TAG, "Initialization complete. Starting tasks...");
 

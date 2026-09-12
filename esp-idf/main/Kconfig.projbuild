@@ -37,4 +37,42 @@ menu "QNOB Application Configuration"
         help
             Set the logging verbosity level.
 
+    config QNOB_MODEL_TRACE
+        bool "Model trace: log every drain and each changed model (MDL-32)"
+        default n
+        help
+            Debug aid for the MVC refactor. One log line per display-task drain plus one per
+            committed model, and a counter of model writes observed from any other task.
+
+    config QNOB_UTC_OFFSET_MINUTES
+        int "Clock offset from UTC in minutes (no DST)"
+        default 180
+        range -840 840
+        help
+            The INFO clock shows UTC plus this offset. Daylight saving is not applied; see
+            dev_notes/phase1-log.md (NET-07) for the decision.
+
+    config QNOB_NTP_SERVER_1
+        string "Primary NTP server"
+        default "pool.ntp.org"
+
+    config QNOB_NTP_SERVER_2
+        string "Secondary NTP server"
+        default "time.nist.gov"
+
+    config QNOB_WEATHER_API_KEY
+        string "OpenWeatherMap API key"
+        default ""
+        help
+            Empty means the weather fetch is disabled and logged as unconfigured. Keep the real
+            key in sdkconfig.defaults.local, never in a tracked file.
+
+    config QNOB_WEATHER_CITY
+        string "Weather city"
+        default "Istanbul"
+
+    config QNOB_WEATHER_COUNTRY
+        string "Weather country code"
+        default "tr"
+
 endmenu

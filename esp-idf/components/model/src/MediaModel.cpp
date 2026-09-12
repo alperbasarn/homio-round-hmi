@@ -25,6 +25,7 @@ MediaModel::MediaModel() : ModelBase(), volumePublish_(kPublishIntervalMs), volu
 RecordClass MediaModel::classOf(Field field) {
     switch (field) {
         case Field::Volume:
+        case Field::VolumeLocal:
         case Field::Position:
         case Field::PendingSeek:
         case Field::StateSeen:
@@ -68,6 +69,8 @@ bool MediaModel::applyUpdate(const ModelUpdate& update, Millis now) {
         case Field::StateSeen:
             noteStateSeen(now);
             return true;
+        case Field::VolumeLocal:
+            return setVolume(update.value);
         case Field::Count:
         default:
             return false;

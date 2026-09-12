@@ -33,3 +33,7 @@ burned once rotated? Rewriting invalidates every clone and requires a force-push
 accepting them as burned is sufficient once the providers reject the old values.
 
 Decision: _pending_
+
+2026-09-12 (NET-28): the OpenWeatherMap literal is gone from `WeatherHandler.h`; the key now comes from `CONFIG_QNOB_WEATHER_API_KEY`, kept in the untracked `sdkconfig.defaults.local` (see `sdkconfig.defaults.local.example`). The old value stays burned until it is rotated at the provider.
+
+2026-09-12 (WP1.4 commit): the same key was also in `arduino/WeatherHandler.h` (blanked) and inside the tracked OTA image `esp-idf/ota/qnub-screen.bin` (untracked; `esp-idf/ota/` is ignored; the file stays on disk). History carries both until the key is rotated.

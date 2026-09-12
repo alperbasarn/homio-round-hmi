@@ -27,7 +27,7 @@ private:
 
 public:
     WeatherHandler(InternetHandler* internet, 
-                  const String& apiKey = "b105aa78626cfb20db2d2669aaa09cd7",
+                  const String& apiKey = "",
                   const String& city = "Nagasaki", 
                   const String& countryCode = "jp");
     ~WeatherHandler() = default;

@@ -102,12 +102,15 @@ bool EnvironmentModel::setClock(int64_t epochSeconds, int utcOffsetMinutes) {
     if (!civilFromDays(days, year, month, day, weekday)) {
         return false;
     }
-    char buffer[16];
+    // Scratch buffers wide enough for any int (the cross build enables -Wformat-truncation);
+    // FixedString::assign truncates to the display width anyway.
+    char dateBuffer[32];
+    char timeBuffer[16];
     EnvironmentState& s = mutate();
-    std::snprintf(buffer, sizeof(buffer), "%04d/%02d/%02d", year, month, day);
-    s.date.assign(buffer);
-    std::snprintf(buffer, sizeof(buffer), "%02d:%02d", minute / 60, minute % 60);
-    s.time.assign(buffer);
+    std::snprintf(dateBuffer, sizeof(dateBuffer), "%04d/%02d/%02d", year, month, day);
+    s.date.assign(dateBuffer);
+    std::snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d", minute / 60, minute % 60);
+    s.time.assign(timeBuffer);
     s.day.assign(dayName(weekday));
     formatDate(s.date.c_str(), s.formatted);
     s.clockValid = true;

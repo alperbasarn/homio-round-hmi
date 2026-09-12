@@ -10,6 +10,9 @@
 
 #include "model/ModelSnapshot.h"
 #include "model/Observable.h"
+#if QNOB_MODEL_TRACE
+#include "model/TraceHooks.h"
+#endif
 
 namespace model {
 
@@ -58,7 +61,12 @@ public:
     State readSnapshot() const { return snapshot_.read(); }
 
 protected:
+    // The single write path. With the trace compiled in, every call is attributed to a task so
+    // a write from anywhere but the consumer task is counted (MDL-32).
     State& mutate() {
+#if QNOB_MODEL_TRACE
+        trace::noteWrite();
+#endif
         dirty_ = true;
         return state_;
     }

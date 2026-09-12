@@ -3,7 +3,9 @@
 
 #include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
+#include "model/MutationQueue.h"
 #include <cstdint>
+#include <string>
 
 // Forward declarations to avoid circular dependencies
 class KnobController;
@@ -44,10 +46,16 @@ private:
   int initializationProgress;
   int64_t initializationStartTime;
   int64_t initializationCompleteTime;
+  // WP1.4 shadow phase: every knob token and navigation change is also posted here as a record
+  // (INPT-05, MDL-31). Nothing in this class calls a model setter.
+  model::MutationQueue* modelQueue;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
+  void postKnobToken(const std::string& token);
+  void postNavigationScreen(Mode mode);
+  void postNavigation(int field, int32_t value);
   
 
 public:
@@ -59,6 +67,7 @@ public:
   Mode getMode() const;
 
   void registerKnobController(KnobController* knob);
+  void registerModelQueue(model::MutationQueue* queue);
   void registerSoundController(SoundController* sound);
   void registerLightController(LightController* light);
   void registerModeController(ModeController* mode);
