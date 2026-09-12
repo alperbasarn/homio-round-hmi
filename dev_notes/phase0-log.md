@@ -75,9 +75,14 @@ sdkconfig cleanup, not with the baseline.
 - BLD-35 (vendor `managed_components/`?) — no; the per-target lock reproduces it.
 - Lint is Node, not Python: Python is not on the Windows host; Node is required by the design tooling.
 
-## Held for the owner
+## Owner decisions (2026-09-12)
 
-1. Commit and tag `p0-baseline` in `screen/SW/ESP` (this repository).
-2. How `QNOB` references this repository (submodule at `screen/SW/ESP`, or hardware-only with a README pointer), and dropping QNOB's stale `screen/SW/esp-idf` + `screen/SW/arduino` paths.
-3. Deleting the stale copies: `QNOB/screen - Copy` (7,206 files, 1.1 GB, 4,526 of them build outputs), `QNOB/V11 - Copy` + `V11 - Copy.zip`, `QNOB/screen/SW/PC`, `QNOB/PC` (PCKNOB-01).
-4. Credential rotation and the history-rewrite question.
+1. **Committed and tagged.** `p0-baseline` = commit `6392ed6` on `codex/multi-board-support` (592 files: the display-backend migration, dev_notes, tools, Phase 0 hygiene; 1,658,753 deletions are the vendored LovyanGFX). Not pushed.
+2. **QNOB references this repository as a submodule** at `screen/SW/ESP`, pinned to `6392ed6`; QNOB's stale `screen/SW/esp-idf`, `screen/SW/arduino`, `screen/SW/HW` paths were dropped from its index and its dangling LovyanGFX `.gitmodules` entry replaced.
+3. **Stale copies stay on disk, never added:** `QNOB/screen - Copy`, `QNOB/V11 - Copy` + `.zip`, `QNOB/screen/SW/PC`, `QNOB/PC`. PCKNOB-01 therefore stays open as a deletion task; D16 (canonical `esp-idf/PC`) still holds.
+
+## Still with the owner
+
+- Credential rotation (`dev_notes/credential-rotation.md`) and the history-rewrite question.
+- Pushing either repository.
+- The bench captures: APP-02 heap log, DISP-01 draw-buffer geometry, SCRN-01 screenshots, INPT-01 gesture checklist, NET-01 contract capture; then MDL-01 and BLD-38.
