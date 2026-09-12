@@ -120,3 +120,63 @@ the view copies almost one for one); 1.28 1,546,256 B (0x179810); C6 1,733,504 B
 compiles and links on all three. The component graph still reports the two Phase-0 cycles.
 Bench checks pending on the 1.75: four-bar WiFi label at strong signal, the date label after a
 time sync, light swatch and published LED colour unchanged, and `play` from the PC app.
+
+## WP1.3 The eight models
+
+Started 2026-09-12 after WP1.2, on the owner's go-ahead. Additive: nothing in the firmware
+constructs an `AppModel` yet (APP-06, WP1.4), so device behaviour is unchanged; the models
+compile into `libmodel.a` on all three variants and are pinned by nine new host suites.
+
+**Shape shared by all eight** (`model/ModelBase.h`): a plain-data `State` struct with defaults,
+setters that mark the model dirty, and one `commit()` per drain that notifies subscribers only
+when the state differs from the last notified copy (an equal set notifies nobody) and republishes
+the seqlock snapshot other tasks read (D2). Subscriptions are the D3 function-pointer arrays,
+eight per model, and are sealed by `AppModel::wireSubscriptions()`. Each model owns its `Field`
+enum, the D18 record class per field (`classOf`), a `make()` factory for producers, and
+`applyUpdate()` for the drain. Strings never cross the 16-byte queue: `setTrack()`,
+`setTargetLabel()` and `setLegacyDateTime()` are display-task calls; the transport for Spotify
+titles is decided with MEDIA-04/05 (residual, below).
+
+| Task | Status | What changed | Verification |
+|---|---|---|---|
+| MDL-14 `MediaModel` | done | `activeTarget` (PC, the only target that exists), `volume` (50, SoundController's default), `isPlaying`, `stateSynced`, `knobBinding`, `track` (title/artist/album `FixedString<64>`, `id` `<24>`), `positionMs`/`durationMs`, `targetLabel`; publish bookkeeping is a 25 ms `RateLimiter` plus a 1.5 s `EchoSuppressor` (the pattern SoundController hand-rolled). Switching target forgets everything learned about the old one. | `sizeof(MediaModel)` 1,112 B on the 64-bit host (three state copies + 8 subscriber slots); an equal set notifies nobody |
+| UIX-10 amendments | done | `availability[MediaTargetId]`, two slots with per-target legal states (Spotify OK/NO_TOKEN/NO_PREMIUM/OFFLINE/SYNCING, PC OK/PC_OFFLINE/NO_PLAYER/NO_MQTT/STALE; a state from the wrong slot is refused); `pendingSeekPercent` with -1 = none; `positionSampledAtMs` and `estimatedPositionMs(now)` extrapolating only while playing; `seekResolution` None/Coarse(10 %)/Fine(1 %) with `seekStepPercent` and `canSeek()` gated on a known duration (losing the duration drops SEEK back to VOLUME); `lastStateMs` with staleness at exactly 10 s; `track.id`; `ClimateModel::indoorSampledAtMs` with the 120 s gate. | `test_media_amendments`: 7 cases |
+| MDL-15 media tests | done | Clamp, out-of-range rejection (the -1 an empty payload decodes to is refused: it used to mute), echo suppression inclusive at the window, one publish per 25 ms with a leave-screen flush, truncation to capacity, target switch, the two slots independent, 1,000 notify cycles with zero allocations. | `test_media_model`: 9 cases |
+| MDL-16 `LightModel` | done | `brightness` 0..100 only (`setpoint` and `waterLevel` do not exist), `hue`/`saturation` clamped to 0..1, `LedMode` with `cycleMode()`; the single wire-scale rule (NET-22) as `wireFromPercent` (percent × 255 / 100, what the controller always published: 50 → 127) and `percentFromWire` (rounded), exact round trip for all 101 values; `publishedRgb()` (brightness folded in) and `swatchRgb()` (full value) name the two call sites. Publish slot 25 ms, CTRL-04's measured value rather than MDL-12's 10 ms estimate. | `test_light_model`: 6 cases |
+| MDL-17 light tests | done | 0/100 clamps, 0..255 inbound, hue at the `i % 6` wrap (1.0 draws as 0.0), the LedMode cycle's first-ever execution, one publish per window, zero allocations. | green |
+| MDL-18 `ClimateModel` (D4) | done | `targetTemp` (21.0 default) clamped 16..30 in 0.5 steps with `targetBand`/`targetProgress` tracked, humidity and pressure with validity (a malformed value marks the field invalid and is never stored), `indoorSampledAtMs`, `publishPending` plus a 400 ms `Debouncer` for the settled target. The temperatures themselves stay in `EnvironmentModel`. | `test_climate_model`: 7 cases |
+| MDL-19 climate tests | done | NaN and both infinities rejected, the clamp at both ends, band tracking through all four bands, validity gating, settle-once, zero allocations. | green |
+| MDL-20 `EnvironmentModel` | done | Civil date/time/day from a UTC epoch plus an offset (Hinnant's civil-from-days, no `<ctime>`, so the poller posts numbers), mutating only when the minute changes; `date` "YYYY/MM/DD" feeds the WP1.2 `formatDate`; a legacy string path for the shadow phase that truncates to capacity; both temperatures with validity bits and bands; the old 0.5 °C hysteresis, except that the first write is always admitted. | `test_environment_model`: 8 cases |
+| MDL-21 environment tests | done | 0.4 suppressed, 0.5 suppressed (as before), 0.6 admitted; a true 18.0 °C is admitted on first write instead of being discarded as "unchanged"; 2026-02-07 12:34 UTC at UTC+3 renders `2026/02/07`, `15:34`, `SAT`, `7 FEB`; a 40-character date truncates to 10; bands stay continuous across a 15..30 sweep; 10,000 updates allocate nothing. | green |
+| MDL-22 `ConnectivityModel` | done | `wifiConnected`, `internetAvailable`, `mqttConnected`, `mqttLightConfigured`, `bars` 0..4, `rssiDbm`; `setRssi` maps with the driver's thresholds; strength 5 rejected. The model cascades nothing: each flag is what its poller reported. | `test_connectivity_model`: 4 cases |
+| MDL-23 connectivity tests | done | `mqtt=false` leaves `wifi` alone, 0..4 accepted and 5 refused, five RSSI inputs give five distinct bar values (the top bar is reachable), zero allocations. | green |
+| MDL-24 `PowerModel` | done | `percent`/`voltage`/`currentMa` each with a validity bit (the -1.0f sentinel clears the field and yields `BatteryBand::Invalid`), `connected` and `presenceKnown` as separate facts, `charging`, `derivePercentFromVoltage()` over `PowerRules`. | appended to `test_power_rules` (now 9 cases) |
+| MDL-25 power tests | done | Sentinel → `percentValid` false and no band; a known-absent cell is `presenceKnown` true, `connected` false, and never charging; percent derived from 3.85 V is 55; zero allocations. | green |
+| MDL-26 `NavigationModel` + `AppScreen` | done | `AppScreen` {Boot, Info, DeviceInfo, ModeWheel, Media, Light, Climate}: no SLEEP (D8) and none of the old `INITIALIZATION`/`SOUND`/`HOME`/`CALIBRATE_ORIENTATION`; `KnobMode` {LIGHT, CLIMATE, MEDIA}; a transition table (`canTransition`) with an entry for every screen; `requestScreen`/`takeRequest` as a single-consumption intent where the latest unconsumed request wins; one `lastActivityMs` that never rewinds; `initProgressPct` monotonic and completed on leaving Boot; the wheel wraps. | `test_navigation_model`: 8 cases |
+| MDL-27 navigation tests | done | `request_consumed_once` (a flag implementation would still read the screen on the second take), latest-wins, no transition to a dropped or impossible screen, every screen has an exit, one activity clock, no backward ramp, zero allocations. | green |
+| MDL-28 `KnobModel` (D5) | done | `detentCount` replica 0..100; haptic defaults 120 / 1.0 / 0.55 / 3.0 from the knob firmware, validated on write; `applyDelta()` for `+N`/`-N`; `burstToDelta()` for a coalesced `setpoint=N`: N − lastN clamped ±10, the replica records N, the overflow is counted; `stepsFor()` is the one UIX-11 accumulator (4 per wheel step, 3 per target toggle, 1 per volume or brightness unit, 1 per 0.5 °C, 1 or 3 per seek percent) reset on direction reversal and after 600 ms idle; `onEnter()` sets the context and requests a write of the mode's value; `takeWriteRequest`/`noteWriteAck`/`tick` with a 1 s ack timeout that assumes the write landed; link liveness 5 s from any inbound line (PCKNOB-17 adds ping/pong). **The leak fix:** while a write is outstanding, absolute bursts are stale relative to the old base and are dropped, counted in `droppedBursts`. | `test_knob_model`: 11 cases |
+| MDL-29 knob tests | done | Defaults equal the firmware; net-zero deltas; from 40, `burstToDelta(43)` = +3; clamp at ±10 with the replica at N; `mode_switch_does_not_leak_setpoint` (80 in MEDIA, enter LIGHT at 20, a stale 80 burst yields 0, the ack moves the replica to 20, the next burst 23 yields +3); write timeout; clamp at both ends; link timeout at exactly 5 s; the accumulator per divisor with reversal and idle resets; haptic validation; 10,000 mixed operations allocate nothing. | green |
+| MDL-30 `AppModel` | done | The eight models by value; `drainPendingMutations(now)` applies every record to its aggregate, ticks the knob, then `commitAll()` so each changed model notifies once per frame; `wireSubscriptions(fn, ctx)` runs the composition's wiring once and seals every model (a later subscribe returns false; a second call returns false); `unroutedRecords()` and `rejectedRecords()` counters for MDL-32. | `test_app_model`: 6 cases, incl. three coalesced volume records collapsing to one notify, and a 500-frame drain with subscribers allocating nothing |
+
+Host suite after WP1.3: 17 executables, 120 cases, all green with ASan/UBSan; purity guard clean.
+
+`sizeof` on the 64-bit host: `AppModel` 4,248 B (`MutationQueue` 1,128, `MediaModel` 1,112,
+`EnvironmentModel` 400, `KnobModel` 392, `ClimateModel` 320, `PowerModel` 232, `LightModel` 224,
+`NavigationModel` 224, `ConnectivityModel` 176). Each model carries three copies of its state
+(working, last-notified, snapshot) plus eight 16-byte subscriber slots; on the 32-bit targets the
+slots halve and the estimate is about 3.7 KB, inside the 4 KB MDL-01 budget with little room.
+The device figure comes from `size-components` `.bss` once APP-06 instantiates the root.
+
+Residuals: (1) track title/artist/album transport from the network task to the display task is
+not a queue record; MEDIA-04/05 decide it (a fixed string mailbox with a generation counter is
+the candidate). (2) `battery_handler → model` bridge edge from WP1.2 stays until PERI-06 feeds
+`PowerModel` from the poller. (3) KnobModel's link timeout (5 s) is a placeholder until PCKNOB-17
+gives the link a heartbeat. (4) The WP1.2 visible deltas were added to the section 8.2 P1b
+allow-list.
+
+On-device (all three variants built clean after WP1.3): the binaries are byte-identical to the
+WP1.2 build (1.75 1,588,048 B; 1.28 1,546,256 B; C6 1,733,504 B) and the `libmodel.a` rows are
+unchanged (2,520 / 2,524 / 3,854 B), because nothing references the eight model objects yet and
+the linker leaves unreferenced archive members out. The sources compiled on both toolchains
+(xtensa and RISC-V) under the firmware flags. The first real measurement of the model layer on
+the device comes with APP-06, which constructs the root.

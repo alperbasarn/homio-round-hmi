@@ -4,6 +4,7 @@
 
 #include "HeapGuard.h"
 #include "TestRunner.h"
+#include "model/PowerModel.h"
 #include "model/PowerRules.h"
 
 using namespace model;
@@ -51,4 +52,71 @@ TEST_CASE(curve_allocates_nothing) {
         acc += socPercentFromVoltage(3.0f + static_cast<float>(i % 150) / 100.0f);
     }
     CHECK(acc > 0.0f);
+}
+
+// MDL-25: PowerModel on top of the curve. The old -1.0f sentinel becomes explicit validity;
+// presence known and connected are separate facts.
+
+namespace {
+
+void countPower(const PowerState&, void* context) { ++*static_cast<int*>(context); }
+
+}  // namespace
+
+TEST_CASE(sentinel_sets_percent_invalid_and_yields_no_band) {
+    PowerModel p;
+    CHECK(!p.state().percentValid);
+    CHECK(p.state().band == BatteryBand::Invalid);
+    CHECK(!p.setPercent(-1.0f));
+    CHECK(!p.state().percentValid);
+    CHECK(p.state().band == BatteryBand::Invalid);
+    CHECK(p.setPercent(55.0f));
+    CHECK(p.state().percentValid);
+    CHECK(p.state().band == BatteryBand::Medium);
+    CHECK(!p.setPercent(std::nanf("")));
+    CHECK(!p.state().percentValid);
+    CHECK(p.setPercent(140.0f));
+    CHECK_EQ(p.state().percent, 100.0f);
+}
+
+TEST_CASE(presence_known_is_not_connected) {
+    PowerModel p;
+    CHECK(!p.state().presenceKnown);
+    CHECK(!p.state().connected);
+    CHECK(p.setCharging(true));
+    CHECK(p.setPresence(true, false));     // the AXP2101 knows no cell is fitted
+    CHECK(p.state().presenceKnown);
+    CHECK(!p.state().connected);
+    CHECK(!p.state().charging);            // nothing charges an absent cell
+    CHECK(p.setPresence(true, true));
+    CHECK(p.state().connected);
+}
+
+TEST_CASE(percent_can_be_derived_from_a_valid_voltage) {
+    PowerModel p;
+    CHECK(!p.derivePercentFromVoltage());  // no voltage yet
+    CHECK(!p.setVoltage(-1.0f));
+    CHECK(!p.state().voltageValid);
+    CHECK(p.setVoltage(3.85f));
+    CHECK(p.state().voltageValid);
+    CHECK(p.derivePercentFromVoltage());
+    CHECK(near(p.state().percent, 55.0f));
+    CHECK(p.state().band == BatteryBand::Medium);
+    CHECK(!p.setCurrentMa(-1.0f));
+    CHECK(!p.state().currentValid);
+    CHECK(p.setCurrentMa(120.0f));
+    CHECK(p.state().currentValid);
+}
+
+TEST_CASE(power_model_allocates_nothing) {
+    NO_HEAP_SCOPE();
+    PowerModel p;
+    int notified = 0;
+    CHECK(p.subscribe(&countPower, &notified));
+    for (int i = 0; i < 10000; ++i) {
+        p.setVoltage(3.3f + static_cast<float>(i % 90) / 100.0f);
+        p.derivePercentFromVoltage();
+        p.commit();
+    }
+    CHECK(notified > 0);
 }

@@ -11,4 +11,12 @@ set(MODEL_SOURCES
     "${MODEL_DIR}/src/DateFormat.cpp"
     "${MODEL_DIR}/src/RateLimit.cpp"
     "${MODEL_DIR}/src/PowerRules.cpp"
+    "${MODEL_DIR}/src/MediaModel.cpp"
+    "${MODEL_DIR}/src/LightModel.cpp"
+    "${MODEL_DIR}/src/ClimateModel.cpp"
+    "${MODEL_DIR}/src/EnvironmentModel.cpp"
+    "${MODEL_DIR}/src/ConnectivityModel.cpp"
+    "${MODEL_DIR}/src/PowerModel.cpp"
+    "${MODEL_DIR}/src/NavigationModel.cpp"
+    "${MODEL_DIR}/src/KnobModel.cpp"
 )
