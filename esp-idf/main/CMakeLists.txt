@@ -20,4 +20,6 @@ idf_component_register(
         battery_handler
         ota_manager
         sleep_handler
+        model
+        adapters
 )

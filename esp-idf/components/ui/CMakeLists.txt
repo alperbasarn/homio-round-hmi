@@ -6,6 +6,6 @@ idf_component_register(
          "screens/DeviceInfoScreen.cpp"
          "screens/ModeController.cpp"
     INCLUDE_DIRS "." "screens"
-    REQUIRES display touch_panel board_hal lvgl
+    REQUIRES display touch_panel board_hal lvgl model
     PRIV_REQUIRES esp_timer
 )

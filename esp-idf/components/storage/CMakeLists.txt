@@ -2,5 +2,5 @@
 idf_component_register(
     SRCS "NVSManager.cpp"
     INCLUDE_DIRS "."
-    REQUIRES nvs_flash
+    REQUIRES nvs_flash model
 )

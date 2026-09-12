@@ -2,5 +2,5 @@
 idf_component_register(
     SRCS "SoundController.cpp" "LightController.cpp" "MediaController.cpp"
     INCLUDE_DIRS "."
-    REQUIRES display touch_panel ui board_hal media
+    REQUIRES display touch_panel ui board_hal media model
 )
