@@ -75,6 +75,15 @@ sdkconfig cleanup, not with the baseline.
 - BLD-35 (vendor `managed_components/`?) — no; the per-target lock reproduces it.
 - Lint is Node, not Python: Python is not on the Windows host; Node is required by the design tooling.
 
+## Target decision (2026-09-12)
+
+The bench board and primary target is the **Waveshare ESP32-S3-Touch-AMOLED-1.75**
+(`esp32s3_amoled175`), not the C6. All three variants remain supported. The
+measurements above stand; the 1.75 row is now the primary one and its IRAM
+figure (16,383 / 16,384) is the tightest constraint on the primary board. The
+knob UART is unmapped on the 1.75 (`KNOB_TX_PIN`/`KNOB_RX_PIN` = -1); mapping it
+is task KNOB-175 in the WBS notes.
+
 ## Owner decisions (2026-09-12)
 
 1. **Committed and tagged.** `p0-baseline` = commit `6392ed6` on `codex/multi-board-support` (592 files: the display-backend migration, dev_notes, tools, Phase 0 hygiene; 1,658,753 deletions are the vendored LovyanGFX). Not pushed.

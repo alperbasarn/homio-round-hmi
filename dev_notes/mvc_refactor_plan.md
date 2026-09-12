@@ -384,14 +384,27 @@ verify that screen.
 
 ## Constraints
 
-- **RAM.** ESP32-C6 has 512KB SRAM; a full 466x466x2 framebuffer is 434KB, so
-  `LvglDisplay` runs double partial buffers in DMA-capable internal RAM
+Primary target, decided 2026-09-12: **Waveshare ESP32-S3-Touch-AMOLED-1.75**
+(variant `esp32s3_amoled175`): two cores, 8 MB octal PSRAM, 16 MB flash, CO5300
+QSPI 466x466, CST9217 touch, AXP2101 PMU, ES8311 audio, SDMMC card. The ESP32-C6
+AMOLED 1.43 and the ESP32-S3 LCD 1.28 stay supported and must keep building; the
+C6 is the tightest board and bounds the RAM budget.
+
+- **RAM.** The C6 has 512KB SRAM and no PSRAM; a full 466x466x2 framebuffer is
+  434KB, so `LvglDisplay` runs double partial buffers in DMA-capable internal RAM
   (`MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`). The observer layer must not allocate
-  per frame. All subscriptions wired at startup, fixed capacity, no heap in the
-  render path.
-- **Single core on C6.** Model mutation must be either queued and drained on
+  per frame on any board: subscriptions wired at startup, fixed capacity, no heap
+  in the render path. PSRAM on the 1.75 relaxes the budget, not the rule.
+- **IRAM is full on both S3 boards** (16,383 of 16,384 bytes at `p0-baseline`).
+  Nothing new may be `IRAM_ATTR` or otherwise IRAM-resident without freeing space.
+- **Concurrency.** On the 1.75 displayTask runs on core 0 and networkTask on
+  core 1, so cross-task model access is real parallelism; on the C6 all tasks
+  share one core. Model mutation must be either queued and drained on
   displayTask, or guarded per aggregate. Pick one and apply it uniformly in
   Phase 1 - retrofitting it later means touching every model.
+- **Knob link per board.** Mapped only on the S3 LCD 1.28 (GPIO 17/18). On the
+  1.75 the UART pins are unset; on the C6 they collide with PWR_KEY and the
+  expander interrupt. Mapping the 1.75 header is the first hardware task.
 - **Scope.** 16,566 lines of first-party code excluding vendored. Phases 3 to 5
   are the bulk of the work.
 - **Two trees exist.** This plan targets `screen/SW/ESP/esp-idf` only.
