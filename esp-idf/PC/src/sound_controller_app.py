@@ -11,6 +11,7 @@ from connect_tab import ConnectTab
 from configure_tab import ConfigureTab
 from sound_controller_tab import SoundControllerTab
 from config_handler import ConfigHandler  # Import the new config handler
+from pc_media_protocol import format_play_state, format_state, parse_serial_line
 
 # Define a unique sender ID for this application
 SENDER_ID = "QNOB"
@@ -186,7 +187,7 @@ class QNOBApp:
                         if hasattr(self, 'sound_tab'):
                             self.sound_tab.update_playing_state(is_playing)
                         if hasattr(self, 'mqtt_handler'):
-                            state = "playing" if is_playing else "paused"
+                            state = format_play_state(is_playing)
                             self.mqtt_handler.publish("esp32/sound/response", state)
                 elif message == "pause":
                     if hasattr(self, 'media_controller'):
@@ -194,7 +195,7 @@ class QNOBApp:
                         if hasattr(self, 'sound_tab'):
                             self.sound_tab.update_playing_state(is_playing)
                         if hasattr(self, 'mqtt_handler'):
-                            state = "playing" if is_playing else "paused"
+                            state = format_play_state(is_playing)
                             self.mqtt_handler.publish("esp32/sound/response", state)
                 elif message == "forward":
                     if hasattr(self, 'media_controller'):
@@ -219,9 +220,9 @@ class QNOBApp:
                 if hasattr(self, 'audio_controller') and hasattr(self, 'media_controller'):
                     volume = self.audio_controller.get_volume_percent()
                     is_playing = self.media_controller.get_playing_state()
-                    state = "playing" if is_playing else "paused"
+                    state = format_play_state(is_playing)
                     if hasattr(self, 'mqtt_handler'):
-                        self.mqtt_handler.publish("esp32/sound/response", f"state:{state},volume:{volume}")
+                        self.mqtt_handler.publish("esp32/sound/response", format_state(is_playing, volume))
                 return
             elif message_type == "mqtt_command_response":
                 self.process_received_command(message)
@@ -254,20 +255,14 @@ class QNOBApp:
         else:
             command = str(message)
             
-        # Process setpoint updates
-        if command.startswith("setpoint="):
-            try:
-                setpoint = int(command.split("=")[1])
-                # Update UI but don't send back to device
-                self.sound_tab.update_volume(setpoint, send_to_device=False)
-            except ValueError:
-                pass
-                
-        # Process playing state updates
-        elif command == "playing" or command == "paused":
-            is_playing = command == "playing"
-            self.sound_tab.update_playing_state(is_playing)
-            
+        # PCKNOB-06: the serial grammar is pc_media_protocol.parse_serial_line.
+        parsed = parse_serial_line(command)
+        if parsed is not None and parsed[0] == "setpoint":
+            # Update the UI without sending the value back to the device
+            self.sound_tab.update_volume(parsed[1], send_to_device=False)
+        elif parsed is not None and parsed[0] == "state":
+            self.sound_tab.update_playing_state(parsed[1])
+
         # Pass information to Configure tab for NVS values
         elif not command.startswith("sender=") and self.notebook.index(self.notebook.select()) == 2:
             if command.startswith("ota") or "=" in command or "End of EEPROM Values" in command:

@@ -113,7 +113,6 @@ private:
 
     // Data helpers
     void formatDate();
-    std::string getMonthName(int month);
     lv_color_t getTemperatureColor(float temperature, bool isIndoor);
     std::string getTimeStringForDisplay() const;
     int scalePx(int referencePx) const;

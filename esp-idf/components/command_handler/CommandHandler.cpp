@@ -1,4 +1,5 @@
 #include "CommandHandler.h"
+#include "CommandParsers.h"
 #include "DisplayController.h"
 #include "NVSManager.h"
 #include "KnobController.h"
@@ -182,20 +183,7 @@ std::string CommandHandler::trimCommand(const std::string& command) {
 }
 
 bool CommandHandler::parseInt(const std::string& text, int& out, int min, int max) {
-    if (text.empty() || text.size() > 11) {
-        return false;
-    }
-    char* end = nullptr;
-    errno = 0;
-    const long parsed = std::strtol(text.c_str(), &end, 10);
-    if (end == text.c_str() || *end != '\0' || errno == ERANGE) {
-        return false;
-    }
-    if (parsed < min || parsed > max) {
-        return false;
-    }
-    out = static_cast<int>(parsed);
-    return true;
+    return cmdparse::parseInt(text, out, min, max);  // APP-21: the grammar lives in the host-tested leaf
 }
 
 void CommandHandler::publishResponse(const std::string& response) {
@@ -283,38 +271,21 @@ void CommandHandler::cmdClearNVS(const std::string& params) {
 }
 
 void CommandHandler::cmdConnectWifi(const std::string& params) {
-    std::vector<std::string> parts;
-    size_t start = 0;
-    size_t end = params.find(':');
-    while (end != std::string::npos) {
-        parts.push_back(params.substr(start, end - start));
-        start = end + 1;
-        end = params.find(':', start);
-    }
-    if (start < params.size()) {
-        parts.push_back(params.substr(start));
-    }
-
-    if (parts.size() < 2) {
-        ESP_LOGE(TAG, "[WiFi] Invalid format! Use: connectWifi:SSID:Password[:Slot]");
+    cmdparse::WifiCredentials creds;
+    std::string error;
+    if (!cmdparse::parseConnectWifi(params, NUM_WIFI_CREDENTIALS, creds, error)) {
+        ESP_LOGE(TAG, "[WiFi] %s. Use: connectWifi:SSID:Password[:Slot 0-%d]", error.c_str(), NUM_WIFI_CREDENTIALS - 1);
         return;
     }
-
-    std::string ssid = parts[0];
-    std::string password = parts[1];
-    int slot = 0;
-    if (parts.size() >= 3 && !parseInt(parts[2], slot, 0, NUM_WIFI_CREDENTIALS - 1)) {
-        ESP_LOGE(TAG, "[WiFi] Invalid slot: %s (expected 0-%d)", parts[2].c_str(), NUM_WIFI_CREDENTIALS - 1);
-        return;
-    }
+    const int slot = creds.slot;
 
     // Save credentials to NVS via NVSManager
-    nvsManager->wifiCredentials[slot].ssid = ssid;
-    nvsManager->wifiCredentials[slot].password = password;
+    nvsManager->wifiCredentials[slot].ssid = creds.ssid;
+    nvsManager->wifiCredentials[slot].password = creds.password;
     nvsManager->wifiCredentials[slot].remember = true;
     nvsManager->lastConnectedNetworkIndex = slot;
     nvsManager->saveWiFiCredentials();
-    ESP_LOGI(TAG, "[WiFi] Credentials saved for SSID: %s (slot %d)", ssid.c_str(), slot);
+    ESP_LOGI(TAG, "[WiFi] Credentials saved for SSID: %s (slot %d)", creds.ssid.c_str(), slot);
 
     // Connect to WiFi
     wifiManager->connectToWiFi();
@@ -367,100 +338,17 @@ void CommandHandler::cmdSetDeviceName(const std::string& params) {
 }
 
 void CommandHandler::cmdConfigureMQTTServer(const std::string& params) {
-    // Host:Port[:Username:Password]
-    auto parsePort = [](const std::string& value, int& portOut) -> bool {
-        if (value.empty()) {
-            return false;
-        }
-        char* end = nullptr;
-        long parsed = std::strtol(value.c_str(), &end, 10);
-        if (end == value.c_str() || *end != '\0' || parsed <= 0 || parsed > 65535) {
-            return false;
-        }
-        portOut = static_cast<int>(parsed);
-        return true;
-    };
-
-    auto stripScheme = [](const std::string& value) -> std::string {
-        if (value.rfind("mqtt://", 0) == 0) {
-            return value.substr(7);
-        }
-        if (value.rfind("mqtts://", 0) == 0) {
-            return value.substr(8);
-        }
-        return value;
-    };
-
-    std::vector<std::string> parts;
-    size_t start = 0;
-    size_t end = params.find(':');
-    while (end != std::string::npos) {
-        parts.push_back(params.substr(start, end - start));
-        start = end + 1;
-        end = params.find(':', start);
-    }
-    parts.push_back(params.substr(start));
-
-    if (parts.size() >= 2 &&
-        (parts[0] == "mqtt" || parts[0] == "mqtts") &&
-        parts[1].rfind("//", 0) == 0) {
-        parts[1] = parts[0] + ":" + parts[1];
-        parts.erase(parts.begin());
-    }
-
-    std::string host;
-    int port = 0;
-    std::string username;
-    std::string password;
-
-    if (parts.size() == 5 && (parts[0] == "URL" || parts[0] == "url")) {
-        host = stripScheme(parts[1]);
-        if (!parsePort(parts[2], port)) {
-            ESP_LOGE(TAG, "Invalid MQTT port: %s", parts[2].c_str());
-            publishResponse("configureMQTTServer:ERR:invalid_port");
-            return;
-        }
-        username = parts[3];
-        password = parts[4];
-    } else if (parts.size() == 4 && (parts[0] == "URL" || parts[0] == "url")) {
-        host = stripScheme(parts[1]);
-        username = parts[2];
-        password = parts[3];
-        port = 8883;
-    } else if (parts.size() == 4) {
-        host = stripScheme(parts[0]);
-        if (!parsePort(parts[1], port)) {
-            ESP_LOGE(TAG, "Invalid MQTT port: %s", parts[1].c_str());
-            publishResponse("configureMQTTServer:ERR:invalid_port");
-            return;
-        }
-        username = parts[2];
-        password = parts[3];
-    } else if (parts.size() == 2) {
-        host = stripScheme(parts[0]);
-        if (!parsePort(parts[1], port)) {
-            ESP_LOGE(TAG, "Invalid MQTT port: %s", parts[1].c_str());
-            publishResponse("configureMQTTServer:ERR:invalid_port");
-            return;
-        }
-    } else {
-        ESP_LOGE(TAG, "Invalid format! Use: configureMQTTServer:Host:Port[:User:Pass]");
-        publishResponse("configureMQTTServer:ERR:invalid_format");
+    // Host:Port[:Username:Password] and the URL forms; the grammar is cmdparse (APP-21).
+    cmdparse::MqttServerConfig config;
+    std::string error;
+    if (!cmdparse::parseConfigureMqttServer(params, nvsManager->soundMQTTPassword, config, error)) {
+        ESP_LOGE(TAG, "configureMQTTServer rejected (%s). Use: configureMQTTServer:Host:Port[:User:Pass]", error.c_str());
+        publishResponse("configureMQTTServer:ERR:" + error);
         return;
-    }
-
-    if (host.empty()) {
-        ESP_LOGE(TAG, "MQTT host cannot be empty");
-        publishResponse("configureMQTTServer:ERR:empty_host");
-        return;
-    }
-
-    if (password == "-") {
-        password = nvsManager->soundMQTTPassword;
     }
 
     // Save MQTT config via NVSManager (configures sound MQTT server)
-    nvsManager->saveSoundMQTTServer(host, port, username, password);
+    nvsManager->saveSoundMQTTServer(config.host, config.port, config.username, config.password);
     ESP_LOGI(TAG, "MQTT Server configured. It will be applied on next restart.");
     publishResponse("configureMQTTServer:OK:restart_required");
 }
@@ -471,30 +359,14 @@ void CommandHandler::cmdCommInfo(const std::string& params) {
 }
 
 void CommandHandler::cmdConfigureStaticIP(const std::string& params) {
-    std::vector<std::string> parts;
-    size_t start = 0;
-    size_t end = params.find(':');
-    while (end != std::string::npos) {
-        parts.push_back(params.substr(start, end - start));
-        start = end + 1;
-        end = params.find(':', start);
-    }
-    if (start < params.size()) {
-        parts.push_back(params.substr(start));
-    }
-
-    if (parts.size() < 5) {
+    cmdparse::StaticIpConfig config;
+    std::string error;
+    if (!cmdparse::parseStaticIp(params, config, error)) {
         ESP_LOGE(TAG, "Invalid format! Use: configureStaticIP:IP:Gateway:Subnet:DNS1:DNS2");
         return;
     }
 
-    const std::string& ip = parts[0];
-    const std::string& gateway = parts[1];
-    const std::string& subnet = parts[2];
-    const std::string& dns1 = parts[3];
-    const std::string& dns2 = parts[4];
-
-    nvsManager->saveStaticIPConfig(true, ip, gateway, subnet, dns1, dns2);
+    nvsManager->saveStaticIPConfig(true, config.ip, config.gateway, config.subnet, config.dns1, config.dns2);
     ESP_LOGI(TAG, "Static IP configuration saved. Restart required.");
 }
 

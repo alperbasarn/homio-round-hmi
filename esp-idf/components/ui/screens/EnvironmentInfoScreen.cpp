@@ -1,6 +1,8 @@
 #include "EnvironmentInfoScreen.h"
 #include "LvglDisplay.h"
 #include "esp_log.h"
+#include "model/ColorMath.h"
+#include "model/DateFormat.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -723,59 +725,14 @@ void EnvironmentInfoScreen::updateOutdoorSegmentsFromValue(int value) {
 }
 
 lv_color_t EnvironmentInfoScreen::getTemperatureColor(float temperature, bool isIndoor) {
-    auto lerp = [](uint8_t from, uint8_t to, float t) -> uint8_t {
-        return static_cast<uint8_t>(from + (to - from) * t);
-    };
-
-    uint8_t r = 124;
-    uint8_t g = 230;
-    uint8_t b = 90;
-
-    if (isIndoor) {
-        if (temperature <= 18.0f) {
-            const float t = constrain((temperature - 10.0f) / 8.0f, 0.0f, 1.0f);
-            r = lerp(95, 124, t);
-            g = lerp(210, 230, t);
-            b = lerp(140, 90, t);
-        } else if (temperature <= 24.0f) {
-            r = 124;
-            g = 230;
-            b = 90;
-        } else if (temperature <= 28.0f) {
-            const float t = constrain((temperature - 24.0f) / 4.0f, 0.0f, 1.0f);
-            r = lerp(124, 255, t);
-            g = lerp(230, 191, t);
-            b = lerp(90, 74, t);
-        } else {
-            const float t = constrain((temperature - 28.0f) / 8.0f, 0.0f, 1.0f);
-            r = 255;
-            g = lerp(191, 64, t);
-            b = lerp(74, 80, t);
-        }
-    } else {
-        if (temperature <= 0.0f) {
-            r = 68;
-            g = 214;
-            b = 255;
-        } else if (temperature <= 15.0f) {
-            const float t = constrain(temperature / 15.0f, 0.0f, 1.0f);
-            r = lerp(68, 124, t);
-            g = lerp(214, 230, t);
-            b = lerp(255, 90, t);
-        } else if (temperature <= 28.0f) {
-            const float t = constrain((temperature - 15.0f) / 13.0f, 0.0f, 1.0f);
-            r = lerp(124, 255, t);
-            g = lerp(230, 191, t);
-            b = lerp(90, 74, t);
-        } else {
-            const float t = constrain((temperature - 28.0f) / 12.0f, 0.0f, 1.0f);
-            r = 255;
-            g = lerp(191, 64, t);
-            b = lerp(74, 80, t);
-        }
-    }
-
-    return lv_color_make(r, g, b);
+    // MDL-07/MDL-09: the bands and the palette live in the model; this view only converts the
+    // triple to LVGL's colour type. The raw float goes through untranslated so today's -1.0f
+    // "no reading" still lands where it always did (Cold / Freezing); the adapter in WP1.4 maps
+    // it to kNoTemperature and the views then render Invalid as grey.
+    const model::Rgb rgb = isIndoor
+        ? model::indoorTemperatureRgb(model::classifyIndoor(temperature))
+        : model::outdoorTemperatureRgb(model::classifyOutdoor(temperature));
+    return lv_color_make(rgb.r, rgb.g, rgb.b);
 }
 
 std::string EnvironmentInfoScreen::getTimeStringForDisplay() const {
@@ -792,41 +749,11 @@ int EnvironmentInfoScreen::scalePx(int referencePx) const {
 }
 
 void EnvironmentInfoScreen::formatDate() {
-    size_t firstSlash = currentDate.find('/');
-    size_t secondSlash = currentDate.find('/', firstSlash == std::string::npos ? 0 : firstSlash + 1);
-
-    if (firstSlash != std::string::npos && secondSlash != std::string::npos) {
-        std::string monthStr = currentDate.substr(firstSlash + 1, secondSlash - firstSlash - 1);
-        std::string dayStr = currentDate.substr(secondSlash + 1);
-
-        bool isValidMonth = !monthStr.empty() && std::all_of(monthStr.begin(), monthStr.end(), ::isdigit);
-        bool isValidDay = !dayStr.empty() && std::all_of(dayStr.begin(), dayStr.end(), ::isdigit);
-
-        if (isValidMonth && isValidDay) {
-            while (dayStr.length() > 1 && dayStr[0] == '0') {
-                dayStr.erase(dayStr.begin());
-            }
-
-            int monthNum = std::stoi(monthStr);
-            std::string monthName = getMonthName(monthNum);
-            formattedDate = dayStr + " " + monthName;
-            return;
-        }
-    }
-
-    formattedDate = "-- ---";
-}
-
-std::string EnvironmentInfoScreen::getMonthName(int month) {
-    static constexpr const char* MONTHS[] = {
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
-    };
-
-    if (month >= 1 && month <= 12) {
-        return MONTHS[month - 1];
-    }
-    return "---";
+    // MDL-10: the rule is model::formatDate over a FixedString; the std::string member stays
+    // until Phase 3 replaces this screen.
+    model::DateText text;
+    model::formatDate(currentDate.c_str(), text);
+    formattedDate = text.c_str();
 }
 
 void EnvironmentInfoScreen::updateDateTime(const std::string& date, const std::string& time, const std::string& dayOfWeek) {

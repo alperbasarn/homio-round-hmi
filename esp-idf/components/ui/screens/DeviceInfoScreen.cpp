@@ -1,6 +1,8 @@
 #include "DeviceInfoScreen.h"
 #include "LvglDisplay.h"
 #include "esp_log.h"
+#include "model/Bands.h"
+#include "model/ColorMath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -352,23 +354,19 @@ int DeviceInfoScreen::scalePx(int referencePx) const {
 }
 
 lv_color_t DeviceInfoScreen::getBatteryColor(float percentage) const {
-    if (percentage <= 20.0f) {
-        return lv_color_hex(0xFF4444);  // Red for low battery
-    } else if (percentage <= 40.0f) {
-        return lv_color_hex(0xFFAA00);  // Orange for medium-low
-    } else if (percentage <= 60.0f) {
-        return lv_color_hex(0xFFDD44);  // Yellow for medium
-    } else {
-        return lv_color_hex(0x7BE85A);  // Green for good
-    }
+    // MDL-07: the 20/40/60 bands and their colours live in the model (batteryRgb).
+    const model::Rgb rgb = model::batteryRgb(model::classifyBattery(percentage));
+    return lv_color_make(rgb.r, rgb.g, rgb.b);
 }
 
 std::string DeviceInfoScreen::getWifiStrengthBars(int strength) const {
-    // strength is 0-3
-    if (strength <= 0) return "[ ]";
-    if (strength == 1) return "[|]";
-    if (strength == 2) return "[||]";
-    return "[|||]";
+    // MDL-07: 0..4 bars. WiFiManager::getSignalStrength() returns 0..4; the old table stopped at
+    // three, so the strongest signal was drawn as three bars.
+    const model::SignalBars bars = model::signalBarsFromStrength(strength);
+    if (bars == 0) {
+        return "[ ]";
+    }
+    return "[" + std::string(bars, '|') + "]";
 }
 
 void DeviceInfoScreen::resetLastActivityTime() {

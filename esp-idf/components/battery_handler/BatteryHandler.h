@@ -55,7 +55,6 @@ private:
 
     void resetTelemetry();
     float readVoltage();
-    float voltageToPercentage(float voltage);
     int64_t millis() const;
     esp_err_t initializeAdcBackend();
     esp_err_t initializePmuBackend();

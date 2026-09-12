@@ -65,7 +65,6 @@ private:
     void drawModeText();
     void sendSetpointToServer();
     void requestCurrentBrightnessFromServer();
-    uint32_t hsvToRgb(float hue, float saturation, float value) const;
     void checkTouchInput();
     void handleModeChange();
     int scalePx(int referencePx) const;

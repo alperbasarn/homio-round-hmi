@@ -76,3 +76,47 @@ behaviour change; P1b diffs against `p0-fixed` once it exists).
 | MDL-30 `AppModel` | skeleton | Holds the queue and clock, `wireSubscriptions()` returns false on a second call, `drainPendingMutations()` drains into `apply()`, which counts every record as unrouted until WP1.3 adds the models. | completes with WP1.3 |
 
 Host run: `bash run-host-tests.sh` (or `.\run-host-tests.ps1`) from `screen/SW/ESP`.
+
+On-device (1.75 build after WP1.1, commit `2e21074`): `model` registers with `reqs=[] priv=[]`,
+`adapters` with `reqs=[model]` and the four drivers private; every BLD-41 edge appears in the
+component graph (24 first-party components, 67 edges, still the two cycles). The binary is
+unchanged at 1,587,312 B because nothing links `libmodel.a` yet; its `size-components` row, and
+with it the MDL-01 measurement, become real when APP-06 constructs `AppModel`.
+
+## WP1.2 Domain rules lifted out of views
+
+Started 2026-09-12 after WP1.1. Every rule below now has one home under `components/model/`
+(or, for the command grammar, an ESP-free leaf inside `command_handler`) and a host suite that
+pins it; the views and drivers call the model and own nothing numeric. Behaviour is unchanged
+except where a row says otherwise.
+
+| Task | Status | What changed | Verification |
+|---|---|---|---|
+| MDL-07 `Bands` | done | `classifyIndoor` (≤18 / ≤24 / ≤28), `classifyOutdoor` (≤0 / ≤15 / ≤28), `classifyBattery` (≤20 / ≤40 / ≤60), each band carrying `progress` from `bandProgress(t, from, to)` with the old divisors (8/4/8 indoor, 15/13/12 outdoor); `signalBarsFromRssi` (−50/−60/−70/−80 → 4..0) and `signalBarsFromStrength` (clamp 0..4); `legacyTemperature()` translates the old `-1.0f` sentinel to `kNoTemperature` at a boundary, never inside a model. `EnvironmentInfoScreen::getTemperatureColor` and `DeviceInfoScreen::getBatteryColor` / `getWifiStrengthBars` now call the model. **One visible change:** the WiFi label renders 0..4 bars; the old table stopped at three, so the strongest signal was drawn as three bars. | `test_bands`: 7 cases |
+| MDL-08 band tests | done | Inclusive boundaries at every threshold; a −20..50 °C sweep in 0.1 °C steps compares band + progress through the model palette against the old `getTemperatureColor` copied verbatim: 0 mismatches over 1,402 points; `kNoTemperature`, `legacyTemperature(-1.0f)`, NaN and −300 classify Invalid; `classifyBattery(-1.0f)` is Invalid, never Critical; 10,000 classifications allocate nothing. Note `classifyOutdoor(-1.0f)` is Freezing: −1 °C is a real outdoor reading, which is why the translation is explicit. | green under ASan/UBSan |
+| MDL-09 `ColorMath` | done | `hsvToRgb` / `channelFromRgb` moved bit-for-bit out of `LightController` (member deleted); `lerpChannel` is the old view lerp kept literally; `indoorTemperatureRgb` / `outdoorTemperatureRgb` / `batteryRgb` are the palettes, `Rgb` is a plain triple the views convert with `lv_color_make`. Both light call sites documented in the header: the on-screen swatch uses value 1.0, the MQTT publish uses value = level/100 (brightness folded into the colour). | `test_domain_helpers`: 361 hues × 21 levels identical to the old function, hue 1.0 wrap included |
+| MDL-10 `DateFormat` | done | `formatDate(const char*, DateText&)` over `FixedString<8>`; digit guard kept; the day keeps at least one digit; `monthName(1..12)` else `---`. The old `std::stoi` could throw on a 10+ digit month; the port bounds the parse and shows `---`. `EnvironmentInfoScreen::formatDate` is a three-line call; `getMonthName` deleted. | `2026/02/07` → `7 FEB`, `garbage` → `-- ---`, month 0 / 13 → `7 ---`, 10-digit day truncates to the capacity |
+| MDL-11 helper tests | done | 6 cases, all inside `NO_HEAP_SCOPE()` where the render path would run: malformed, empty, null, one slash, empty month, empty day, non-digit fields, month 0 and 13. | green |
+| MDL-12 `RateLimit` | done | `RateLimiter(intervalMs)` (`markChanged` / `shouldPublish(now)` / `flush()`, first publish never delayed), `Debouncer(settleMs)` (`poke(now)` / `settled(now)` fires once per burst), `EchoSuppressor(windowMs)` (`published(value, now)` / `isEcho(value, now)`). No clock inside: every method takes `nowMs`. Not yet wired into the controllers (WP1.4 does that with the adapters). | `test_ratelimit`: 5 cases |
+| MDL-13 rate-limit tests | done | Denies at n−1 ms, allows at n; a 100-change burst inside one window collapses to zero fires with the last value still pending, and `flush()` emits it; the debouncer fires exactly once 400 ms after the last poke; the echo window is inclusive at the boundary; 10,000 iterations allocate nothing. | green |
+| PERI-03 `PowerRules` | done | The 13-point SoC curve moved to `model/PowerRules` (`socPercentFromVoltage`, `isValidCellVoltage`); `BatteryHandler::voltageToPercentage` deleted, both call sites (ADC and PMU fallback) call the model. An all-12-samples-failed ADC read now returns −1 and the handler reports both voltage and percentage invalid instead of re-using the filtered voltage as fresh; the filter restarts on the next good sample. `battery_handler` gained `REQUIRES model` as a bridge edge; it goes when `PowerModel` (MDL-25, WP1.3) owns the percentage and the adapter feeds raw voltage. | `test_power_rules`: 13 knees, 3 midpoints, both clamps, sentinels carried not zeroed, zero allocations. The on-device percentages are unchanged by construction (same arithmetic, same table). |
+| APP-21 `CommandParsers` | done | `cmdparse::parseInt`, `splitColon`, `parseConnectWifi`, `parseConfigureMqttServer` (all five arities, `password == "-"` reuse), `parseStaticIp`; `CommandHandler` keeps the side effects and calls the leaf. Compiled on the host as its own static library, which is the proof that it is ESP-free. Two tightenings: `parseInt` rejects leading whitespace (`strtol` used to skip it), and the `mqtt://` / `mqtts://` re-glue now also applies after the `URL:` keyword (`URL:mqtts://host:user:pass` used to fail with `invalid_port`). | `test_command_parsers`: 8 cases, one per arity plus rejections (`setpoint:abc` shape, `Home:` trailing empty password rejected as before) |
+| PCKNOB-06 PC protocol | done | `esp-idf/PC/src/pc_media_protocol.py`: sender framing (`split_sender` / `is_self` / `with_sender`), `parse_control` (play / pause / forward / rewind), `parse_setpoint` (`setpoint:` and `setpoint=`), `is_state_request`, `format_state` / `parse_state`, `parse_serial_line`. `mqtt_handler.py` and `sound_controller_app.py` route through it. Deltas: a setpoint outside 0..100 is rejected instead of clamped (matches APP-01), unknown control words are dropped in the handler instead of being queued and ignored, self-detection compares the sender id exactly instead of by substring. `pytest` was installed for the WSL build user (`pip install --user pytest`, 9.1.1). | `esp-idf/PC/tests/test_pc_media_protocol.py`: 16 cases green under `python3 -m pytest esp-idf/PC/tests` and `python3 -m unittest discover -s esp-idf/PC/tests`, with no pywin32 / pycaw / paho on the machine (asserted). `py_compile` clean on the three edited files. "`play` still works inside the app" is a bench item: the Windows host in this session has no Python, so the GUI was not launched. |
+
+Deviations from the table: PCKNOB-06 lists PCKNOB-01 (retire `QNOB/PC`) as a dependency; the
+owner keeps the stale copies, so the work was done against the canonical `esp-idf/PC` only.
+
+Host suite after WP1.2: 8 executables, 50 cases, all green with `-fsanitize=address,undefined`;
+purity guard clean; `bash run-host-tests.sh` from `screen/SW/ESP`.
+
+On-device (all three variants built clean after WP1.2, working tree on top of `2e21074`):
+`libmodel.a` now links because the views call it: 2,520 B of flash on the 1.75 (2,342 code +
+178 rodata), 2,524 B on the 1.28, 3,854 B on the C6 (RISC-V code density plus `.eh_frame`);
+0 IRAM and 0 DIRAM everywhere, so the S3 IRAM figure (16,383/16,384) cannot have moved and
+MDL-01 stays provisional until APP-06 instantiates the models. `qnob-screen.bin`: 1.75
+1,588,048 B (0x183B50, +736 B against the WP1.1 build of 1,587,312 B, the model code replacing
+the view copies almost one for one); 1.28 1,546,256 B (0x179810); C6 1,733,504 B (0x1A7380);
+47% or more of the app partition free on each. `battery_handler`'s new `REQUIRES model`
+compiles and links on all three. The component graph still reports the two Phase-0 cycles.
+Bench checks pending on the 1.75: four-bar WiFi label at strong signal, the date label after a
+time sync, light swatch and published LED colour unchanged, and `play` from the PC app.

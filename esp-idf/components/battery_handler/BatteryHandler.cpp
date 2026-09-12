@@ -5,6 +5,7 @@
 #include "esp_timer.h"
 #include "hal_config.h"
 #include "hal_init.h"
+#include "model/PowerRules.h"
 
 #include <algorithm>
 #include <array>
@@ -341,8 +342,8 @@ float BatteryHandler::readVoltage() {
     }
 
     if (validSamples == 0) {
-        ESP_LOGW(TAG, "ADC read failed for all samples");
-        return batteryTelemetry.voltageVolts;
+        ESP_LOGW(TAG, "ADC read failed for all samples; reporting no reading");
+        return -1.0f;  // PERI-03: never the previous filtered value as if it were fresh
     }
 
     std::sort(rawSamples.begin(), rawSamples.begin() + validSamples);
@@ -368,51 +369,6 @@ float BatteryHandler::readVoltage() {
     return adcVoltage * config.voltageDividerRatio;
 }
 
-float BatteryHandler::voltageToPercentage(float voltage) {
-    struct VoltagePoint {
-        float voltage;
-        float percentage;
-    };
-
-    static constexpr std::array<VoltagePoint, 13> SOC_CURVE = {{
-        {4.20f, 100.0f},
-        {4.11f, 90.0f},
-        {4.03f, 80.0f},
-        {3.95f, 70.0f},
-        {3.88f, 60.0f},
-        {3.82f, 50.0f},
-        {3.77f, 40.0f},
-        {3.72f, 30.0f},
-        {3.67f, 20.0f},
-        {3.61f, 12.0f},
-        {3.54f, 7.0f},
-        {3.45f, 3.0f},
-        {3.30f, 0.0f},
-    }};
-
-    if (voltage >= SOC_CURVE.front().voltage) {
-        return 100.0f;
-    }
-    if (voltage <= SOC_CURVE.back().voltage) {
-        return 0.0f;
-    }
-
-    for (size_t i = 0; i + 1 < SOC_CURVE.size(); ++i) {
-        const auto& high = SOC_CURVE[i];
-        const auto& low = SOC_CURVE[i + 1];
-        if (voltage <= high.voltage && voltage >= low.voltage) {
-            const float spanV = high.voltage - low.voltage;
-            if (spanV <= 0.0001f) {
-                return low.percentage;
-            }
-            const float t = (voltage - low.voltage) / spanV;
-            return low.percentage + t * (high.percentage - low.percentage);
-        }
-    }
-
-    return 0.0f;
-}
-
 void BatteryHandler::analyzeAdcTelemetry(int64_t currentMillis) {
     if (lastMeasurementTime != 0 &&
         currentMillis - lastMeasurementTime < config.measurementIntervalMs) {
@@ -429,11 +385,15 @@ void BatteryHandler::analyzeAdcTelemetry(int64_t currentMillis) {
             batteryTelemetry.voltageVolts =
                 (batteryTelemetry.voltageVolts * 0.8f) + (measuredVoltage * 0.2f);
         }
+    } else {
+        // PERI-03: an all-samples-failed read reports "no reading" instead of re-using the
+        // filtered voltage as if it were fresh; the filter restarts on the next good sample.
+        batteryTelemetry.voltageVolts = -1.0f;
     }
 
     batteryTelemetry.percentage =
         (batteryTelemetry.voltageVolts >= 0.0f)
-            ? voltageToPercentage(batteryTelemetry.voltageVolts)
+            ? model::socPercentFromVoltage(batteryTelemetry.voltageVolts)
             : -1.0f;
     lastMeasurementTime = currentMillis;
 
@@ -495,7 +455,7 @@ void BatteryHandler::analyzePmuTelemetry(int64_t currentMillis) {
     } else {
         batteryTelemetry.percentage =
             (batteryTelemetry.voltageVolts >= 0.0f)
-                ? voltageToPercentage(batteryTelemetry.voltageVolts)
+                ? model::socPercentFromVoltage(batteryTelemetry.voltageVolts)
                 : -1.0f;
     }
 

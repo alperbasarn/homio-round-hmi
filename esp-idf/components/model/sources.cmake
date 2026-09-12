@@ -6,4 +6,9 @@ set(MODEL_INCLUDE_DIR "${MODEL_DIR}/include")
 set(MODEL_SOURCES
     "${MODEL_DIR}/src/MutationQueue.cpp"
     "${MODEL_DIR}/src/AppModel.cpp"
+    "${MODEL_DIR}/src/Bands.cpp"
+    "${MODEL_DIR}/src/ColorMath.cpp"
+    "${MODEL_DIR}/src/DateFormat.cpp"
+    "${MODEL_DIR}/src/RateLimit.cpp"
+    "${MODEL_DIR}/src/PowerRules.cpp"
 )

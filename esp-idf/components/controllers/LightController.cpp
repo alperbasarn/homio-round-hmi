@@ -1,6 +1,7 @@
 #include "LightController.h"
 #include "LvglDisplay.h"
 #include "esp_log.h"
+#include "model/ColorMath.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -8,10 +9,6 @@
 namespace {
 
 constexpr const char* TAG = "LightCtrl";
-
-uint8_t channelFromRgb(uint32_t rgb, int shift) {
-    return static_cast<uint8_t>((rgb >> shift) & 0xFF);
-}
 
 }  // namespace
 
@@ -88,34 +85,6 @@ void LightController::ensureUi() {
     LvglDisplay::unlock();
 }
 
-uint32_t LightController::hsvToRgb(float hue, float saturation, float value) const {
-    float r = 0.0f;
-    float g = 0.0f;
-    float b = 0.0f;
-    const int i = static_cast<int>(hue * 6.0f);
-    const float f = hue * 6.0f - static_cast<float>(i);
-    const float p = value * (1.0f - saturation);
-    const float q = value * (1.0f - f * saturation);
-    const float t = value * (1.0f - (1.0f - f) * saturation);
-
-    switch (i % 6) {
-        case 0: r = value; g = t; b = p; break;
-        case 1: r = q; g = value; b = p; break;
-        case 2: r = p; g = value; b = t; break;
-        case 3: r = p; g = q; b = value; break;
-        case 4: r = t; g = p; b = value; break;
-        case 5: r = value; g = p; b = q; break;
-        default: break;
-    }
-
-    const uint8_t red = static_cast<uint8_t>(r * 255.0f);
-    const uint8_t green = static_cast<uint8_t>(g * 255.0f);
-    const uint8_t blue = static_cast<uint8_t>(b * 255.0f);
-    return (static_cast<uint32_t>(red) << 16) |
-           (static_cast<uint32_t>(green) << 8) |
-           static_cast<uint32_t>(blue);
-}
-
 void LightController::drawSetPoint() {
     ensureUi();
     if (root == nullptr || !LvglDisplay::lock(-1)) {
@@ -125,7 +94,7 @@ void LightController::drawSetPoint() {
     const int screenW = display->width();
     const int screenH = display->height();
     const int waterLevelHeight = (waterLevel * screenH) / 100;
-    const uint32_t rgb = hsvToRgb(colorHue, 1.0f, 1.0f);
+    const uint32_t rgb = model::hsvToRgb(colorHue, 1.0f, 1.0f);  // MDL-09: swatch at full value
 
     lv_obj_set_size(waterRect, screenW, waterLevelHeight);
     lv_obj_set_pos(waterRect, 0, screenH - waterLevelHeight);
@@ -266,10 +235,11 @@ void LightController::sendSetpointToServer() {
         return;
     }
 
-    const uint32_t rgb = hsvToRgb(colorHue, 1.0f, waterLevel / 100.0f);
-    const std::string colorMessage = std::to_string(channelFromRgb(rgb, 16)) + "," +
-                                     std::to_string(channelFromRgb(rgb, 8)) + "," +
-                                     std::to_string(channelFromRgb(rgb, 0));
+    // MDL-09: colour maths lives in the model now (bit-exact port of the former member).
+    const uint32_t rgb = model::hsvToRgb(colorHue, 1.0f, waterLevel / 100.0f);
+    const std::string colorMessage = std::to_string(model::channelFromRgb(rgb, 16)) + "," +
+                                     std::to_string(model::channelFromRgb(rgb, 8)) + "," +
+                                     std::to_string(model::channelFromRgb(rgb, 0));
     const std::string brightnessMessage = std::to_string((waterLevel * 255) / 100);
 
     std::string modeMessage;

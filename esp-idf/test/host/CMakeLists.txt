@@ -38,6 +38,13 @@ target_include_directories(test_support PUBLIC
 )
 target_link_libraries(test_support PUBLIC model)
 
+# APP-21: the command grammar is an ESP-free leaf inside command_handler; compiling it here is
+# what proves that.
+add_library(command_parsers STATIC "${CMAKE_CURRENT_LIST_DIR}/../../components/command_handler/CommandParsers.cpp")
+target_include_directories(command_parsers PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../../components/command_handler")
+target_compile_options(command_parsers PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(command_parsers PUBLIC -fsanitize=address,undefined)
+
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -48,6 +55,6 @@ file(GLOB QNOB_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_*.
 foreach(test_source IN LISTS QNOB_TEST_SOURCES)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(${test_name} "${test_source}")
-    target_link_libraries(${test_name} PRIVATE test_support model Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE test_support model command_parsers Threads::Threads)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

@@ -4,6 +4,8 @@ import time
 import threading
 import queue
 
+import pc_media_protocol as protocol
+
 class MQTTHandler:
     """Handles MQTT connection and message processing"""
     
@@ -180,39 +182,27 @@ class MQTTHandler:
             payload = msg.payload.decode()
         except UnicodeDecodeError:
             payload = f"Binary data ({len(msg.payload)} bytes)"
-        
-        # Detect if message is from ourselves
-        is_self_message = f"sender={self.client_id}" in payload
-        
+
+        # PCKNOB-06: framing and grammar live in pc_media_protocol; this only routes.
+        sender, body = protocol.split_sender(payload)
+        is_self_message = sender == self.client_id
+
         # Add received message to queue
         self.message_queue.put(("mqtt_received", f"Received [{topic}]: {payload}", is_self_message))
-        
-        # Handle message processing (through the queue)
-        if not is_self_message and topic == "esp32/sound/control":
-            # Extract command
-            command = payload
-            if "," in payload:
-                parts = payload.split(",")
-                for part in parts:
-                    if not part.startswith("sender="):
-                        command = part.strip()
-                        break
-            
-            self.message_queue.put(("mqtt_control", command, False))
-                
-        elif not is_self_message and topic == "esp32/sound/setpoint" and "setpoint:" in payload:
-            try:
-                setpoint_str = payload.split("setpoint:")[1].split(",")[0].strip()
-                setpoint = int(setpoint_str)
+
+        if topic == protocol.TOPIC_CONTROL and not is_self_message:
+            command = protocol.parse_control(body)
+            if command is not None:
+                self.message_queue.put(("mqtt_control", command, False))
+        elif topic == protocol.TOPIC_SETPOINT and not is_self_message:
+            setpoint = protocol.parse_setpoint(body)
+            if setpoint is not None:
                 self.message_queue.put(("mqtt_setpoint", str(setpoint), False))
-            except:
-                pass
-                
-        elif topic == "esp32/sound/get_state" and "request" in payload:
+        elif topic == protocol.TOPIC_GET_STATE and protocol.is_state_request(body):
             self.message_queue.put(("mqtt_get_state", "", False))
-        elif topic == "esp32/command/response":
+        elif topic == protocol.TOPIC_COMMAND_RESPONSE:
             self.message_queue.put(("mqtt_command_response", payload, False))
-    
+
     def on_publish(self, client, userdata, mid):
         """Callback when message is published successfully"""
         pass
@@ -220,12 +210,9 @@ class MQTTHandler:
     def publish(self, topic, message):
         """Publish message to topic with sender ID"""
         if self.connected:
-            # Add sender ID to message if not already included
-            if not message.startswith(f"sender={self.client_id}"):
-                full_message = f"sender={self.client_id},{message}"
-            else:
-                full_message = message
-                
+            # PCKNOB-06: framing is protocol.with_sender (idempotent for pre-framed messages)
+            full_message = protocol.with_sender(self.client_id, message)
+
             result = self.client.publish(topic, full_message, qos=1)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 # Add sent message to queue
