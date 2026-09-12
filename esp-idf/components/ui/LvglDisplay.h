@@ -1,12 +1,14 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "DisplayFlushBackend.h"
 #include <lvgl.h>
 
 class LvglDisplay {
 public:
-    static bool init(LGFX* graphics);
+    static bool init(DisplayFlushBackend* backend);
     static bool isInitialized();
+    static bool lock(int timeoutMs);
+    static void unlock();
     static void taskHandler();
     static void invalidateScreen();
 

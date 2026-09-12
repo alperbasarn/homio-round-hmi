@@ -1,7 +1,7 @@
 #ifndef DISPLAY_CONTROLLER_H
 #define DISPLAY_CONTROLLER_H
 
-#include "LGFX_Config.hpp"
+#include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include <cstdint>
 
@@ -14,7 +14,6 @@ class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
 class MediaController;
-
 enum Mode {
   INITIALIZATION,
   INFO,           // EnvironmentInfoScreen (time, weather, temperature)
@@ -28,7 +27,6 @@ enum Mode {
 
 class DisplayController {
 private:
-  LGFX* gfx;
   TouchPanel* touchPanel;
   KnobController* knobController;
   SoundController* soundController;
@@ -38,11 +36,13 @@ private:
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
   MediaController* mediaController;
+  DisplayPanelBackend* panelBackend;
 
   Mode currentMode;
   int64_t lastActivityTime;
   bool displayIsOn;
   int initializationProgress;
+  int64_t initializationStartTime;
   int64_t initializationCompleteTime;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
@@ -51,7 +51,7 @@ private:
   
 
 public:
-  DisplayController(LGFX* graphics, TouchPanel* touch);
+  DisplayController(TouchPanel* touch, DisplayPanelBackend* displayPanelBackend);
   void init();
   void update();
   

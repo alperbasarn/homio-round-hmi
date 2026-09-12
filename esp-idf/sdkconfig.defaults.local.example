@@ -1,0 +1,4 @@
+# Bench-local sdkconfig overlay - copy to sdkconfig.defaults.local (untracked) and fill in.
+# build-variant.{sh,ps1} append it to SDKCONFIG_DEFAULTS automatically when the file exists.
+CONFIG_QNOB_WIFI_SSID="your-ssid"
+CONFIG_QNOB_WIFI_PASSWORD="your-password"

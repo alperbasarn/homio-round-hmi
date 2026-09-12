@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
 #include <cstdint>
@@ -21,7 +21,7 @@ using BatteryCallback = std::function<DeviceBatteryStatus()>;
 
 class DeviceInfoScreen {
 private:
-    LGFX* gfx;
+    DisplayPanelBackend* display;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
@@ -81,7 +81,7 @@ private:
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    DeviceInfoScreen(LGFX* graphics, TouchPanel* touch);
+    DeviceInfoScreen(DisplayPanelBackend* displayBackend, TouchPanel* touch);
 
     // Main update method
     void update();

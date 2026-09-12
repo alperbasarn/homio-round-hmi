@@ -1,25 +1,102 @@
 #include "SoundController.h"
+#include "LvglDisplay.h"
 #include "esp_log.h"
-#include <cstring>
+#include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 
-static const char* TAG = "SoundCtrl";
+namespace {
 
-SoundController::SoundController(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics), touchPanel(touch),
-      setpoint(50), lastSetpoint(-1), lastDrawnSetpoint(-1), lastSentSetpoint(-1),
-      externalSetpointChange(false), isPlaying(false),
-      colorChange(false), initialized(false), mqttInitialized(false),
-      stateReceived(false), pageBackRequested(false),
+constexpr const char* TAG = "SoundCtrl";
+
+}  // namespace
+
+SoundController::SoundController(DisplayPanelBackend* displayBackend, TouchPanel* touch)
+    : display(displayBackend),
+      touchPanel(touch),
+      setpoint(50),
+      lastSetpoint(-1),
+      lastDrawnSetpoint(-1),
+      lastSentSetpoint(-1),
+      externalSetpointChange(false),
+      isPlaying(false),
+      colorChange(false),
+      initialized(false),
+      mqttInitialized(false),
+      stateReceived(false),
+      pageBackRequested(false),
+      leaving(false),
       controllerState(CONTROLLER_INITIALIZE),
-      lastSentTime(0), lastSetpointChangeTime(0), lastSetpointSentTime(0),
-      playButton(graphics, touch), pauseButton(graphics, touch),
-      rewindButton(graphics, touch), forwardButton(graphics, touch),
-      backButton(graphics, touch), volumeArc(graphics),
+      lastSentTime(0),
+      lastSetpointChangeTime(0),
+      lastSetpointSentTime(0),
+      root(nullptr),
+      volumeArc(nullptr),
+      volumeLabel(nullptr),
+      stateLabel(nullptr),
+      hintLabel(nullptr),
       hasPendingMessage(false) {
 }
 
+void SoundController::ensureUi() {
+    if (root != nullptr || display == nullptr || !LvglDisplay::isInitialized()) {
+        return;
+    }
+
+    if (!LvglDisplay::lock(-1)) {
+        ESP_LOGW(TAG, "LVGL lock unavailable while creating sound controller UI");
+        return;
+    }
+
+    root = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, display->width(), display->height());
+    lv_obj_set_pos(root, 0, 0);
+    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+
+    const int diameter = display->width() - scalePx(54);
+    volumeArc = lv_arc_create(root);
+    lv_obj_remove_style_all(volumeArc);
+    lv_obj_set_size(volumeArc, diameter, diameter);
+    lv_obj_center(volumeArc);
+    lv_obj_set_style_arc_width(volumeArc, scalePx(16), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(volumeArc, scalePx(16), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(volumeArc, lv_color_hex(0x122238), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(volumeArc, lv_color_hex(0x39D9FF), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(volumeArc, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(volumeArc, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(volumeArc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(volumeArc, true, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(volumeArc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_arc_set_rotation(volumeArc, 180);
+    lv_arc_set_bg_angles(volumeArc, 0, 180);
+    lv_arc_set_range(volumeArc, 0, 100);
+
+    volumeLabel = lv_label_create(root);
+    lv_obj_set_style_text_color(volumeLabel, lv_color_white(), 0);
+    lv_obj_align(volumeLabel, LV_ALIGN_CENTER, 0, -scalePx(10));
+
+    stateLabel = lv_label_create(root);
+    lv_obj_set_style_text_color(stateLabel, lv_color_hex(0xB8C5D8), 0);
+    lv_obj_align(stateLabel, LV_ALIGN_CENTER, 0, scalePx(26));
+
+    hintLabel = lv_label_create(root);
+    lv_obj_set_style_text_color(hintLabel, lv_color_hex(0x6B778A), 0);
+    lv_label_set_text(hintLabel, "Tap play/pause | Long release back");
+    lv_obj_align(hintLabel, LV_ALIGN_BOTTOM_MID, 0, -scalePx(18));
+
+    LvglDisplay::unlock();
+}
+
 void SoundController::updateScreen() {
+    if (leaving) {
+        resetController();
+        return;
+    }
+
     switch (controllerState) {
         case CONTROLLER_INITIALIZE:
             initializeController();
@@ -30,7 +107,6 @@ void SoundController::updateScreen() {
             if (stateReceived) {
                 ESP_LOGI(TAG, "State received, moving to UPDATE state");
                 controllerState = CONTROLLER_UPDATE;
-                volumeArc.stopSegmentAnimation();
             }
             break;
         case CONTROLLER_UPDATE:
@@ -38,72 +114,31 @@ void SoundController::updateScreen() {
             break;
     }
 
-    // Always update the volume arc animation
-    volumeArc.update();
-
-    // Always process touch input for back button
-    if (backButton.getHasNewRelease()) {
-        resetController();
+    if (touchPanel && touchPanel->getHasNewHoldRelease()) {
+        leaving = true;
     }
+
+    LvglDisplay::taskHandler();
 }
 
 void SoundController::initializeController() {
-    gfx->fillScreen(TFT_BLACK);
-    gfx->setTextColor(TFT_WHITE);
-
-    ESP_LOGI(TAG, "Drawing UI elements in INITIALIZE state");
-
-    // Scale for display size
-    float scale = static_cast<float>(gfx->width()) / 240.0f;
-    int buttonSize = static_cast<int>(60 * scale);
-    int centerX = gfx->width() / 2;
-    int centerY = gfx->height() / 2;
-    int spacing = static_cast<int>(60 * scale);
-
-    // Initialize buttons
-    playButton.initialize(centerX, centerY, buttonSize);
-    pauseButton.initialize(centerX, centerY, buttonSize);
-    rewindButton.initialize(centerX - spacing, centerY, buttonSize);
-    forwardButton.initialize(centerX + spacing, centerY, buttonSize);
-
-    // Initialize back button
-    int backWidth = static_cast<int>(40 * scale);
-    int backHeight = static_cast<int>(20 * scale);
-    backButton.initialize(centerX, gfx->height() - static_cast<int>(30 * scale), backWidth, backHeight);
-
-    // Initialize volume arc
-    int arcRadius = static_cast<int>(110 * scale);
-    int arcThickness = static_cast<int>(15 * scale);
-    volumeArc.initialize(centerX, centerY, arcRadius, arcThickness, 180, 180);
-    volumeArc.setColor(0x07FF);  // Cyan
-
-    // Hide both play/pause initially
-    playButton.hide();
-    pauseButton.hide();
-
-    // Draw buttons
-    forwardButton.draw();
-    rewindButton.draw();
-    backButton.draw();
-
-    // Show correct button based on state
-    if (isPlaying) {
-        pauseButton.unhide();
-        pauseButton.draw();
-    } else {
-        playButton.unhide();
-        playButton.draw();
+    ensureUi();
+    if (root == nullptr || !LvglDisplay::lock(-1)) {
+        return;
     }
 
-    // Start segment animation until MQTT sync
-    volumeArc.startSegmentAnimation();
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(root);
+    drawSetPoint();
+    LvglDisplay::invalidateScreen();
+    LvglDisplay::unlock();
 
     ESP_LOGI(TAG, "Controller initialized");
     initialized = true;
 }
 
 void SoundController::waitForSync() {
-    bool mqttConnected = mqttConnectedCallback ? mqttConnectedCallback() : false;
+    const bool mqttConnected = mqttConnectedCallback ? mqttConnectedCallback() : false;
 
     if (mqttConnected && !mqttInitialized) {
         requestInitialStateFromServer();
@@ -117,7 +152,7 @@ void SoundController::waitForSync() {
 
 void SoundController::updateController() {
     if (setpoint != lastSetpoint) {
-        volumeArc.setPercentage(setpoint);
+        drawSetPoint();
         lastSetpoint = setpoint;
     }
 
@@ -126,7 +161,7 @@ void SoundController::updateController() {
     processIncomingMessage();
     checkTouchInput();
 
-    int64_t currentMillis = millis();
+    const int64_t currentMillis = millis();
     if ((setpoint != lastSentSetpoint) &&
         !externalSetpointChange &&
         (currentMillis - lastSetpointSentTime >= 25)) {
@@ -141,175 +176,90 @@ void SoundController::updateController() {
     }
 }
 
+void SoundController::drawSetPoint() {
+    ensureUi();
+    if (root == nullptr || !LvglDisplay::lock(-1)) {
+        return;
+    }
+
+    lv_arc_set_value(volumeArc, setpoint);
+
+    char text[20];
+    std::snprintf(text, sizeof(text), "%d%%", setpoint);
+    lv_label_set_text(volumeLabel, text);
+    lv_label_set_text(stateLabel, isPlaying ? "Playing" : "Paused");
+    LvglDisplay::invalidateScreen();
+    LvglDisplay::unlock();
+}
+
 void SoundController::processIncomingMessage() {
     if (!hasPendingMessage) return;
     hasPendingMessage = false;
 
     ESP_LOGI(TAG, "Processing message: %s", pendingMessage.c_str());
 
-    // Parse setpoint
     if (pendingMessage.find("setpoint:") == 0) {
-        int newSetpoint = std::atoi(pendingMessage.c_str() + 9);
+        const int newSetpoint = std::atoi(pendingMessage.c_str() + 9);
         if (newSetpoint >= 0 && newSetpoint <= 100 && newSetpoint != setpoint) {
             externalSetpointChange = true;
             setpoint = newSetpoint;
             lastSetpointChangeTime = millis();
-            volumeArc.setPercentage(setpoint);
             lastSentSetpoint = setpoint;
-
-            if (volumeArc.isSegmentAnimationActive()) {
-                volumeArc.stopSegmentAnimation();
-            }
-
-            ESP_LOGI(TAG, "Setpoint updated from MQTT: %d", setpoint);
+            drawSetPoint();
         }
-    }
-    // Parse state response
-    else if (pendingMessage.find("state:") == 0) {
-        size_t commaPos = pendingMessage.find(',');
+    } else if (pendingMessage.find("state:") == 0) {
+        const size_t commaPos = pendingMessage.find(',');
         if (commaPos != std::string::npos) {
-            std::string playState = pendingMessage.substr(6, commaPos - 6);
+            const std::string playState = pendingMessage.substr(6, commaPos - 6);
+            isPlaying = (playState == "playing");
 
-            if (playState == "playing") {
-                isPlaying = true;
-                playButton.hide();
-                pauseButton.unhide();
-            } else if (playState == "paused") {
-                isPlaying = false;
-                pauseButton.hide();
-                playButton.unhide();
-            }
-
-            // Extract volume
-            size_t volPos = pendingMessage.find("volume:");
+            const size_t volPos = pendingMessage.find("volume:");
             if (volPos != std::string::npos) {
-                int newVol = std::atoi(pendingMessage.c_str() + volPos + 7);
+                const int newVol = std::atoi(pendingMessage.c_str() + volPos + 7);
                 if (newVol >= 0 && newVol <= 100) {
                     setpoint = newVol;
                     lastSentSetpoint = setpoint;
-                    volumeArc.setPercentage(setpoint);
-                    ESP_LOGI(TAG, "Initial volume: %d", setpoint);
                 }
             }
 
-            if (volumeArc.isSegmentAnimationActive()) {
-                volumeArc.stopSegmentAnimation();
-            }
-
             stateReceived = true;
+            drawSetPoint();
         }
-    }
-    // Handle play/pause
-    else if (pendingMessage == "unpaused" || pendingMessage == "playing") {
+    } else if (pendingMessage == "unpaused" || pendingMessage == "playing") {
         isPlaying = true;
-        playButton.hide();
-        pauseButton.unhide();
-        if (volumeArc.isSegmentAnimationActive()) volumeArc.stopSegmentAnimation();
         if (!stateReceived) stateReceived = true;
-    }
-    else if (pendingMessage == "paused") {
+        drawSetPoint();
+    } else if (pendingMessage == "paused") {
         isPlaying = false;
-        pauseButton.hide();
-        playButton.unhide();
-        if (volumeArc.isSegmentAnimationActive()) volumeArc.stopSegmentAnimation();
         if (!stateReceived) stateReceived = true;
+        drawSetPoint();
     }
 }
 
 void SoundController::resetController() {
     pageBackRequested = true;
-    volumeArc.reset();
     initialized = false;
     mqttInitialized = false;
     stateReceived = false;
+    leaving = false;
     controllerState = CONTROLLER_INITIALIZE;
+    if (root != nullptr && LvglDisplay::lock(-1)) {
+        lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+        LvglDisplay::unlock();
+    }
     ESP_LOGI(TAG, "Controller reset");
 }
 
 void SoundController::handleMediaButtonEvents() {
-    bool mqttConnected = mqttConnectedCallback ? mqttConnectedCallback() : false;
-
-    if (playButton.getIsVisible() && playButton.getHasNewRelease()) {
-        if (mqttConnected && mqttPublishCallback) {
-            mqttPublishCallback("esp32/sound/control", "play");
-            ESP_LOGI(TAG, "Sent: play");
-        }
-    }
-
-    if (pauseButton.getIsVisible() && pauseButton.getHasNewRelease()) {
-        if (mqttConnected && mqttPublishCallback) {
-            mqttPublishCallback("esp32/sound/control", "pause");
-            ESP_LOGI(TAG, "Sent: pause");
-        }
-    }
-
-    if (rewindButton.getHasNewRelease()) {
-        if (mqttConnected && mqttPublishCallback) {
-            mqttPublishCallback("esp32/sound/control", "rewind");
-            ESP_LOGI(TAG, "Sent: rewind");
-        }
-    }
-
-    if (forwardButton.getHasNewRelease()) {
-        if (mqttConnected && mqttPublishCallback) {
-            mqttPublishCallback("esp32/sound/control", "forward");
-            ESP_LOGI(TAG, "Sent: forward");
-        }
-    }
-}
-
-void SoundController::drawMediaButtons() {
-    if (playButton.getIsVisible()) playButton.draw();
-    if (pauseButton.getIsVisible()) pauseButton.draw();
-    rewindButton.draw();
-    forwardButton.draw();
-    backButton.draw();
 }
 
 void SoundController::updateMediaButtons() {
-    playButton.update();
-    pauseButton.update();
-    rewindButton.update();
-    forwardButton.update();
-    backButton.update();
-
-    static bool lastPlayPressed = false;
-    static bool lastPausePressed = false;
-    static bool lastRewindPressed = false;
-    static bool lastForwardPressed = false;
-    static bool lastBackPressed = false;
-
-    if (playButton.getIsVisible() && playButton.getIsPressed() != lastPlayPressed) {
-        playButton.draw();
-        lastPlayPressed = playButton.getIsPressed();
-    }
-    if (pauseButton.getIsVisible() && pauseButton.getIsPressed() != lastPausePressed) {
-        pauseButton.draw();
-        lastPausePressed = pauseButton.getIsPressed();
-    }
-    if (rewindButton.getIsPressed() != lastRewindPressed) {
-        rewindButton.draw();
-        lastRewindPressed = rewindButton.getIsPressed();
-    }
-    if (forwardButton.getIsPressed() != lastForwardPressed) {
-        forwardButton.draw();
-        lastForwardPressed = forwardButton.getIsPressed();
-    }
-    if (backButton.getIsPressed() != lastBackPressed) {
-        backButton.draw();
-        lastBackPressed = backButton.getIsPressed();
-    }
 }
 
 void SoundController::checkTouchInput() {
-    if (touchPanel && touchPanel->isPressed()) {
-        // Touch handling can be expanded based on UI layout
+    if (touchPanel && touchPanel->getHasNewRelease()) {
+        togglePlayPause();
     }
-}
-
-void SoundController::drawStaticVolumeElements() {
-    gfx->fillScreen(TFT_BLACK);
-    gfx->setTextColor(TFT_WHITE);
 }
 
 void SoundController::incrementSetpoint() {
@@ -317,7 +267,7 @@ void SoundController::incrementSetpoint() {
         setpoint++;
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
-        volumeArc.setPercentage(setpoint);
+        drawSetPoint();
     }
 }
 
@@ -326,13 +276,13 @@ void SoundController::decrementSetpoint() {
         setpoint--;
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
-        volumeArc.setPercentage(setpoint);
+        drawSetPoint();
     }
 }
 
 void SoundController::sendSetpointToServer() {
     if (mqttConnectedCallback && mqttConnectedCallback() && mqttPublishCallback) {
-        std::string msg = "setpoint:" + std::to_string(setpoint);
+        const std::string msg = "setpoint:" + std::to_string(setpoint);
         mqttPublishCallback("esp32/sound/setpoint", msg);
         ESP_LOGI(TAG, "Sound setpoint sent: %d", setpoint);
     }
@@ -350,12 +300,13 @@ void SoundController::updateSetpoint(int level) {
         setpoint = level;
         lastSetpointChangeTime = millis();
         externalSetpointChange = false;
-        volumeArc.setPercentage(setpoint);
+        drawSetPoint();
     }
 }
 
 void SoundController::resetPageBackRequest() {
     pageBackRequested = false;
+    leaving = false;
     controllerState = CONTROLLER_INITIALIZE;
     initialized = false;
     mqttInitialized = false;
@@ -369,5 +320,12 @@ void SoundController::onMQTTMessage(const std::string& message) {
 }
 
 void SoundController::togglePlayPause() {
-    // No-op, wait for MQTT confirmation
+    const bool mqttConnected = mqttConnectedCallback ? mqttConnectedCallback() : false;
+    if (mqttConnected && mqttPublishCallback) {
+        mqttPublishCallback("esp32/sound/control", isPlaying ? "pause" : "play");
+    }
+}
+
+int SoundController::scalePx(int referencePx) const {
+    return std::max(1, (referencePx * display->width()) / 240);
 }

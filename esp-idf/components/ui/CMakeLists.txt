@@ -1,8 +1,6 @@
 # UI Component - Graphics primitives, UI elements, and screens
 idf_component_register(
-    SRCS "Arc.cpp"
-         "Buttons.cpp"
-         "LvglDisplay.cpp"
+    SRCS "LvglDisplay.cpp"
          "screens/InitializationScreen.cpp"
          "screens/EnvironmentInfoScreen.cpp"
          "screens/DeviceInfoScreen.cpp"

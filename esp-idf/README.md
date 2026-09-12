@@ -16,7 +16,7 @@ ESP-IDF firmware for the QNOB smart knob display, with board support for the Wav
 esp-idf/
 |- main/                    # Main application
 |- components/board_hal/    # Pin mappings and target-specific HAL init
-|- components/display/      # LovyanGFX display integration
+|- components/display/      # LVGL flush and esp_lcd display backend integration
 |- components/touch_panel/  # CST816S / CST9217 / FT6x36-compatible touch support
 |- components/knob_controller/
 |- components/storage/
@@ -153,7 +153,8 @@ NVS-backed configuration storage replacing the Arduino EEPROM flow.
 
 ### Display
 
-LovyanGFX-based display stack supporting GC9A01 LCD, the CO5300-compatible QSPI AMOLED path, and the SH8601-compatible QSPI AMOLED path.
+LVGL display stack with backend-owned panel initialization, brightness, and flush behavior.
+The S3 LCD target uses an `esp_lcd` SPI GC9A01 backend, while the AMOLED targets use an `esp_lcd` QSPI AMOLED backend.
 
 ### Media
 
@@ -169,7 +170,7 @@ This project is a port of the Arduino-based QNOB firmware. Key changes:
 
 | Arduino | ESP-IDF |
 |---------|---------|
-| `Arduino_GFX_Library` | LovyanGFX |
+| `Arduino_GFX_Library` | `LVGL` + `esp_lcd` backends |
 | `EEPROM.h` | `nvs_flash.h` |
 | `SoftwareSerial` | `driver/uart.h` |
 | `WiFi.h` | `esp_wifi.h` |

@@ -6,28 +6,7 @@ PROJECT_DIR="${SCRIPT_DIR}/esp-idf"
 OUTPUT_ROOT="${SCRIPT_DIR}/Hardware Ref"
 PUBLISH_ROOT="${SCRIPT_DIR}/Binaries"
 OTA_ROOT="${SCRIPT_DIR}/OTA"
-LOCK_FILE="${PROJECT_DIR}/dependencies.lock"
-LOCK_BACKUP=""
-LOCK_FILE_PRESENT=0
-
-restore_lock_file() {
-    if [[ -n "${LOCK_BACKUP}" && -f "${LOCK_BACKUP}" ]]; then
-        if [[ ${LOCK_FILE_PRESENT} -eq 1 ]]; then
-            cp -f "${LOCK_BACKUP}" "${LOCK_FILE}"
-        else
-            rm -f "${LOCK_FILE}"
-        fi
-        rm -f "${LOCK_BACKUP}"
-    fi
-}
-
-if [[ -f "${LOCK_FILE}" ]]; then
-    LOCK_FILE_PRESENT=1
-    LOCK_BACKUP="$(mktemp)"
-    cp -f "${LOCK_FILE}" "${LOCK_BACKUP}"
-fi
-
-trap restore_lock_file EXIT
+# dependencies.lock is per IDF target (dependencies.lock.<target>) and committed; no save/restore dance (BLD-04).
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: bash build-variant.sh <esp32s3_lcd128|esp32s3_amoled175|esp32c6_amoled143>" >&2
@@ -67,8 +46,16 @@ case "${VARIANT}" in
         ;;
 esac
 
+# Bench-local overlay (untracked): appended last so it overrides the tracked defaults (BLD-20).
+if [[ -f "${PROJECT_DIR}/sdkconfig.defaults.local" ]]; then
+    SDKCONFIG_DEFAULTS_ARG+=";sdkconfig.defaults.local"
+fi
+# The dependencies lock is selected per target by esp-idf/CMakeLists.txt (dependencies.lock.<target>, BLD-04).
+
 echo "[${VARIANT}] Building ${DISPLAY_NAME}..."
 echo "[${VARIANT}] Output dir: ${BUILD_DIR}"
+echo "[${VARIANT}] sdkconfig defaults: ${SDKCONFIG_DEFAULTS_ARG}"
+echo "[${VARIANT}] dependencies lock: dependencies.lock.${IDF_TARGET_NAME} (set by esp-idf/CMakeLists.txt)"
 
 source ~/esp/esp-idf/export.sh >/dev/null
 cd "${PROJECT_DIR}"
@@ -78,7 +65,7 @@ idf.py \
     -DIDF_TARGET="${IDF_TARGET_NAME}" \
     -DSDKCONFIG="${SDKCONFIG_OUT}" \
     -DSDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS_ARG}" \
-    build
+    reconfigure build
 
 APP_NAME="qnob-screen"
 ARTIFACT_DIR="${PUBLISH_ROOT}/${VARIANT}"
@@ -112,6 +99,9 @@ cp -f "${BUILD_DIR}/partition_table/partition-table.bin" "${ARTIFACT_DIR}/partit
 cp -f "${BUILD_DIR}/ota_data_initial.bin" "${ARTIFACT_DIR}/ota_data_initial.bin"
 cp -f "${BUILD_DIR}/flash_args" "${ARTIFACT_DIR}/flash_args"
 cp -f "${BUILD_DIR}/flasher_args.json" "${ARTIFACT_DIR}/flasher_args.json"
+
+# Report-only first-party component graph (BLD-45); never fails the build.
+python "${SCRIPT_DIR}/tools/check-component-graph.py" "${BUILD_DIR}/project_description.json" || true
 
 PROJECT_VERSION="$(sed -n 's/.*"project_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${BUILD_DIR}/project_description.json" | head -n 1)"
 if [[ -z "${PROJECT_VERSION}" ]]; then

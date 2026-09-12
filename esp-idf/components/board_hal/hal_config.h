@@ -29,10 +29,48 @@
 #define QNOB_AUDIO_AMP_BACKEND_GPIO    1
 #define QNOB_AUDIO_AMP_BACKEND_EXIO    2
 
+// SD card backends
+#define QNOB_SD_BACKEND_NONE           0
+#define QNOB_SD_BACKEND_SPI            1
+#define QNOB_SD_BACKEND_SDMMC          2
+
 // Touch panel I2C addresses
 #define CST816S_I2C_ADDR        0x15
 #define FT6X36_I2C_ADDR         0x38
 #define CST9217_I2C_ADDR        0x5A
+
+// Board orientation config exported from Kconfig
+#if CONFIG_QNOB_DISPLAY_ROTATION_90
+#define QNOB_DISPLAY_ROTATION_DEG 90
+#elif CONFIG_QNOB_DISPLAY_ROTATION_180
+#define QNOB_DISPLAY_ROTATION_DEG 180
+#elif CONFIG_QNOB_DISPLAY_ROTATION_270
+#define QNOB_DISPLAY_ROTATION_DEG 270
+#else
+#define QNOB_DISPLAY_ROTATION_DEG 0
+#endif
+
+#if CONFIG_QNOB_TOUCH_ROTATION_90
+#define QNOB_TOUCH_ROTATION_DEG 90
+#elif CONFIG_QNOB_TOUCH_ROTATION_180
+#define QNOB_TOUCH_ROTATION_DEG 180
+#elif CONFIG_QNOB_TOUCH_ROTATION_270
+#define QNOB_TOUCH_ROTATION_DEG 270
+#else
+#define QNOB_TOUCH_ROTATION_DEG 0
+#endif
+
+#if CONFIG_QNOB_TOUCH_MIRROR_X
+#define QNOB_TOUCH_MIRROR_X_ENABLED 1
+#else
+#define QNOB_TOUCH_MIRROR_X_ENABLED 0
+#endif
+
+#if CONFIG_QNOB_TOUCH_MIRROR_Y
+#define QNOB_TOUCH_MIRROR_Y_ENABLED 1
+#else
+#define QNOB_TOUCH_MIRROR_Y_ENABLED 0
+#endif
 
 // ######################################################################################################################
 // #                                           ESP32-S3 LCD 1.28                                                        #
@@ -85,6 +123,7 @@
 #define BAT_ADC_PIN             1
 
 // ========== SD Card (SPI Mode) ===========
+#define QNOB_SD_BACKEND        QNOB_SD_BACKEND_SPI
 #define SD_SPI_HOST             SPI2_HOST
 #define SD_MOSI_PIN             11
 #define SD_MISO_PIN             12
@@ -174,14 +213,14 @@
 #define BAT_ADC_PIN             -1
 #define PWR_KEY_PIN             -1
 
-// ========== SD Card (SPI Mode) ===========
-// Official Waveshare wiki Arduino example:
-// CS=GPIO41, MOSI=GPIO1, MISO=GPIO3, SCLK=GPIO2
-#define SD_SPI_HOST             SPI2_HOST
-#define SD_MOSI_PIN             1
-#define SD_MISO_PIN             3
+// ========== SD Card (1-bit SDMMC Mode) ===========
+// Waveshare's ESP-IDF BSP mounts this slot via SDMMC_HOST_DEFAULT() with:
+// CLK=GPIO2, CMD=GPIO1, D0=GPIO3, width=1
+#define QNOB_SD_BACKEND         QNOB_SD_BACKEND_SDMMC
 #define SD_CLK_PIN              2
-#define SD_CS_PIN               41
+#define SD_CMD_PIN              1
+#define SD_D0_PIN               3
+#define SDMMC_BUS_WIDTH         1
 
 // ========== Audio (I2S + Codec) ===========
 #define QNOB_AUDIO_OUTPUT_BACKEND QNOB_AUDIO_OUTPUT_BACKEND_I2S
@@ -265,6 +304,7 @@
 // ========== SD Card (SPI Mode) ===========
 // Waveshare C6 AMOLED schematic and official examples:
 // SD CLK=IO11, SD CS=IO15, SD DI(MOSI)=IO4, SD DO(MISO)=IO5
+#define QNOB_SD_BACKEND        QNOB_SD_BACKEND_SPI
 #define SD_SPI_HOST             SPI2_HOST
 #define SD_MOSI_PIN             4
 #define SD_MISO_PIN             5
@@ -318,6 +358,14 @@
 
 #ifndef PMU_I2C_ADDR
 #define PMU_I2C_ADDR            -1
+#endif
+
+#ifndef QNOB_SD_BACKEND
+#define QNOB_SD_BACKEND         QNOB_SD_BACKEND_NONE
+#endif
+
+#ifndef SDMMC_BUS_WIDTH
+#define SDMMC_BUS_WIDTH         1
 #endif
 
 #ifndef QNOB_AUDIO_OUTPUT_BACKEND

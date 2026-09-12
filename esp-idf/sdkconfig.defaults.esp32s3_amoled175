@@ -1,6 +1,8 @@
 # Waveshare ESP32-S3-Touch-AMOLED-1.75 board overlay
 
 CONFIG_QNOB_HW_ESP32S3_AMOLED_175=y
+CONFIG_QNOB_DISPLAY_ROTATION_270=y
+CONFIG_QNOB_TOUCH_ROTATION_0=y
 
-# LovyanGFX pushes RGB565 pixel data over the QSPI AMOLED path.
+# The QSPI AMOLED backend expects swapped RGB565 LVGL pixel data.
 CONFIG_LV_COLOR_16_SWAP=y

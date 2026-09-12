@@ -1,50 +1,80 @@
 #include "LvglDisplay.h"
+#include "hal_config.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <algorithm>
+#include <memory>
 
 namespace {
 
 constexpr const char* TAG = "LvglDisplay";
 constexpr uint32_t LVGL_TICK_PERIOD_MS = 5;
-constexpr uint32_t DRAW_BUFFER_LINES_DEFAULT = 50;
-constexpr uint32_t DRAW_BUFFER_LINES_MIN = 5;
 
-LGFX* s_gfx = nullptr;
 bool s_initialized = false;
 lv_disp_draw_buf_t s_drawBuffer;
 lv_disp_drv_t s_displayDriver;
 lv_disp_t* s_display = nullptr;
 lv_color_t* s_bufferA = nullptr;
 lv_color_t* s_bufferB = nullptr;
+DisplayFlushBackend* s_backend = nullptr;
 #if LV_COLOR_DEPTH != 16
 uint16_t* s_colorConvertBuffer = nullptr;
 size_t s_colorConvertBufferPixels = 0;
 #endif
 esp_timer_handle_t s_tickTimer = nullptr;
+SemaphoreHandle_t s_lvglMutex = nullptr;
+
+lv_disp_rot_t getConfiguredDisplayRotation() {
+    switch (QNOB_DISPLAY_ROTATION_DEG) {
+        case 90:
+            return LV_DISP_ROT_90;
+        case 180:
+            return LV_DISP_ROT_180;
+        case 270:
+            return LV_DISP_ROT_270;
+        default:
+            return LV_DISP_ROT_NONE;
+    }
+}
 
 }  // namespace
 
-bool LvglDisplay::init(LGFX* graphics) {
+bool LvglDisplay::init(DisplayFlushBackend* backend) {
     if (s_initialized) {
         return true;
     }
 
-    if (graphics == nullptr) {
-        ESP_LOGE(TAG, "Cannot initialize LVGL display: graphics handle is null");
+    if (backend == nullptr) {
+        ESP_LOGE(TAG, "Cannot initialize LVGL display: backend handle is null");
         return false;
     }
 
-    s_gfx = graphics;
+    s_backend = backend;
+    if (s_lvglMutex == nullptr) {
+        s_lvglMutex = xSemaphoreCreateRecursiveMutex();
+        if (s_lvglMutex == nullptr) {
+            ESP_LOGE(TAG, "Failed to create LVGL recursive mutex");
+            return false;
+        }
+    }
+
     lv_init();
 
-    const uint32_t width = static_cast<uint32_t>(s_gfx->width());
-    uint32_t drawLines = DRAW_BUFFER_LINES_DEFAULT;
-    const uint32_t candidates[] = {50, 40, 30, 20, 10, DRAW_BUFFER_LINES_MIN};
+    const uint32_t width = static_cast<uint32_t>(s_backend->width());
+    const uint32_t preferredDrawLines = std::max<uint32_t>(1, s_backend->preferredDrawBufferLines());
+    const uint32_t minimumDrawLines = std::max<uint32_t>(1, s_backend->minimumDrawBufferLines());
+    uint32_t drawLines = preferredDrawLines;
 
-    for (uint32_t lines : candidates) {
-        if (lines == 0 || lines > s_gfx->height()) {
+    for (uint32_t lines = preferredDrawLines; lines >= minimumDrawLines; ) {
+        if (lines > static_cast<uint32_t>(s_backend->height())) {
+            if (lines == minimumDrawLines) {
+                break;
+            }
+            lines = (lines > 10 && lines - 10 >= minimumDrawLines) ? lines - 10 : minimumDrawLines;
             continue;
         }
         const uint32_t pixelCountTry = width * lines;
@@ -55,6 +85,10 @@ bool LvglDisplay::init(LGFX* graphics) {
             ESP_LOGW(TAG, "LVGL buffer A alloc failed (%u bytes, %u lines). Retrying smaller...",
                      static_cast<unsigned>(bufferBytesTry),
                      static_cast<unsigned>(lines));
+            if (lines == minimumDrawLines) {
+                break;
+            }
+            lines = (lines > 10 && lines - 10 >= minimumDrawLines) ? lines - 10 : minimumDrawLines;
             continue;
         }
         s_bufferB = static_cast<lv_color_t*>(
@@ -70,7 +104,7 @@ bool LvglDisplay::init(LGFX* graphics) {
 
     if (s_bufferA == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate LVGL draw buffer A (min %u lines)",
-                 static_cast<unsigned>(DRAW_BUFFER_LINES_MIN));
+                 static_cast<unsigned>(minimumDrawLines));
         return false;
     }
 
@@ -88,12 +122,14 @@ bool LvglDisplay::init(LGFX* graphics) {
     lv_disp_draw_buf_init(&s_drawBuffer, s_bufferA, s_bufferB, pixelCount);
 
     lv_disp_drv_init(&s_displayDriver);
-    s_displayDriver.hor_res = s_gfx->width();
-    s_displayDriver.ver_res = s_gfx->height();
+    s_displayDriver.hor_res = s_backend->width();
+    s_displayDriver.ver_res = s_backend->height();
+    s_displayDriver.sw_rotate = (QNOB_DISPLAY_ROTATION_DEG != 0);
     s_displayDriver.flush_cb = flushCallback;
     s_displayDriver.rounder_cb = rounderCallback;
     s_displayDriver.draw_buf = &s_drawBuffer;
     s_display = lv_disp_drv_register(&s_displayDriver);
+    lv_disp_set_rotation(s_display, getConfiguredDisplayRotation());
 
     esp_timer_create_args_t tickTimerArgs = {};
     tickTimerArgs.callback = tickCallback;
@@ -113,8 +149,14 @@ bool LvglDisplay::init(LGFX* graphics) {
     }
 
     s_initialized = true;
-    ESP_LOGI(TAG, "LVGL display initialized (%dx%d, %u px buffer lines)",
-             s_gfx->width(), s_gfx->height(), static_cast<unsigned>(drawLines));
+    ESP_LOGI(TAG,
+             "LVGL display initialized (%dx%d, %u px buffer lines, backend min %u, even-align=%s, rotation=%d)",
+             s_backend->width(),
+             s_backend->height(),
+             static_cast<unsigned>(drawLines),
+             static_cast<unsigned>(minimumDrawLines),
+             s_backend->requiresEvenAreaAlignment() ? "yes" : "no",
+             QNOB_DISPLAY_ROTATION_DEG);
     return true;
 }
 
@@ -122,12 +164,32 @@ bool LvglDisplay::isInitialized() {
     return s_initialized;
 }
 
+bool LvglDisplay::lock(int timeoutMs) {
+    if (!s_initialized || s_lvglMutex == nullptr) {
+        return false;
+    }
+
+    const TickType_t timeoutTicks =
+        (timeoutMs < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
+    return xSemaphoreTakeRecursive(s_lvglMutex, timeoutTicks) == pdTRUE;
+}
+
+void LvglDisplay::unlock() {
+    if (s_initialized && s_lvglMutex != nullptr) {
+        xSemaphoreGiveRecursive(s_lvglMutex);
+    }
+}
+
 void LvglDisplay::taskHandler() {
     if (!s_initialized) {
         return;
     }
 
+    if (!lock(-1)) {
+        return;
+    }
     lv_timer_handler();
+    unlock();
 }
 
 void LvglDisplay::invalidateScreen() {
@@ -135,12 +197,16 @@ void LvglDisplay::invalidateScreen() {
         return;
     }
 
+    if (!lock(-1)) {
+        return;
+    }
     lv_obj_invalidate(lv_scr_act());
+    unlock();
 }
 
 void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* colorBuffer) {
     (void)disp;
-    if (s_gfx == nullptr) {
+    if (s_backend == nullptr) {
         lv_disp_flush_ready(disp);
         return;
     }
@@ -152,29 +218,27 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
         return;
     }
 
-    s_gfx->startWrite();
+    s_backend->beginWrite();
 #if LV_COLOR_DEPTH == 16
 #if LV_COLOR_16_SWAP
-    // LVGL already stores RGB565 bytes in swapped order.
-    s_gfx->pushImage(
-        area->x1,
-        area->y1,
-        width,
-        height,
-        reinterpret_cast<const lgfx::swap565_t*>(colorBuffer));
+    s_backend->writeImage(area->x1,
+                          area->y1,
+                          width,
+                          height,
+                          colorBuffer,
+                          DisplayFlushFormat::RGB565_SWAPPED);
 #else
-    // LVGL stores native RGB565, pass it as plain 16-bit pixels.
-    s_gfx->pushImage(
-        area->x1,
-        area->y1,
-        width,
-        height,
-        reinterpret_cast<const uint16_t*>(colorBuffer));
+    s_backend->writeImage(area->x1,
+                          area->y1,
+                          width,
+                          height,
+                          colorBuffer,
+                          DisplayFlushFormat::RGB565_NATIVE);
 #endif
 #else
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (pixelCount > s_colorConvertBufferPixels || s_colorConvertBuffer == nullptr) {
-        s_gfx->endWrite();
+        s_backend->endWrite();
         lv_disp_flush_ready(disp);
         return;
     }
@@ -187,20 +251,24 @@ void LvglDisplay::flushCallback(lv_disp_drv_t* disp, const lv_area_t* area, lv_c
             (color32.ch.blue >> 3));
     }
 
-    s_gfx->pushImage(
-        area->x1,
-        area->y1,
-        width,
-        height,
-        reinterpret_cast<lgfx::swap565_t*>(s_colorConvertBuffer));
+    s_backend->writeImage(area->x1,
+                          area->y1,
+                          width,
+                          height,
+                          s_colorConvertBuffer,
+                          DisplayFlushFormat::RGB565_SWAPPED);
 #endif
-    s_gfx->endWrite();
+    s_backend->endWrite();
 
     lv_disp_flush_ready(disp);
 }
 
 void LvglDisplay::rounderCallback(lv_disp_drv_t* disp, lv_area_t* area) {
     (void)disp;
+    if (s_backend == nullptr || !s_backend->requiresEvenAreaAlignment()) {
+        return;
+    }
+
     // SH8601 controller path is more reliable when updates are 2-pixel aligned.
     area->x1 = (area->x1 >> 1) << 1;
     area->y1 = (area->y1 >> 1) << 1;

@@ -11,8 +11,8 @@ constexpr const char* TAG = "DeviceInfoScreen";
 
 }  // namespace
 
-DeviceInfoScreen::DeviceInfoScreen(LGFX* graphics, TouchPanel* touch)
-    : gfx(graphics),
+DeviceInfoScreen::DeviceInfoScreen(DisplayPanelBackend* displayBackend, TouchPanel* touch)
+    : display(displayBackend),
       touchPanel(touch),
       screenInitialized(false),
       pageBackRequested(false),
@@ -77,11 +77,17 @@ void DeviceInfoScreen::update() {
     }
 
     ensureUi();
-    if (lvglReady) {
-        const bool forceFullRefresh = !screenInitialized;
-        updateUi(forceFullRefresh);
-        LvglDisplay::taskHandler();
+    if (!lvglReady) {
+        return;
     }
+
+    if (!LvglDisplay::lock(-1)) {
+        ESP_LOGW(TAG, "Skipping update because LVGL lock could not be acquired");
+        return;
+    }
+
+    const bool forceFullRefresh = !screenInitialized;
+    updateUi(forceFullRefresh);
 
     // Handle touch gestures
     if (touchPanel && touchPanel->getHasNewGesture()) {
@@ -108,6 +114,8 @@ void DeviceInfoScreen::update() {
         }
         ESP_LOGI(TAG, "Tap release detected, navigating back");
     }
+
+    LvglDisplay::unlock();
 }
 
 void DeviceInfoScreen::ensureUi() {
@@ -115,13 +123,20 @@ void DeviceInfoScreen::ensureUi() {
         return;
     }
 
-    if (!LvglDisplay::isInitialized() && !LvglDisplay::init(gfx)) {
+    if (!LvglDisplay::isInitialized()) {
         ESP_LOGE(TAG, "LVGL display init failed");
         return;
     }
 
     lvglReady = true;
+    if (!LvglDisplay::lock(-1)) {
+        ESP_LOGE(TAG, "LVGL lock failed while building device info UI");
+        lvglReady = false;
+        return;
+    }
+
     buildUi();
+    LvglDisplay::unlock();
 }
 
 void DeviceInfoScreen::buildUi() {
@@ -129,8 +144,8 @@ void DeviceInfoScreen::buildUi() {
         return;
     }
 
-    const int displayW = gfx->width();
-    const int displayH = gfx->height();
+    const int displayW = display->width();
+    const int displayH = display->height();
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
     lv_obj_set_size(root, displayW, displayH);
@@ -224,8 +239,11 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
         return;
     }
 
+    const bool hideFirstPaint = forceFullRefresh;
     if (forceFullRefresh) {
+        display->setBrightness(0);
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(root);
         screenInitialized = true;
         networkStatusChanged = true;
         batteryChanged = true;
@@ -300,6 +318,12 @@ void DeviceInfoScreen::updateUi(bool forceFullRefresh) {
 
         batteryChanged = false;
     }
+
+    if (hideFirstPaint) {
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+        display->setBrightness(255);
+    }
 }
 
 void DeviceInfoScreen::updateNetworkStatus() {
@@ -324,7 +348,7 @@ void DeviceInfoScreen::updateNetworkStatus() {
 }
 
 int DeviceInfoScreen::scalePx(int referencePx) const {
-    return std::max(1, (referencePx * gfx->width()) / 240);
+    return std::max(1, (referencePx * display->width()) / 240);
 }
 
 lv_color_t DeviceInfoScreen::getBatteryColor(float percentage) const {
@@ -364,8 +388,18 @@ void DeviceInfoScreen::resetScreen() {
     screenInitialized = false;
     networkStatusChanged = true;
     batteryChanged = true;
+    if (!lvglReady) {
+        return;
+    }
+
+    if (!LvglDisplay::lock(-1)) {
+        ESP_LOGW(TAG, "Skipping resetScreen UI refresh because LVGL lock could not be acquired");
+        return;
+    }
+
     if (root != nullptr) {
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
     }
     LvglDisplay::invalidateScreen();
+    LvglDisplay::unlock();
 }

@@ -1,7 +1,12 @@
 # Display Component - Display controller and screen management
 idf_component_register(
     SRCS "DisplayController.cpp"
+         "DisplayBackendFactory.cpp"
+         "EspLcdSh8601DisplayFlushBackend.cpp"
+         "EspLcdDisplayPanelBackend.cpp"
+         "EspLcdGc9a01DisplayFlushBackend.cpp"
+         "EspLcdGc9a01DisplayPanelBackend.cpp"
     INCLUDE_DIRS "."
-    REQUIRES driver board_hal touch_panel LovyanGFX knob_controller
+    REQUIRES driver board_hal touch_panel knob_controller esp_lcd_sh8601 esp_lcd_co5300
     PRIV_REQUIRES esp_timer controllers ui sleep_handler
 )

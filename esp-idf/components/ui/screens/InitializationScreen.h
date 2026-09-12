@@ -1,60 +1,43 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "DisplayPanelBackend.h"
 #include "esp_timer.h"
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
+#include <lvgl.h>
 
 class InitializationScreen {
 private:
-    LGFX* gfx;
-    int progressValue;       // Current progress value (0-100)
-    int previousProgress;    // Previous progress value for incremental updates
+    DisplayPanelBackend* display;
+    int progressValue;
+    int previousProgress;
     bool screenInitialized;
-    bool qnobTextDrawn;      // Flag to track whether QNOB text has been drawn
-
-    // Network status indicators
     bool wifiConnected;
-    int wifiStrength;        // 0-3 for signal strength
+    int wifiStrength;
     bool mqttConnected;
 
-    // Animation properties
-    float animatedProgressAngle;  // Current animated angle (smoothly animated)
-    float targetProgressAngle;    // Target angle based on progress
-    float startProgressAngle;     // Starting angle for animation
-    float lastRenderedProgressAngle;  // Last angle that has been drawn to the display
-    int64_t animationStartTime;   // When current animation started
-    int64_t lastAnimationUpdateTime;  // Last time animation was updated
-    static constexpr int64_t ANIMATION_DURATION = 500;  // Animation duration in milliseconds
-    static constexpr float PROGRESS_START_ANGLE = 120.0f;
-    static constexpr float PROGRESS_ARC_SPAN = 300.0f;
+    lv_obj_t* root;
+    lv_obj_t* progressArc;
+    lv_obj_t* logoLabel;
+    lv_obj_t* progressLabel;
+    lv_obj_t* statusLabel;
 
-    void updateAnimation();
-    void fillArcWrapped(int centerX, int centerY, int outerRadius, int innerRadius,
-                        float startAngle, float endAngle, uint16_t color);
-    void drawBackgroundArc(int centerX, int centerY, int radius);
-    void drawProgressArc(int centerX, int centerY, int radius);
-    void drawQNOBText(int centerX, int centerY, int radius);
+    void ensureUi();
+    void updateWidgets();
+    int scalePx(int referencePx) const;
 
-    // Helper to get current time in ms
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
-    // Constrain value to range
     template<typename T>
     static T constrain(T value, T minVal, T maxVal) {
         return std::max(minVal, std::min(value, maxVal));
     }
 
-    // Map value from one range to another
-    static float mapValue(float value, float inMin, float inMax, float outMin, float outMax) {
-        return (value - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-    }
-
 public:
-    InitializationScreen(LGFX* graphics);
+    explicit InitializationScreen(DisplayPanelBackend* displayBackend);
 
     void updateScreen();
-    void setProgress(int progress);  // Set progress value (0-100)
+    void setProgress(int progress);
     void setWiFiStatus(bool connected, int strength);
     void setMQTTStatus(bool isConnected);
     void reset();

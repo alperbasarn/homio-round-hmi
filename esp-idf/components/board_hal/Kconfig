@@ -26,6 +26,66 @@ menu "QNOB Hardware Configuration"
                 Waveshare ESP32-C6-Touch-AMOLED-1.43 board using the SH8601-compatible QSPI AMOLED path.
     endchoice
 
+    choice QNOB_DISPLAY_ROTATION
+        prompt "Display Rotation (clockwise)"
+        default QNOB_DISPLAY_ROTATION_270 if QNOB_HW_ESP32S3_AMOLED_175
+        default QNOB_DISPLAY_ROTATION_0
+        help
+            Logical display rotation applied by the firmware. Use this to correct
+            board-specific panel orientation mismatches. On the current AMOLED
+            backends, 90 and 270 degree rotations are handled by LVGL software
+            rotation instead of panel-driver axis swapping.
+
+        config QNOB_DISPLAY_ROTATION_0
+            bool "0 degrees"
+
+        config QNOB_DISPLAY_ROTATION_90
+            bool "90 degrees"
+
+        config QNOB_DISPLAY_ROTATION_180
+            bool "180 degrees"
+
+        config QNOB_DISPLAY_ROTATION_270
+            bool "270 degrees"
+    endchoice
+
+    choice QNOB_TOUCH_ROTATION
+        prompt "Touch Rotation (clockwise)"
+        default QNOB_TOUCH_ROTATION_0
+        help
+            Rotation applied to raw touch coordinates before gesture detection
+            and screen interaction logic. Use this when the touch sensor wiring
+            does not match the final logical display orientation.
+
+        config QNOB_TOUCH_ROTATION_0
+            bool "0 degrees"
+
+        config QNOB_TOUCH_ROTATION_90
+            bool "90 degrees"
+
+        config QNOB_TOUCH_ROTATION_180
+            bool "180 degrees"
+
+        config QNOB_TOUCH_ROTATION_270
+            bool "270 degrees"
+    endchoice
+
+    config QNOB_TOUCH_MIRROR_X
+        bool "Mirror Touch X Axis"
+        default n
+        help
+            Mirror the transformed touch X coordinate across the visible screen.
+            Leave disabled unless the touch controller still reports left/right
+            reversed after applying touch rotation.
+
+    config QNOB_TOUCH_MIRROR_Y
+        bool "Mirror Touch Y Axis"
+        default n
+        help
+            Mirror the transformed touch Y coordinate across the visible screen.
+            Leave disabled unless the touch controller still reports up/down
+            reversed after applying touch rotation.
+
     config QNOB_ENABLE_TOUCH
         bool "Enable Touch Panel"
         default y

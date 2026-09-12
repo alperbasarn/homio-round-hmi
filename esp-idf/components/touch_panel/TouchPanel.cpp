@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <algorithm>
 #include <cstdlib>
 
 static const char *TAG = "TouchPanel";
@@ -83,6 +84,68 @@ uint32_t decodeLittleEndianU32(const uint8_t* bytes)
            (static_cast<uint32_t>(bytes[1]) << 8) |
            (static_cast<uint32_t>(bytes[2]) << 16) |
            (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+uint16_t clampTouchCoord(int32_t value, uint16_t max_value)
+{
+    if (max_value == 0) {
+        return 0;
+    }
+    const int32_t clamped = std::clamp<int32_t>(value, 0, static_cast<int32_t>(max_value - 1));
+    return static_cast<uint16_t>(clamped);
+}
+
+void applyTouchTransform(uint16_t* x, uint16_t* y)
+{
+    if (x == nullptr || y == nullptr) {
+        return;
+    }
+
+    const uint16_t max_x = DISPLAY_WIDTH;
+    const uint16_t max_y = DISPLAY_HEIGHT;
+    if (max_x == 0 || max_y == 0) {
+        *x = 0;
+        *y = 0;
+        return;
+    }
+
+    int32_t transformed_x = clampTouchCoord(*x, max_x);
+    int32_t transformed_y = clampTouchCoord(*y, max_y);
+    const int32_t last_x = static_cast<int32_t>(max_x - 1);
+    const int32_t last_y = static_cast<int32_t>(max_y - 1);
+
+    switch (QNOB_TOUCH_ROTATION_DEG) {
+        case 90: {
+            const int32_t rotated_x = last_y - transformed_y;
+            const int32_t rotated_y = transformed_x;
+            transformed_x = rotated_x;
+            transformed_y = rotated_y;
+            break;
+        }
+        case 180:
+            transformed_x = last_x - transformed_x;
+            transformed_y = last_y - transformed_y;
+            break;
+        case 270: {
+            const int32_t rotated_x = transformed_y;
+            const int32_t rotated_y = last_x - transformed_x;
+            transformed_x = rotated_x;
+            transformed_y = rotated_y;
+            break;
+        }
+        default:
+            break;
+    }
+
+    if (QNOB_TOUCH_MIRROR_X_ENABLED) {
+        transformed_x = last_x - transformed_x;
+    }
+    if (QNOB_TOUCH_MIRROR_Y_ENABLED) {
+        transformed_y = last_y - transformed_y;
+    }
+
+    *x = clampTouchCoord(transformed_x, max_x);
+    *y = clampTouchCoord(transformed_y, max_y);
 }
 
 }  // namespace
@@ -294,6 +357,10 @@ esp_err_t TouchPanel::initialize()
     press_time = esp_timer_get_time() / 1000;
     last_press_duration_ms = 0;
     initialized = true;
+    ESP_LOGI(TAG, "Touch transform config: rotation=%d mirror_x=%s mirror_y=%s",
+             QNOB_TOUCH_ROTATION_DEG,
+             QNOB_TOUCH_MIRROR_X_ENABLED ? "yes" : "no",
+             QNOB_TOUCH_MIRROR_Y_ENABLED ? "yes" : "no");
 
     if (controller_type == TOUCH_CONTROLLER_CST9217 && controller_chip_id16 != 0) {
         ESP_LOGI(TAG, "Touch initialization complete (%s, chip=0x%04X, fw=0x%08lX)",
@@ -385,13 +452,7 @@ bool TouchPanel::readCst9217TouchData(touch_data_t* data)
     data->x = static_cast<uint16_t>((point[1] << 4) | (point[3] >> 4));
     data->y = static_cast<uint16_t>((point[2] << 4) | (point[3] & 0x0F));
     data->gesture = GESTURE_NONE;
-
-    if (data->x >= DISPLAY_WIDTH) {
-        data->x = DISPLAY_WIDTH - 1;
-    }
-    if (data->y >= DISPLAY_HEIGHT) {
-        data->y = DISPLAY_HEIGHT - 1;
-    }
+    applyTouchTransform(&data->x, &data->y);
 
     data->available = true;
     return true;
@@ -433,12 +494,7 @@ bool TouchPanel::readTouchData(touch_data_t* data)
     data->fingers = points;
     data->x = ((xy[0] & 0x0F) << 8) | xy[1];
     data->y = ((xy[2] & 0x0F) << 8) | xy[3];
-    if (data->x >= DISPLAY_WIDTH) {
-        data->x = DISPLAY_WIDTH - 1;
-    }
-    if (data->y >= DISPLAY_HEIGHT) {
-        data->y = DISPLAY_HEIGHT - 1;
-    }
+    applyTouchTransform(&data->x, &data->y);
     data->available = true;
 
     return data->available;

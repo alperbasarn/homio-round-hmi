@@ -60,9 +60,7 @@ $outputRoot = Join-Path $repoRoot "Hardware Ref"
 $publishRoot = Join-Path $repoRoot "Binaries"
 $otaRoot = Join-Path $repoRoot "OTA"
 $appName = "qnob-screen"
-$lockFile = Join-Path $projectDir "dependencies.lock"
-$lockBackup = $null
-$lockFilePresent = Test-Path $lockFile
+# dependencies.lock is per IDF target (dependencies.lock.<target>) and committed; no save/restore dance (BLD-04).
 
 $variantMap = @{
     "esp32s3_lcd128" = @{
@@ -99,22 +97,26 @@ if ($null -eq $config) {
 $projectDirWsl = Convert-ToWslPath -Path $projectDir
 $buildDirWsl = Convert-ToWslPath -Path $config.BuildDir
 $sdkconfigWsl = Convert-ToWslPath -Path $config.GeneratedSdkconfig
-$defaultsArg = $config.Defaults -join ";"
+$defaults = @($config.Defaults)
+$localOverlay = Join-Path $projectDir "sdkconfig.defaults.local"
+if (Test-Path $localOverlay) {
+    # Bench-local overlay (untracked): appended last so it overrides the tracked defaults (BLD-20).
+    $defaults += "sdkconfig.defaults.local"
+}
+$defaultsArg = $defaults -join ";"
+# The dependencies lock is selected per target by esp-idf/CMakeLists.txt (dependencies.lock.<target>, BLD-04).
 
 $bashCommand = @(
     "set -e"
     "source $(Convert-ToBashPathExpression -Value $EspIdfExport) >/dev/null"
     "cd $(Quote-BashValue -Value $projectDirWsl)"
-    "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) build"
+    "idf.py -B $(Quote-BashValue -Value $buildDirWsl) -DIDF_TARGET=$($config.IdfTarget) -DSDKCONFIG=$(Quote-BashValue -Value $sdkconfigWsl) -DSDKCONFIG_DEFAULTS=$(Quote-BashValue -Value $defaultsArg) reconfigure build"
+    # Report-only first-party component graph (BLD-45); never fails the build.
+    "python $(Quote-BashValue -Value ((Convert-ToWslPath -Path $repoRoot) + '/tools/check-component-graph.py')) $(Quote-BashValue -Value ($buildDirWsl + '/project_description.json')) || true"
 ) -join " && "
 
 Write-Host "[$Variant] Building $($config.DisplayName)..."
 Write-Host "[$Variant] Output dir: $($config.BuildDir)"
-
-if ($lockFilePresent) {
-    $lockBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("dependencies.lock.{0}.bak" -f [System.Guid]::NewGuid().ToString("N"))
-    Copy-Item -Force -LiteralPath $lockFile -Destination $lockBackup
-}
 
 try {
     & wsl.exe -d $WslDistro -e bash -lc $bashCommand
@@ -164,12 +166,5 @@ try {
     Write-Host "[$Variant] Published OTA artifact: $otaArtifactPath"
 }
 finally {
-    if ($lockBackup -and (Test-Path $lockBackup)) {
-        if ($lockFilePresent) {
-            Copy-Item -Force -LiteralPath $lockBackup -Destination $lockFile
-        } elseif (Test-Path $lockFile) {
-            Remove-Item -LiteralPath $lockFile -Force
-        }
-        Remove-Item -LiteralPath $lockBackup -Force
-    }
+    # Nothing to restore: dependencies.lock.<target> is committed per target (BLD-04).
 }

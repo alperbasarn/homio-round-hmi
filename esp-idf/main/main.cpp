@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 
 // HAL and hardware components
@@ -14,8 +15,10 @@
 #include "hal_init.h"
 
 // Display
+#include "DisplayBackendFactory.h"
+#include "DisplayPanelBackend.h"
 #include "DisplayController.h"
-#include "LGFX_Config.hpp"
+#include "LvglDisplay.h"
 
 // Hardware interfaces
 #include "TouchPanel.h"
@@ -47,6 +50,8 @@
 // Power Management
 #include "SleepHandler.h"
 
+#include <memory>
+
 
 static const char *TAG = "QNOB_MAIN";
 
@@ -76,7 +81,7 @@ constexpr bool kAudioInputSupported =
 }  // namespace
 
 // Global objects
-static LGFX* gfx = nullptr;
+static std::unique_ptr<DisplayPanelBackend> displayPanelBackend;
 static TouchPanel* touchPanel = nullptr;
 static KnobController* knobController = nullptr;
 static NVSManager* nvsManager = nullptr;
@@ -106,6 +111,35 @@ static SleepHandler* sleepHandler = nullptr;
 static TaskHandle_t displayTaskHandle = nullptr;
 static TaskHandle_t networkTaskHandle = nullptr;
 static TaskHandle_t commandTaskHandle = nullptr;
+static TaskHandle_t startupSplashTaskHandle = nullptr;
+static volatile bool startupSplashActive = false;
+static constexpr uint32_t STARTUP_SOUND_TASK_STACK_SIZE = 8192;
+static constexpr uint32_t STARTUP_SPLASH_TASK_STACK_SIZE = 4096;
+
+static void startupSplashTask(void* parameter) {
+    auto* screen = static_cast<InitializationScreen*>(parameter);
+    const int64_t startTimeMs = esp_timer_get_time() / 1000;
+    int lastProgress = -1;
+
+    while (startupSplashActive && screen != nullptr) {
+        const int64_t elapsedMs = (esp_timer_get_time() / 1000) - startTimeMs;
+        int progress = 1 + static_cast<int>((elapsedMs * 84) / 10000);
+        if (progress > 85) {
+            progress = 85;
+        }
+
+        if (progress != lastProgress) {
+            screen->setProgress(progress);
+            lastProgress = progress;
+        } else {
+            screen->updateScreen();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(16));
+    }
+
+    vTaskDelete(nullptr);
+}
 
 // Main task for display and UI
 void displayTask(void* parameter) {
@@ -236,25 +270,36 @@ extern "C" void app_main(void) {
     // Initialize Display
     ESP_LOGI(TAG, "Initializing display...");
 
-    gfx = new LGFX();
-
-    // Initialize with brightness at 0 to prevent showing garbage during startup
-    gfx->init();
-    gfx->setRotation(0);
-    gfx->setBrightness(0);
-
-    // Clear screen while brightness is off
-    gfx->fillScreen(TFT_BLACK);
-
-    // Small delay for display to stabilize after init commands
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    // Now bring up brightness smoothly
-    for (int i = 0; i <= 255; i += 15) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(5));
+    displayPanelBackend = DisplayBackendFactory::createPanelBackend();
+    if (!displayPanelBackend) {
+        ESP_LOGE(TAG, "Display panel backend creation failed");
+        return;
     }
-    gfx->setBrightness(255);
+    if (!displayPanelBackend->initialize()) {
+        ESP_LOGE(TAG, "Display panel backend initialization failed");
+        return;
+    }
+
+    if (!LvglDisplay::init(displayPanelBackend->flushBackend())) {
+        ESP_LOGE(TAG, "LVGL display initialization failed");
+        return;
+    }
+    displayPanelBackend->setBrightness(255);
+
+    // Render the splash screen before slower peripheral/network setup starts.
+    // The DisplayController takes over later, but this makes power-up visibly alive.
+    initializationScreen = new InitializationScreen(displayPanelBackend.get());
+    initializationScreen->reset();
+    initializationScreen->updateScreen();
+    initializationScreen->setProgress(1);
+    startupSplashActive = true;
+    xTaskCreate(startupSplashTask,
+                "StartupSplash",
+                STARTUP_SPLASH_TASK_STACK_SIZE,
+                initializationScreen,
+                DISPLAY_TASK_PRIORITY,
+                &startupSplashTaskHandle);
+    ESP_LOGI(TAG, "Initialization screen rendered");
 
     // Initialize Touch Panel
     ESP_LOGI(TAG, "Initializing touch panel...");
@@ -351,11 +396,13 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    modeController = new ModeController(gfx, touchPanel);
-    initializationScreen = new InitializationScreen(gfx);
+    modeController = new ModeController(displayPanelBackend.get(), touchPanel);
+    if (initializationScreen == nullptr) {
+        initializationScreen = new InitializationScreen(displayPanelBackend.get());
+    }
 
     // Create EnvironmentInfoScreen (time, weather, temperature)
-    infoScreen = new EnvironmentInfoScreen(gfx, touchPanel);
+    infoScreen = new EnvironmentInfoScreen(displayPanelBackend.get(), touchPanel);
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
         date = internetHandler->getCurrentDate();
         time = internetHandler->getCurrentTime();
@@ -366,7 +413,7 @@ extern "C" void app_main(void) {
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen(gfx, touchPanel);
+    deviceInfoScreen = new DeviceInfoScreen(displayPanelBackend.get(), touchPanel);
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
         wifi = wifiManager->isConnected();
         internet = internetHandler->isInternetAvailable();
@@ -383,9 +430,9 @@ extern "C" void app_main(void) {
         return {false, false, false, -1.0f, -1.0f};
     });
 
-    soundController = new SoundController(gfx, touchPanel);
-    lightController = new LightController(gfx, touchPanel);
-    displayController = new DisplayController(gfx, touchPanel);
+    soundController = new SoundController(displayPanelBackend.get(), touchPanel);
+    lightController = new LightController(displayPanelBackend.get(), touchPanel);
+    displayController = new DisplayController(touchPanel, displayPanelBackend.get());
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
@@ -394,6 +441,11 @@ extern "C" void app_main(void) {
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
+    startupSplashActive = false;
+    if (startupSplashTaskHandle != nullptr) {
+        vTaskDelay(pdMS_TO_TICKS(30));
+        startupSplashTaskHandle = nullptr;
+    }
     displayController->init();
 
     // Initialize Sleep Handler (power management)
@@ -500,7 +552,7 @@ extern "C" void app_main(void) {
 #endif
 
     if (startupChimeReady) {
-        xTaskCreate(startupSoundTask, "StartupSound", 4096, soundPlayer, 2, nullptr);
+        xTaskCreate(startupSoundTask, "StartupSound", STARTUP_SOUND_TASK_STACK_SIZE, soundPlayer, 2, nullptr);
     }
 
     ESP_LOGI(TAG, "Tasks started.");

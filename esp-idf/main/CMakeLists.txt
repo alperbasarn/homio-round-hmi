@@ -8,7 +8,6 @@ idf_component_register(
         touch_panel
         knob_controller
         storage
-        LovyanGFX
         driver
         nvs_flash
         command_handler

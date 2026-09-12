@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <vector>
 
+#include "driver/sdmmc_host.h"
 #include "driver/sdspi_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
@@ -117,6 +118,16 @@ esp_err_t SDCard::initialize() {
         return ESP_OK;
     }
 
+    esp_vfs_fat_sdmmc_mount_config_t mountCfg = {};
+    mountCfg.format_if_mount_failed = false;
+    mountCfg.max_files = 8;
+    mountCfg.allocation_unit_size = 512;
+
+    esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+
+#if QNOB_SD_BACKEND == QNOB_SD_BACKEND_SPI
+    ESP_LOGI(TAG, "Mounting SD card via SDSPI on host %d", static_cast<int>(SD_SPI_HOST));
+
     spi_bus_config_t busCfg = {};
     busCfg.mosi_io_num = SD_MOSI_PIN;
     busCfg.miso_io_num = SD_MISO_PIN;
@@ -125,21 +136,16 @@ esp_err_t SDCard::initialize() {
     busCfg.quadhd_io_num = -1;
     busCfg.max_transfer_sz = 4096;
 
-    esp_err_t err = spi_bus_initialize(SD_SPI_HOST, &busCfg, SDSPI_DEFAULT_DMA);
+    err = spi_bus_initialize(SD_SPI_HOST, &busCfg, SDSPI_DEFAULT_DMA);
     if (err == ESP_OK) {
         spiBusInitializedByUs = true;
     } else if (err == ESP_ERR_INVALID_STATE) {
-        // Shared SPI bus can already be initialized by display.
+        // Shared SPI boards can have the bus pre-initialized by the display path.
         spiBusInitializedByUs = false;
     } else {
         ESP_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(err));
         return err;
     }
-
-    esp_vfs_fat_sdmmc_mount_config_t mountCfg = {};
-    mountCfg.format_if_mount_failed = false;
-    mountCfg.max_files = 8;
-    mountCfg.allocation_unit_size = 512;
 
     sdspi_device_config_t slotCfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     slotCfg.gpio_cs = static_cast<gpio_num_t>(SD_CS_PIN);
@@ -149,12 +155,40 @@ esp_err_t SDCard::initialize() {
     host.slot = SD_SPI_HOST;
 
     err = esp_vfs_fat_sdspi_mount(mountPoint.c_str(), &host, &slotCfg, &mountCfg, &card);
+#elif QNOB_SD_BACKEND == QNOB_SD_BACKEND_SDMMC
+    ESP_LOGI(TAG, "Mounting SD card via 1-bit SDMMC");
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slotCfg = {};
+    slotCfg.clk = static_cast<gpio_num_t>(SD_CLK_PIN);
+    slotCfg.cmd = static_cast<gpio_num_t>(SD_CMD_PIN);
+    slotCfg.d0 = static_cast<gpio_num_t>(SD_D0_PIN);
+    slotCfg.d1 = GPIO_NUM_NC;
+    slotCfg.d2 = GPIO_NUM_NC;
+    slotCfg.d3 = GPIO_NUM_NC;
+    slotCfg.d4 = GPIO_NUM_NC;
+    slotCfg.d5 = GPIO_NUM_NC;
+    slotCfg.d6 = GPIO_NUM_NC;
+    slotCfg.d7 = GPIO_NUM_NC;
+    slotCfg.cd = SDMMC_SLOT_NO_CD;
+    slotCfg.wp = SDMMC_SLOT_NO_WP;
+    slotCfg.width = SDMMC_BUS_WIDTH;
+    slotCfg.flags = 0;
+
+    err = esp_vfs_fat_sdmmc_mount(mountPoint.c_str(), &host, &slotCfg, &mountCfg, &card);
+#else
+    ESP_LOGW(TAG, "SD card backend is not configured for this board");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     if (err != ESP_OK || card == nullptr) {
         ESP_LOGE(TAG, "SD card mount failed: %s", esp_err_to_name(err));
+#if QNOB_SD_BACKEND == QNOB_SD_BACKEND_SPI
         if (spiBusInitializedByUs) {
             spi_bus_free(SD_SPI_HOST);
             spiBusInitializedByUs = false;
         }
+#endif
         card = nullptr;
         return (err == ESP_OK) ? ESP_FAIL : err;
     }
@@ -193,9 +227,11 @@ void SDCard::deinitialize() {
         esp_vfs_fat_sdcard_unmount(mountPoint.c_str(), card);
     }
 
+#if QNOB_SD_BACKEND == QNOB_SD_BACKEND_SPI
     if (spiBusInitializedByUs) {
         spi_bus_free(SD_SPI_HOST);
     }
+#endif
 
     card = nullptr;
     mounted = false;

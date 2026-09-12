@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LGFX_Config.hpp"
+#include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
 #include <array>
@@ -13,9 +13,15 @@
 using DateTimeCallback = std::function<void(std::string& date, std::string& time, std::string& dayOfWeek)>;
 using TemperatureCallback = std::function<float()>;
 
+enum class ScreenNavTarget {
+    NONE,
+    MODE_CONTROLLER,
+    DEVICE_INFO
+};
+
 class EnvironmentInfoScreen {
 private:
-    LGFX* gfx;
+    DisplayPanelBackend* display;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
@@ -42,6 +48,10 @@ private:
     bool indoorTempChanged;
     bool outdoorTempChanged;
     bool dateTimeChanged;
+
+    // Leave animation state
+    ScreenNavTarget pendingNavTarget;
+    int shrinkAnimationsRemaining;
 
     // Timing for updates
     int64_t lastActivityTime;
@@ -96,6 +106,11 @@ private:
     static void indoorArcAnimExec(void* var, int32_t value);
     static void outdoorArcAnimExec(void* var, int32_t value);
 
+    // Leave (shrink) animations
+    void startLeaveAnimation(ScreenNavTarget target);
+    void finishLeave();
+    static void shrinkAnimReady(lv_anim_t* anim);
+
     // Data helpers
     void formatDate();
     std::string getMonthName(int month);
@@ -112,7 +127,7 @@ private:
     }
 
 public:
-    EnvironmentInfoScreen(LGFX* graphics, TouchPanel* touch);
+    EnvironmentInfoScreen(DisplayPanelBackend* displayBackend, TouchPanel* touch);
 
     // Main update method
     void update();

@@ -1,4 +1,5 @@
 #include "DisplayController.h"
+#include "DisplayPanelBackend.h"
 #include "KnobController.h"
 #include "SoundController.h"
 #include "LightController.h"
@@ -6,6 +7,7 @@
 #include "InitializationScreen.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
+#include "LvglDisplay.h"
 #include "MediaController.h"
 #include "SleepHandler.h"
 #include "esp_log.h"
@@ -49,11 +51,11 @@ constexpr const char* SWIPE_DOWN_EFFECT_FILE = "swipe_down";
 
 }  // namespace
 
-DisplayController::DisplayController(LGFX* graphics, TouchPanel* touch)
-  : gfx(graphics), touchPanel(touch), knobController(nullptr), soundController(nullptr),
+DisplayController::DisplayController(TouchPanel* touch, DisplayPanelBackend* displayPanelBackend)
+  : touchPanel(touch), knobController(nullptr), soundController(nullptr),
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
-    infoScreen(nullptr), deviceInfoScreen(nullptr), mediaController(nullptr), currentMode(INITIALIZATION), lastActivityTime(0), displayIsOn(true),
-    initializationProgress(0), initializationCompleteTime(0) {
+    infoScreen(nullptr), deviceInfoScreen(nullptr), mediaController(nullptr), panelBackend(displayPanelBackend), currentMode(INITIALIZATION), lastActivityTime(0), displayIsOn(true),
+    initializationProgress(0), initializationStartTime(0), initializationCompleteTime(0) {
 }
 
 DisplayController::~DisplayController() {
@@ -61,11 +63,8 @@ DisplayController::~DisplayController() {
 }
 
 void DisplayController::init() {
-    gfx->init();
-    gfx->setRotation(0);
-    gfx->setBrightness(255);
-    gfx->fillScreen(TFT_BLACK);
     initializationProgress = 0;
+    initializationStartTime = 0;
     initializationCompleteTime = 0;
     setMode(INITIALIZATION);
     if (initializationScreen) {
@@ -77,6 +76,7 @@ void DisplayController::init() {
 
 void DisplayController::update() {
     bool hasActivityEvent = false;
+    bool shouldRunLvglTask = false;
 
     if (touchPanel) {
         touchPanel->handleTouchPanel();
@@ -136,7 +136,11 @@ void DisplayController::update() {
         case INITIALIZATION:
             if (initializationScreen) {
                 int64_t now = esp_timer_get_time() / 1000;
-                int64_t elapsed = now - static_cast<int64_t>(lastActivityTime);
+                if (initializationStartTime == 0) {
+                    initializationStartTime = now;
+                    ESP_LOGI(TAG, "Initialization screen timing started");
+                }
+                int64_t elapsed = now - initializationStartTime;
                 int progress = static_cast<int>((elapsed * 100) / INIT_SEQUENCE_DURATION_MS);
                 if (progress > 100) {
                     progress = 100;
@@ -155,6 +159,7 @@ void DisplayController::update() {
         case INFO:
             if (infoScreen) {
                 infoScreen->update();
+                shouldRunLvglTask = true;
                 // Check if user wants to go to device info screen (swipe up)
                 if (infoScreen->isDeviceInfoRequested()) {
                     infoScreen->resetDeviceInfoRequest();
@@ -174,6 +179,7 @@ void DisplayController::update() {
         case DEVICE_INFO:
             if (deviceInfoScreen) {
                 deviceInfoScreen->update();
+                shouldRunLvglTask = true;
                 // Check if user wants to go back to environment info (swipe down)
                 if (deviceInfoScreen->isPageBackRequested()) {
                     deviceInfoScreen->resetPageBackRequest();
@@ -269,6 +275,10 @@ void DisplayController::update() {
             break;
     }
 
+    if (shouldRunLvglTask && LvglDisplay::isInitialized()) {
+        LvglDisplay::taskHandler();
+    }
+
     checkActivityAndAutoSwitch();
 }
 
@@ -284,6 +294,7 @@ void DisplayController::setMode(Mode mode) {
     }
     if (mode == INITIALIZATION) {
         initializationProgress = 0;
+        initializationStartTime = 0;
         initializationCompleteTime = 0;
         if (initializationScreen) {
             initializationScreen->reset();
@@ -381,7 +392,7 @@ void DisplayController::setSetpoint(int setpoint) {
 void DisplayController::transitionToMode(Mode newMode, int transitionType) {
     // LVGL-managed screens (INFO, DEVICE_INFO, COMMISSIONING) have their own
     // full-screen root with a black background that covers the previous content.
-    // Skipping fillScreen avoids a visible "flash to black then progressive redraw"
+    // Skipping a forced clear avoids a visible "flash to black then progressive redraw"
     // caused by LVGL rendering in 50-line bands on the 466px display.
     switch (newMode) {
         case INFO:
@@ -389,8 +400,7 @@ void DisplayController::transitionToMode(Mode newMode, int transitionType) {
             // Let LVGL handle the screen transition — its root bg clears the old content.
             break;
         default:
-            // Non-LVGL screens: clear via LovyanGFX.
-            gfx->fillScreen(TFT_BLACK);
+            // LVGL-managed roots cover the previous content when they become active.
             break;
     }
 }
@@ -430,24 +440,18 @@ void DisplayController::resetActivityTime() {
 
 void DisplayController::turnDisplayOff() {
     if (!displayIsOn) return;
-    #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
-    for (int i = 255; i >= 0; i -= 5) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(1));
+    if (panelBackend != nullptr) {
+        panelBackend->turnOff();
     }
-    #endif
     displayIsOn = false;
     ESP_LOGI(TAG, "Display turned off");
 }
 
 void DisplayController::turnDisplayOn() {
     if (displayIsOn) return;
-    #if defined(LCD_BL_PIN) && (LCD_BL_PIN != -1)
-    for (int i = 0; i <= 255; i += 5) {
-        gfx->setBrightness(i);
-        vTaskDelay(pdMS_TO_TICKS(1));
+    if (panelBackend != nullptr) {
+        panelBackend->turnOn();
     }
-    #endif
     displayIsOn = true;
     ESP_LOGI(TAG, "Display turned on");
 }
