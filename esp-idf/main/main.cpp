@@ -46,7 +46,8 @@
 #include "input/InputSfxListener.h"
 #include "OTAManager.h"
 #include "ModeController.h"
-#include "InitializationScreen.h"
+#include "BootScreenController.h"
+#include "InitializationView.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
 #include "PlaceholderPageScreen.h"
@@ -70,6 +71,7 @@
 #include "adapters/ModelHost.h"
 #include "model/AppModel.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -121,7 +123,12 @@ static CommandHandler* commandHandler = nullptr;
 static SoundController* soundController = nullptr;
 static LightController* lightController = nullptr;
 static ModeController* modeController = nullptr;
-static InitializationScreen* initializationScreen = nullptr;
+static ui::InitializationView* initializationView = nullptr;            // SCRN-07
+static controllers::BootScreenController* bootController = nullptr;    // SCRN-08
+// SCRN-09: the display task starts right after LVGL init so the boot arc animates through the
+// peripheral and network setup; everything it may touch later (router, sleep handler, screens)
+// is published through this flag once app_main has built and registered it.
+static std::atomic<bool> s_compositionComplete{false};
 static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
 static PlaceholderPageScreen* placeholderPageScreen = nullptr;
@@ -215,35 +222,7 @@ static adapters::BatteryPoller* batteryPoller = nullptr;
 static TaskHandle_t displayTaskHandle = nullptr;
 static TaskHandle_t networkTaskHandle = nullptr;
 static TaskHandle_t commandTaskHandle = nullptr;
-static TaskHandle_t startupSplashTaskHandle = nullptr;
-static volatile bool startupSplashActive = false;
 static constexpr uint32_t STARTUP_SOUND_TASK_STACK_SIZE = 8192;
-static constexpr uint32_t STARTUP_SPLASH_TASK_STACK_SIZE = 4096;
-
-static void startupSplashTask(void* parameter) {
-    auto* screen = static_cast<InitializationScreen*>(parameter);
-    const int64_t startTimeMs = esp_timer_get_time() / 1000;
-    int lastProgress = -1;
-
-    while (startupSplashActive && screen != nullptr) {
-        const int64_t elapsedMs = (esp_timer_get_time() / 1000) - startTimeMs;
-        int progress = 1 + static_cast<int>((elapsedMs * 84) / 10000);
-        if (progress > 85) {
-            progress = 85;
-        }
-
-        if (progress != lastProgress) {
-            screen->setProgress(progress);
-            lastProgress = progress;
-        } else {
-            screen->updateScreen();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(16));
-    }
-
-    vTaskDelete(nullptr);
-}
 
 // Main task for display and UI: the single consumer of the mutation queue and the only writer
 // of the models (D1).
@@ -279,7 +258,9 @@ void displayTask(void* parameter) {
         const uint32_t frameNow = nowMs();
         appModel.drainPendingMutations(frameNow);
 
-        if (inputRouter != nullptr) {
+        // SCRN-09: before app_main publishes the composition, only the boot controller runs.
+        const bool ready = s_compositionComplete.load(std::memory_order_acquire);
+        if (ready && inputRouter != nullptr) {
             inputRouter->poll(frameNow);
             if (inputRouter->lastActivityMs() != lastRouterActivityMs) {
                 lastRouterActivityMs = inputRouter->lastActivityMs();
@@ -320,7 +301,7 @@ void displayTask(void* parameter) {
 
         displayController->update();
 
-        if (inputRouter != nullptr) {
+        if (ready && inputRouter != nullptr) {
             // INPT-11 / INPT-16: a mode change arms the wake consumption (SLEEP) or the 250 ms entry
             // window (any other screen), so the press that caused the change never acts on the
             // screen it entered.
@@ -336,7 +317,7 @@ void displayTask(void* parameter) {
         }
 
         // Check power management
-        if (sleepHandler) {
+        if (ready && sleepHandler) {
             sleepHandler->checkActivity();
         }
 
@@ -501,20 +482,23 @@ extern "C" void app_main(void) {
     LvglDisplay::setPanelBackend(displayPanelBackend.get());   // the ported screens set brightness through LvglDisplay
     displayPanelBackend->setBrightness(255);
 
-    // Render the splash screen before slower peripheral/network setup starts.
-    // The DisplayController takes over later, but this makes power-up visibly alive.
-    initializationScreen = new InitializationScreen();
-    initializationScreen->reset();
-    initializationScreen->updateScreen();
-    initializationScreen->setProgress(1);
-    startupSplashActive = true;
-    xTaskCreate(startupSplashTask,
-                "StartupSplash",
-                STARTUP_SPLASH_TASK_STACK_SIZE,
-                initializationScreen,
-                DISPLAY_TASK_PRIORITY,
-                &startupSplashTaskHandle);
-    ESP_LOGI(TAG, "Initialization screen rendered");
+    // SCRN-08 / SCRN-09: the boot screen is a view driven by its controller from the display task,
+    // which starts now so the arc animates through the peripheral and network setup below. The
+    // models are sealed first (MDL-30) so the first drain never races a subscription.
+    appModel.wireSubscriptions();
+    initializationView = new ui::InitializationView();
+    bootController = new controllers::BootScreenController(initializationView, &modelQueue, &appModel.navigation(),
+                                                           displayPanelBackend->width(), displayPanelBackend->height());
+    displayController = new DisplayController();
+    displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
+    displayController->registerBootController(bootController);
+    displayController->init();                                         // one ramp, one start stamp (DISP-09)
+#if DUAL_CORE_AVAILABLE
+    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
+#else
+    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
+#endif
+    ESP_LOGI(TAG, "Boot screen up, display task started");
 
     // Initialize Touch Panel
     ESP_LOGI(TAG, "Initializing touch panel...");
@@ -620,9 +604,6 @@ extern "C" void app_main(void) {
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
     modeController = new ModeController();
-    if (initializationScreen == nullptr) {
-        initializationScreen = new InitializationScreen();
-    }
 
     // Create EnvironmentInfoScreen (time, weather, temperature). NET-11: the callbacks read the
     // model, which the network-task pollers fill; the screen still owns its own fields.
@@ -679,10 +660,7 @@ extern "C" void app_main(void) {
     soundController->setModelQueue(&modelQueue);                       // CTRL-07
     lightController = new LightController(displayPanelBackend.get());
     lightController->setModelQueue(&modelQueue);                       // CTRL-08
-    displayController = new DisplayController();
-    displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
     displayController->registerModeController(modeController);
-    displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
     displayController->registerPlaceholderScreen(placeholderPageScreen);
@@ -703,12 +681,6 @@ extern "C" void app_main(void) {
         [](int percent) {
             if (soundController != nullptr) soundController->updateSetpoint(percent);
         });
-    startupSplashActive = false;
-    if (startupSplashTaskHandle != nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(30));
-        startupSplashTaskHandle = nullptr;
-    }
-    displayController->init();
 
     // Initialize Sleep Handler (power management)
     ESP_LOGI(TAG, "Initializing sleep handler...");
@@ -825,19 +797,18 @@ extern "C" void app_main(void) {
         }
     });
 
-    // MDL-30: no subscribers yet (the trace logs from inside the drain); sealing now guarantees
-    // nothing re-wires in the render path.
-    appModel.wireSubscriptions();
+    // SCRN-09: the display task has run since the boot screen went up; from here on it may use
+    // the input router, the sleep handler and the screens, and honour the boot handoff.
+    s_compositionComplete.store(true, std::memory_order_release);
+    displayController->markCompositionComplete();
 
     ESP_LOGI(TAG, "Initialization complete. Starting tasks...");
 
     // Start tasks
 #if DUAL_CORE_AVAILABLE
-    xTaskCreatePinnedToCore(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle, DISPLAY_CORE);
     xTaskCreatePinnedToCore(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle, NETWORK_CORE);
     xTaskCreatePinnedToCore(commandTask, "CommandTask", COMMAND_STACK_SIZE, nullptr, COMMAND_TASK_PRIORITY, &commandTaskHandle, NETWORK_CORE);
 #else
-    xTaskCreate(displayTask, "DisplayTask", DISPLAY_STACK_SIZE, nullptr, DISPLAY_TASK_PRIORITY, &displayTaskHandle);
     xTaskCreate(networkTask, "NetworkTask", NETWORK_STACK_SIZE, nullptr, NETWORK_TASK_PRIORITY, &networkTaskHandle);
     xTaskCreate(commandTask, "CommandTask", COMMAND_STACK_SIZE, nullptr, COMMAND_TASK_PRIORITY, &commandTaskHandle);
 #endif

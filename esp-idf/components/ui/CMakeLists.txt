@@ -2,10 +2,10 @@
 idf_component_register(
     SRCS "LvglDisplay.cpp"
          "theme/Theme.cpp"
+         "views/InitializationView.cpp"
          "fonts/lv_font_montserrat_72_time.c"
          "fonts/lv_font_montserrat_96_time.c"
          "fonts/lv_font_montserrat_64_info.c"
-         "screens/InitializationScreen.cpp"
          "screens/EnvironmentInfoScreen.cpp"
          "screens/DeviceInfoScreen.cpp"
          "screens/PlaceholderPageScreen.cpp"

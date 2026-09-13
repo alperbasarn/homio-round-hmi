@@ -2,7 +2,7 @@
 #include "SoundController.h"
 #include "LightController.h"
 #include "ModeController.h"
-#include "InitializationScreen.h"
+#include "BootScreenController.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
 #include "PlaceholderPageScreen.h"
@@ -21,8 +21,6 @@
 #include <limits>
 
 static const char *TAG = "DisplayController";
-static constexpr int64_t INIT_SEQUENCE_DURATION_MS = 2500;
-static constexpr int64_t INIT_COMPLETE_HOLD_MS = 400;
 
 namespace {
 
@@ -119,26 +117,25 @@ const MatrixPageDescriptor* findMatrixPageByName(const std::string& normalized) 
 
 DisplayController::DisplayController()
   : soundController(nullptr),
-    lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
+    lightController(nullptr), modeController(nullptr), bootController(nullptr),
     infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr),
-    currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
-    displayIsOn(true), brightnessPercent(100), initializationProgress(0), initializationCompleteTime(0),
+    currentMode(INITIALIZATION), lastActivityTime(0),
+    displayIsOn(true), brightnessPercent(100),
     currentPageX(0), currentPageY(0), lastActivityPostMs(0),
-    pendingModeRequest(-1), pendingPageRequest(kNoPageRequest), pendingKnobDelta(0), modelQueue(nullptr) {
+    pendingModeRequest(-1), pendingPageRequest(kNoPageRequest), pendingKnobDelta(0), compositionComplete(false),
+    modelQueue(nullptr) {
 }
 
 DisplayController::~DisplayController() {}
 
 void DisplayController::init() {
     LvglDisplay::fillScreen(0x000000);
-    initializationProgress = 0;
-    initializationCompleteTime = 0;
-    initializationStartTime = esp_timer_get_time() / 1000;
     currentPageX = 0;
     currentPageY = 0;
-    if (initializationScreen) {
-        initializationScreen->reset();
-        initializationScreen->setProgress(0);
+    // SCRN-08: the boot ramp starts here, once; the view is built under the LVGL lock.
+    if (bootController && LvglDisplay::lock(-1)) {
+        bootController->onEnter(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
     }
     resetActivityTime();
 }
@@ -163,41 +160,22 @@ void DisplayController::update() {
     // INPT-14: touch and knob arrive through onInput(); the SLEEP exit lives in noteActivity().
     switch (currentMode) {
         case INITIALIZATION:
-            if (initializationScreen) {
-                int64_t now = esp_timer_get_time() / 1000;
-                const int64_t initElapsedMs = now - initializationStartTime;
-                int progress = static_cast<int>((now - initializationStartTime) * 100 / INIT_SEQUENCE_DURATION_MS);
-                if (progress > 100) {
-                    progress = 100;
+            if (bootController) {
+                // SCRN-08: the controller owns the ramp and renders its view under the lock; the
+                // handoff waits for app_main to finish registering everything (SCRN-09).
+                const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                if (LvglDisplay::lock(-1)) {
+                    bootController->tick(now);
+                    LvglDisplay::unlock();
                 }
-                if (progress != initializationProgress) {
-                    initializationProgress = progress;
-                    initializationScreen->setProgress(initializationProgress);
-                    postNavigation(static_cast<int>(model::NavigationModel::Field::InitProgress), initializationProgress);
-                    if (initializationProgress >= 100 && initializationCompleteTime == 0) {
-                        initializationCompleteTime = now;
+                LvglDisplay::taskHandler();
+                if (bootController->hasNavigationRequest() && compositionComplete.load()) {
+                    const controllers::NavigationRequest request = bootController->takeNavigationRequest();
+                    if (request.valid() && request.screen == model::AppScreen::Info) {
+                        ESP_LOGI(TAG, "Boot handoff to INFO (ramp %d%%)", bootController->progressPercent());
+                        setMode(INFO);
+                        return;
                     }
-                }
-                initializationScreen->updateScreen();
-
-                // Deterministic handoff from init to home page.
-                // Primary condition uses progress+hold; fallback uses elapsed time.
-                const bool progressHoldReached =
-                    (initializationProgress >= 100) &&
-                    (initializationCompleteTime > 0) &&
-                    ((now - initializationCompleteTime) >= INIT_COMPLETE_HOLD_MS);
-                const bool timeoutFallbackReached =
-                    initElapsedMs >= (INIT_SEQUENCE_DURATION_MS + INIT_COMPLETE_HOLD_MS);
-
-                if (progressHoldReached || timeoutFallbackReached) {
-                    ESP_LOGI(TAG,
-                             "Init handoff direct switch (progress=%d elapsed=%lldms completeAt=%lld)",
-                             initializationProgress,
-                             static_cast<long long>(initElapsedMs),
-                             static_cast<long long>(initializationCompleteTime));
-                    // Direct switch is more reliable here than pending-mode handoff.
-                    setMode(INFO);
-                    return;
                 }
             }
             break;
@@ -308,8 +286,9 @@ void DisplayController::setMode(Mode mode) {
 
     ESP_LOGI(TAG, "Mode: %s -> %s", modeToString(currentMode), modeToString(mode));
 
-    if (currentMode == INITIALIZATION && initializationScreen) {
-        initializationScreen->hideScreen();
+    if (currentMode == INITIALIZATION && bootController && LvglDisplay::lock(-1)) {
+        bootController->onExit(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
     }
     if (currentMode == INFO && infoScreen) {
         infoScreen->deactivate();
@@ -332,14 +311,9 @@ void DisplayController::setMode(Mode mode) {
         turnDisplayOff();
     }
 
-    if (mode == INITIALIZATION) {
-        initializationProgress = 0;
-        initializationCompleteTime = 0;
-        initializationStartTime = esp_timer_get_time() / 1000;
-        if (initializationScreen) {
-            initializationScreen->reset();
-            initializationScreen->setProgress(0);
-        }
+    if (mode == INITIALIZATION && bootController && LvglDisplay::lock(-1)) {
+        bootController->onEnter(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
     }
     if (mode == INFO && infoScreen) {
         infoScreen->resetScreen();
@@ -416,7 +390,8 @@ std::string DisplayController::getModeName() const {
 void DisplayController::registerSoundController(SoundController* s)    { soundController = s; }
 void DisplayController::registerLightController(LightController* l)    { lightController = l; }
 void DisplayController::registerModeController(ModeController* m)      { modeController = m; }
-void DisplayController::registerInitializationScreen(InitializationScreen* i) { initializationScreen = i; }
+void DisplayController::registerBootController(controllers::BootScreenController* boot) { bootController = boot; }
+void DisplayController::markCompositionComplete() { compositionComplete.store(true); }
 void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { infoScreen = info; }
 void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
 void DisplayController::registerPlaceholderScreen(PlaceholderPageScreen* p)   { placeholderScreen = p; }
@@ -443,12 +418,7 @@ void DisplayController::checkActivityAndAutoSwitch() {
     int64_t now = esp_timer_get_time() / 1000;
 
     if (currentMode == INITIALIZATION) {
-        if (initializationProgress >= 100 &&
-            initializationCompleteTime > 0 &&
-            (now - initializationCompleteTime) >= INIT_COMPLETE_HOLD_MS) {
-            navigateToMatrixPage(0, 0);
-        }
-        return;
+        return;  // the boot controller decides the handoff; no auto sleep while booting
     }
 
     if ((now - static_cast<int64_t>(lastActivityTime)) > INACTIVITY_TIMEOUT_MS) {

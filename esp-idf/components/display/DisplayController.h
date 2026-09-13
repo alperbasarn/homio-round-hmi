@@ -11,7 +11,7 @@
 class SoundController;
 class LightController;
 class ModeController;
-class InitializationScreen;
+namespace controllers { class BootScreenController; }
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
 class PlaceholderPageScreen;
@@ -33,24 +33,24 @@ private:
   SoundController* soundController;
   LightController* lightController;
   ModeController* modeController;
-  InitializationScreen* initializationScreen;
+  controllers::BootScreenController* bootController;   // SCRN-08: the boot ramp and its view
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
   PlaceholderPageScreen* placeholderScreen;
 
   Mode currentMode;
   int64_t lastActivityTime;
-  int64_t initializationStartTime;
   bool displayIsOn;
   int brightnessPercent;
-  int initializationProgress;
-  int64_t initializationCompleteTime;
   int currentPageX;
   int currentPageY;
   uint32_t lastActivityPostMs;
   std::atomic<int> pendingModeRequest;
   std::atomic<int> pendingPageRequest;
   std::atomic<int> pendingKnobDelta;
+  // SCRN-09: set by app_main once every screen and driver is registered; until then the boot
+  // handoff stays pending and the display task only runs the boot controller.
+  std::atomic<bool> compositionComplete;
   // WP1.4 shadow phase: every knob token and navigation change is also posted as a record
   // (INPT-05, MDL-31). Nothing in this class calls a model setter.
   model::MutationQueue* modelQueue;
@@ -83,7 +83,8 @@ public:
   void registerSoundController(SoundController* sound);
   void registerLightController(LightController* light);
   void registerModeController(ModeController* mode);
-  void registerInitializationScreen(InitializationScreen* init);
+  void registerBootController(controllers::BootScreenController* boot);
+  void markCompositionComplete();
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
   void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
