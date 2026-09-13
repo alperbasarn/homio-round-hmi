@@ -87,3 +87,19 @@ screen keeps its own events). 1.75 binary 1,832,208 B (-528 B).
 
 Host suite 22 executables / 147 cases green. 1.75 binary 1,830,624 B (-1,584 B). Device walk
 pending: the board keeps dropping off the USB bus (deep sleep with the pre-gate firmware).
+
+## Bench hygiene after Phase 2 (2026-09-13)
+
+- **The 120 MHz retry flood is gone** (bench 1 finding 3). `SleepHandler::reduceCpuFrequency()`
+  picks the next supported frequency below the original (the S3 offers 240/160/80, so 240 / 2 = 120
+  failed on every frame and wrote about 8,500 warnings per 90 s), and a failed attempt is latched
+  until the next activity instead of retried each frame. Phase 4 still owns the power/sleep split
+  (D7, D8); this is the minimum that keeps a bench log readable.
+- **Why the board kept vanishing from the USB bus:** stage 2 puts the board into an indefinite light
+  sleep after 2 minutes idle (GPIO wake only), which drops the USB-Serial/JTAG connection; stage 3
+  (deep sleep at 3 minutes) does the same. `CONFIG_QNOB_LIGHT_SLEEP` and `CONFIG_QNOB_DEEP_SLEEP`
+  (both default y) now gate the two stages; the bench overlay sets both to n (documented in
+  `sdkconfig.defaults.local.example`). The 1.75 build with both gates off is 1,829,008 B.
+- `tools/bench_serial.py` is unchanged; a scratch `bench_wait_flash.sh` waits for the board to
+  reappear after a tap and flashes at once, which is how the sleep-gated build gets onto a board
+  that still runs pre-gate firmware.

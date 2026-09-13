@@ -37,6 +37,13 @@ menu "QNOB Application Configuration"
         help
             Set the logging verbosity level.
 
+    config QNOB_LIGHT_SLEEP
+        bool "Enter light sleep after the inactivity timeout"
+        default y
+        help
+            Stage 2 of the sleep handler (indefinite light sleep, GPIO wake). Off on the bench:
+            the USB-Serial/JTAG console drops for as long as the board sleeps.
+
     config QNOB_DEEP_SLEEP
         bool "Enter deep sleep after the inactivity timeout"
         default y

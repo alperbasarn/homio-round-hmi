@@ -87,8 +87,11 @@ private:
     bool initialized;
     bool enabled;
     bool cpu_freq_reduced;
+    bool cpu_freq_reduce_failed;  // one attempt per idle period; the next activity re-arms it
     bool power_save_enabled;
     bool light_sleep_enabled;
+    bool deep_sleep_skipped_logged;
+    bool light_sleep_skipped_logged;
 
     int64_t last_activity_time;
     uint32_t cpu_freq_reduce_timeout_ms;

@@ -49,8 +49,11 @@ SleepHandler::SleepHandler(SemaphoreHandle_t* mutex)
       initialized(false),
       enabled(false),
       cpu_freq_reduced(false),
+      cpu_freq_reduce_failed(false),
       power_save_enabled(false),
       light_sleep_enabled(false),
+      deep_sleep_skipped_logged(false),
+      light_sleep_skipped_logged(false),
       last_activity_time(0),
       cpu_freq_reduce_timeout_ms(CPU_FREQ_REDUCE_TIMEOUT_MS),
       power_save_timeout_ms(POWER_SAVE_TIMEOUT_MS),
@@ -99,6 +102,7 @@ void SleepHandler::resetActivityTime()
 void SleepHandler::registerActivity()
 {
     resetActivityTime();
+    cpu_freq_reduce_failed = false;
 
     // Exit light sleep mode if active
     if (light_sleep_enabled) {
@@ -170,7 +174,7 @@ void SleepHandler::checkActivity()
     int64_t inactivity_time = current_time - last_activity_time;
 
     // Stage 0: Reduce CPU frequency to 50% at 20s
-    if (!cpu_freq_reduced && inactivity_time >= cpu_freq_reduce_timeout_ms) {
+    if (!cpu_freq_reduced && !cpu_freq_reduce_failed && inactivity_time >= cpu_freq_reduce_timeout_ms) {
         ESP_LOGI(TAG, "Stage 0: Reducing CPU frequency to 50%% after %lld ms", inactivity_time);
         reduceCpuFrequency();
     }
@@ -185,7 +189,8 @@ void SleepHandler::checkActivity()
         }
     }
 
-    // Stage 2: Light sleep at 2m
+    // Stage 2: Light sleep at 2m (CONFIG_QNOB_LIGHT_SLEEP=n keeps a bench board on the USB bus)
+#if CONFIG_QNOB_LIGHT_SLEEP
     if (!light_sleep_enabled && inactivity_time >= light_sleep_timeout_ms &&
         inactivity_time < deep_sleep_timeout_ms) {
 
@@ -198,6 +203,12 @@ void SleepHandler::checkActivity()
         // If we wake up here, reset the light sleep flag
         light_sleep_enabled = false;
     }
+#else
+    if (!light_sleep_skipped_logged && inactivity_time >= light_sleep_timeout_ms) {
+        light_sleep_skipped_logged = true;
+        ESP_LOGI(TAG, "Stage 2 skipped: light sleep disabled by CONFIG_QNOB_LIGHT_SLEEP");
+    }
+#endif
 
     // Stage 3: Deep sleep at 3m
     if (inactivity_time >= deep_sleep_timeout_ms) {
@@ -212,36 +223,25 @@ void SleepHandler::reduceCpuFrequency()
         return;
     }
 
-    // Calculate target frequency (50% of original)
-    uint32_t target_freq_mhz = original_cpu_freq_mhz / 2;
-
-    // Ensure minimum frequency (typically 40 MHz for ESP32-S3, 80 MHz for ESP32-C6)
-#if CONFIG_IDF_TARGET_ESP32S3
-    const uint32_t min_freq_mhz = 40;
-#elif CONFIG_IDF_TARGET_ESP32C6
-    const uint32_t min_freq_mhz = 80;
-#else
-    const uint32_t min_freq_mhz = 80;
-#endif
-
-    if (target_freq_mhz < min_freq_mhz) {
-        target_freq_mhz = min_freq_mhz;
-    }
-
-    ESP_LOGI(TAG, "Reducing CPU frequency from %lu MHz to %lu MHz",
-             (unsigned long)original_cpu_freq_mhz, (unsigned long)target_freq_mhz);
-
-    // Set the CPU frequency using RTC clock control
+    // The next supported frequency below the original: the S3 offers 240/160/80 (240 / 2 = 120 is
+    // not a valid step and used to fail on every frame), the C6 160/120/80.
+    static const uint32_t kCandidatesMhz[] = {160, 120, 80, 40};
     rtc_cpu_freq_config_t config;
-    bool success = rtc_clk_cpu_freq_mhz_to_config(target_freq_mhz, &config);
-
-    if (success) {
-        rtc_clk_cpu_freq_set_config(&config);
-        cpu_freq_reduced = true;
-        ESP_LOGI(TAG, "CPU frequency reduced successfully");
-    } else {
-        ESP_LOGW(TAG, "Failed to reduce CPU frequency to %lu MHz", (unsigned long)target_freq_mhz);
+    uint32_t target_freq_mhz = 0;
+    for (uint32_t candidate : kCandidatesMhz) {
+        if (candidate < original_cpu_freq_mhz && rtc_clk_cpu_freq_mhz_to_config(candidate, &config)) {
+            target_freq_mhz = candidate;
+            break;
+        }
     }
+    if (target_freq_mhz == 0) {
+        cpu_freq_reduce_failed = true;  // logged once; the next activity re-arms the attempt
+        ESP_LOGW(TAG, "No CPU frequency below %lu MHz is available; stage 0 skipped", (unsigned long)original_cpu_freq_mhz);
+        return;
+    }
+    ESP_LOGI(TAG, "Reducing CPU frequency from %lu MHz to %lu MHz", (unsigned long)original_cpu_freq_mhz, (unsigned long)target_freq_mhz);
+    rtc_clk_cpu_freq_set_config(&config);
+    cpu_freq_reduced = true;
 }
 
 void SleepHandler::restoreCpuFrequency()
