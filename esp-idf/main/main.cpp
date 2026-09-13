@@ -40,7 +40,8 @@
 // Controllers
 #include "CommandHandler.h"
 #include "SoundController.h"
-#include "LightController.h"
+#include "LightScreenController.h"
+#include "LightView.h"
 #include "LocalAudio.h"
 #include "input/InputRouter.h"
 #include "input/InputSfxListener.h"
@@ -122,7 +123,8 @@ static InternetHandler* internetHandler = nullptr;
 static DisplayController* displayController = nullptr;
 static CommandHandler* commandHandler = nullptr;
 static SoundController* soundController = nullptr;
-static LightController* lightController = nullptr;
+static ui::LightView* lightView = nullptr;                          // LED-05
+static controllers::LightScreenController* lightScreen = nullptr;  // LED-05
 static ModeController* modeController = nullptr;
 static ui::InitializationView* initializationView = nullptr;            // SCRN-07
 static controllers::BootScreenController* bootController = nullptr;    // SCRN-08
@@ -668,14 +670,15 @@ extern "C" void app_main(void) {
 
     soundController = new SoundController(displayPanelBackend.get());
     soundController->setModelQueue(&modelQueue);                       // CTRL-07
-    lightController = new LightController(displayPanelBackend.get());
-    lightController->setModelQueue(&modelQueue);                       // CTRL-08
+    lightView = new ui::LightView();                                   // LED-05: the LIGHT screen on the registry
+    lightScreen = new controllers::LightScreenController(appModel, lightView, displayPanelBackend->width(),
+                                                         displayPanelBackend->height());
     displayController->registerModeController(modeController);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
     displayController->registerPlaceholderScreen(placeholderPageScreen);
     displayController->registerSoundController(soundController);
-    displayController->registerLightController(lightController);
+    displayController->registerLightScreen(lightScreen);
     // INPT-12: the router polls both drivers once per frame; the legacy screens still read the
     // latched touch flags in the same frame until WP2.3 cuts them over.
     inputRouter = new input::InputRouter(touchPanel, knobController);
@@ -764,17 +767,6 @@ extern "C" void app_main(void) {
     });
 
     // Set MQTT callbacks for light controller
-    lightController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
-        mqttManager->publish(topic, message);
-    });
-    lightController->setMQTTConnectedCallback([&]() {
-        return mqttManager->isConnected();
-    });
-    lightController->setMQTTConfiguredCallback([&]() {
-        // CTRL-03: lightMQTTServerURL has no writer anywhere, so this gate was permanently closed
-        // and LIGHT never published. There is one MQTT client; the light topics go through it.
-        return mqttManager->hasLightMQTTConfigured() || mqttManager->hasSoundMQTTConfigured();
-    });
 
     // Set global MQTT message callback (runs on the MQTT task). MDL-31: every value that reaches
     // a screen from here also reaches the model as a record; nothing writes a model directly.
@@ -801,13 +793,6 @@ extern "C" void app_main(void) {
             }
         } else if (topic.find("sound") != std::string::npos) {
             soundController->onMQTTMessage(payload);
-        } else if (topic.find("light") != std::string::npos && topic.find("brightness") != std::string::npos) {
-            try {
-                int brightness = std::stoi(payload);
-                lightController->onBrightnessReceived(brightness);
-                appModel.mutations().post(model::LightModel::make(model::LightModel::Field::Brightness, brightness,
-                                                        static_cast<uint32_t>(nowMs())));
-            } catch (...) {}
         }
     });
 

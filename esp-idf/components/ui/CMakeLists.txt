@@ -3,6 +3,7 @@ idf_component_register(
     SRCS "LvglDisplay.cpp"
          "theme/Theme.cpp"
          "views/InitializationView.cpp"
+         "views/LightView.cpp"
          "fonts/lv_font_montserrat_72_time.c"
          "fonts/lv_font_montserrat_96_time.c"
          "fonts/lv_font_montserrat_64_info.c"

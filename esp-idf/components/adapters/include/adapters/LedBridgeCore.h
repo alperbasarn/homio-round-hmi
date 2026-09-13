@@ -40,9 +40,13 @@ public:
 
     // The pairing flow (LED-04): a request opens the window on the strip, the code the user dialled
     // confirms it, `controllers` naming this HMI completes it, 60 s without that fails it.
+    // The label a pair request carries (the device name); the intents from the registry use it.
+    void setPairingLabel(const char* label) { label_.assign(label != nullptr ? label : "QNOB"); }
     bool startPairing(int slot, const char* label, model::Millis now);
     bool confirmPairing(int code, model::Millis now);
     bool unpair(int slot);
+    // Services the pairing intents posted to the registry, runs the 60 s timeout, and writes the
+    // flow state back into the registry for the screen. Once per frame, before nextOutbound().
     void tick(model::Millis now);
     Pairing pairing() const { return pairing_; }
     int pairingSlot() const { return pairingSlot_; }
@@ -60,6 +64,7 @@ private:
     model::LedRegistryModel& registry_;
     model::LightModel& light_;
     model::FixedString<kLedControllerIdCapacity> ownId_;
+    model::FixedString<24> label_;
     Outbound queue_[kQueue];
     size_t queueHead_ = 0;
     size_t queueCount_ = 0;

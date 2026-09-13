@@ -85,6 +85,7 @@ target_link_options(ui_core PUBLIC -fsanitize=address,undefined)
 add_library(controllers_core STATIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/NullScreenController.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/BootScreenController.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/LightScreenController.cpp"
 )
 target_include_directories(controllers_core PUBLIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers"

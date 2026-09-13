@@ -32,7 +32,7 @@ drops the release or gesture that belongs to the press which caused the change (
 | Placeholder pages (timer, light, sound, temperature, PC) | PC page: play/pause button | nothing | up/down: previous/next page | nothing | nothing | `Swipe up or down to move` |
 | Mode wheel (HOME) | first tap arms; nothing visible | selects the highlighted mode | left: previous mode; right: next mode | back to INFO | +: next mode, -: previous mode (also a `ModeStep` record) | `<- swipe ->  •  double-tap selects  •  hold 3 s: back` |
 | SOUND | play/pause | nothing | nothing | back to INFO (was: any hold-release) | volume +-1 per detent | `Tap play/pause  •  Hold 3 s: back` |
-| LIGHT | nothing (drag sets hue on x, brightness on y) | nothing | nothing (a drag is not a swipe here) | back to INFO, only when the press did not drag (was: any hold-release) | brightness +-1 per detent | `Drag up/down brightness, left/right hue  •  Hold 3 s: back` |
+| LIGHT | disc: power on/off; rim: choose that strip; while a pairing is requested: confirm the dialled count | nothing | left/right: previous/next effect (a rim drag is not a swipe) | back to INFO after a press that did not drag; on an unpaired rim segment: start pairing | brightness +-1 per detent; while a pairing is requested: the blink count 1..6 | `Tap: power  •  Knob: brightness  •  Swipe: effect  •  Ring: colour  •  Hold 3 s: back` |
 
 Sound effects (INPT-13): click at `press`, release sound at `release` / `hold-release`, one swipe
 sound per swipe gesture; nothing on a move.

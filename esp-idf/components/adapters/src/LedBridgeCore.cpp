@@ -7,7 +7,7 @@
 namespace adapters {
 
 LedBridgeCore::LedBridgeCore(model::LedRegistryModel& registry, model::LightModel& light, const char* ownId)
-    : registry_(registry), light_(light), ownId_(ownId != nullptr ? ownId : "") {
+    : registry_(registry), light_(light), ownId_(ownId != nullptr ? ownId : ""), label_("QNOB") {
     for (size_t i = 0; i < kQueue; ++i) {
         queue_[i].topic[0] = '\0';
         queue_[i].payload[0] = '\0';
@@ -105,6 +105,7 @@ bool LedBridgeCore::handleInbound(const char* topic, const char* payload, model:
             if (pairingSlot_ == slot && m.listsOwnId &&
                 (pairing_ == Pairing::Requested || pairing_ == Pairing::Confirming)) {
                 pairing_ = Pairing::Paired;
+                registry_.setPairing(model::LedPairing::Paired, slot);  // the screen sees it this frame
             }
             return true;
         }
@@ -212,9 +213,25 @@ bool LedBridgeCore::unpair(int slot) {
 }
 
 void LedBridgeCore::tick(model::Millis now) {
+    const int pairSlot = registry_.takePairIntent();
+    if (pairSlot >= 0) {
+        if (pairing_ == Pairing::Paired || pairing_ == Pairing::Failed) {
+            resetPairing();  // a new request after a finished flow starts over
+        }
+        startPairing(pairSlot, label_.c_str(), now);
+    }
+    const int code = registry_.takeCodeIntent();
+    if (code > 0) {
+        confirmPairing(code, now);
+    }
+    const int unpairSlot = registry_.takeUnpairIntent();
+    if (unpairSlot >= 0) {
+        unpair(unpairSlot);
+    }
     if ((pairing_ == Pairing::Requested || pairing_ == Pairing::Confirming) && now - pairingSinceMs_ > kPairWindowMs) {
         pairing_ = Pairing::Failed;
     }
+    registry_.setPairing(static_cast<model::LedPairing>(pairing_), pairingSlot_);
 }
 
 }  // namespace adapters

@@ -150,3 +150,25 @@ TEST_CASE(registry_allocates_nothing) {
     }
     CHECK_EQ(r.usedCount(), static_cast<size_t>(2));
 }
+
+TEST_CASE(pairing_intents_are_taken_once_and_the_flow_state_is_written_back) {
+    LedRegistryModel r;
+    const int a = r.announce("led-aaaaaa", "A", 0);
+    CHECK(!r.requestPair(5));   // no such strip
+    CHECK(!r.requestCode(7));   // out of range
+    CHECK(r.requestPair(a));
+    CHECK(r.requestCode(4));
+    CHECK(r.requestUnpair(a));
+    CHECK_EQ(r.takePairIntent(), a);
+    CHECK_EQ(r.takePairIntent(), -1);
+    CHECK_EQ(r.takeCodeIntent(), 4);
+    CHECK_EQ(r.takeCodeIntent(), 0);
+    CHECK_EQ(r.takeUnpairIntent(), a);
+    CHECK_EQ(r.takeUnpairIntent(), -1);
+    CHECK(r.setPairing(LedPairing::Requested, a));
+    CHECK(r.pairing() == LedPairing::Requested);
+    CHECK_EQ(r.pairingSlot(), a);
+    CHECK(!r.setPairing(LedPairing::Count, a));
+    CHECK(r.setPairing(LedPairing::Idle, -1));
+    CHECK_EQ(r.pairingSlot(), -1);
+}

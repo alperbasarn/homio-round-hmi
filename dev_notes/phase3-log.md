@@ -124,3 +124,23 @@ still publishes to them and stays usable until LED-05 replaces it. The knob does
 pairings yet (LED-06), so after a reboot a strip is "available" until its `controllers` document
 replays from the broker (it is retained, so this takes one subscribe). The bridge holds the old
 `sender=`-prefixed path for every other topic; Phase 5 moves them over.
+
+## LED-05 LIGHT screen on the registry, the screen half of LED-04, CTRL-21/22/23 (2026-09-13)
+
+| Piece | What landed |
+|---|---|
+| Pairing in the model | `LedRegistryState` carries the flow state (`pairing`, `pairingSlot`, written by the bridge core) and three single-consumption intents (`pairIntent`, `codeIntent`, `unpairIntent`) with records `PairIntent`, `CodeIntent`, `UnpairIntent`. The bridge core takes each intent once in its tick and writes the state back (Paired is written the moment `controllers` names this HMI). The console commands post these records; the bridge lost its request atomics. |
+| `ui/views/LightScreenState.h` | The view state (light + registry + the dial) and the rim geometry both sides share: angle from 12 o'clock, equal segments in slot order, chooser visible when there is a choice or the only strip is unpaired, hue = angle / 360. |
+| `controllers/screens/LightScreenController` | Disc tap toggles power; knob detents post `BrightnessDelta`; swipe left/right posts `EffectStep`; a rim press that moves past 6 px is a ring drag posting `Hue` from the angle, and its lift (a swipe to the driver) is consumed; a rim tap selects the paired strip under the segment; a 3 s hold on an unpaired segment posts `PairIntent`; a 3 s hold anywhere else after no drag requests INFO (CTRL-22: a drag-and-hold never backs out); while a pairing is requested the knob dials 1..6 and a tap posts `CodeIntent`. Every control is a record; nothing touches LVGL. |
+| `ui/views/LightView` | The p0-fixed fill in the swatch colour with the percent (30 % opacity when off), the effect name, the strip name with an online badge, eight rim arcs (mine in the strip colour, offline grey-blue, unpaired grey, the selected one full opacity), the pairing prompt with the dialled count. Renders only the parts whose inputs changed (CTRL-21). |
+| Retired | `controllers/LightController.{h,cpp}` with `enum LedMode`, its three MQTT callbacks, the `ledRing/*` publishes and the `esp32/light/brightness` inbound branch in main. `DisplayController` hosts the new controller like the boot one (enter/exit/tick under the lock, `onInput` consumed stops the matrix defaults, the console setpoint path becomes a knob event). CTRL-23 is settled: `grep LedMode` is empty. |
+
+Verification: host suite `test_light_screen_controller` (6 cases) plus the intent cases in the
+registry and bridge suites; 29 suites green; the 1.75 builds (0x1c2f20); include edges clean.
+Owed on the device: the LIGHT layout against the p0-fixed screenshot with the chooser as the only
+addition, two paired strips switching on the rim, an offline badge within 45 s, the blink prompt.
+
+Deviations: hue comes from the angle of the ring drag, not from the x position the old screen
+used (the row says "ring drag"); the chooser also shows for a single unpaired strip so the pair
+affordance is reachable; the LVGL lock is still taken by the host for every LIGHT frame (the row
+asks for none on idle frames), the view merely does no LVGL work then.

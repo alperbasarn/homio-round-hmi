@@ -9,9 +9,8 @@
 
 // Forward declarations
 class SoundController;
-class LightController;
 class ModeController;
-namespace controllers { class BootScreenController; }
+namespace controllers { class BootScreenController; class ScreenController; }
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
 class PlaceholderPageScreen;
@@ -31,7 +30,7 @@ enum Mode {
 class DisplayController {
 private:
   SoundController* soundController;
-  LightController* lightController;
+  controllers::ScreenController* lightScreen;   // LED-05: the LIGHT screen on the registry
   ModeController* modeController;
   controllers::BootScreenController* bootController;   // SCRN-08: the boot ramp and its view
   EnvironmentInfoScreen* infoScreen;
@@ -81,7 +80,7 @@ public:
   std::string getModeName() const;
 
   void registerSoundController(SoundController* sound);
-  void registerLightController(LightController* light);
+  void registerLightScreen(controllers::ScreenController* light);
   void registerModeController(ModeController* mode);
   void registerBootController(controllers::BootScreenController* boot);
   void markCompositionComplete();

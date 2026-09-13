@@ -12,6 +12,8 @@ const char* const kEffectNames[static_cast<size_t>(LedEffect::Count)] = {
     "solid", "glow", "rainbow", "chase", "sparkle", "wave", "fire", "aurora"};
 const char* const kSourceNames[static_cast<size_t>(LedSource::Count)] = {
     "unknown", "self", "controller", "web", "matter", "schedule", "device"};
+const char* const kPairingNames[static_cast<size_t>(LedPairing::Count)] = {
+    "idle", "requested", "confirming", "paired", "failed"};
 
 }  // namespace
 
@@ -48,6 +50,11 @@ const char* ledSourceName(LedSource source) {
     return i < static_cast<size_t>(LedSource::Count) ? kSourceNames[i] : "?";
 }
 
+const char* ledPairingName(LedPairing state) {
+    const size_t i = static_cast<size_t>(state);
+    return i < static_cast<size_t>(LedPairing::Count) ? kPairingNames[i] : "?";
+}
+
 bool LedStripState::operator==(const LedStripState& other) const {
     return power == other.power && brightness == other.brightness && rgb == other.rgb && effect == other.effect &&
            std::memcmp(params, other.params, sizeof(params)) == 0 && effectRgb == other.effectRgb &&
@@ -67,7 +74,9 @@ bool LedRegistryState::operator==(const LedRegistryState& other) const {
             return false;
         }
     }
-    return selected == other.selected && used == other.used && refusedAnnounces == other.refusedAnnounces;
+    return selected == other.selected && used == other.used && refusedAnnounces == other.refusedAnnounces &&
+           pairing == other.pairing && pairingSlot == other.pairingSlot && pairIntent == other.pairIntent &&
+           unpairIntent == other.unpairIntent && codeIntent == other.codeIntent;
 }
 
 uint8_t LedRegistryModel::fieldId(Kind kind, int slot) {
@@ -81,6 +90,9 @@ RecordClass LedRegistryModel::classOf(Kind kind) {
         case Kind::Paired:
         case Kind::Select:
         case Kind::Forget:
+        case Kind::PairIntent:
+        case Kind::CodeIntent:
+        case Kind::UnpairIntent:
             return RecordClass::NeverDrop;
         default:
             return RecordClass::CoalesceLatest;
@@ -143,6 +155,12 @@ bool LedRegistryModel::applyUpdate(const ModelUpdate& update, Millis now) {
             return select(update.value);
         case Kind::Forget:
             return forget(index);
+        case Kind::PairIntent:
+            return requestPair(update.value);
+        case Kind::CodeIntent:
+            return requestCode(update.value);
+        case Kind::UnpairIntent:
+            return requestUnpair(update.value);
         case Kind::Count:
         default:
             return false;
@@ -391,6 +409,67 @@ size_t LedRegistryModel::onlineCount() const {
 bool LedRegistryModel::commandsAllowed(int index) const {
     const LedSlot* s = slot(index);
     return s != nullptr && s->online && s->paired;
+}
+
+bool LedRegistryModel::requestPair(int index) {
+    if (!validSlot(index)) {
+        return false;
+    }
+    mutate().pairIntent = static_cast<int8_t>(index);
+    return true;
+}
+
+bool LedRegistryModel::requestCode(int code) {
+    if (code < 1 || code > 6) {
+        return false;
+    }
+    mutate().codeIntent = static_cast<uint8_t>(code);
+    return true;
+}
+
+bool LedRegistryModel::requestUnpair(int index) {
+    if (!validSlot(index)) {
+        return false;
+    }
+    mutate().unpairIntent = static_cast<int8_t>(index);
+    return true;
+}
+
+int LedRegistryModel::takePairIntent() {
+    const int out = state().pairIntent;
+    if (out >= 0) {
+        mutate().pairIntent = -1;
+    }
+    return out;
+}
+
+int LedRegistryModel::takeCodeIntent() {
+    const int out = state().codeIntent;
+    if (out != 0) {
+        mutate().codeIntent = 0;
+    }
+    return out;
+}
+
+int LedRegistryModel::takeUnpairIntent() {
+    const int out = state().unpairIntent;
+    if (out >= 0) {
+        mutate().unpairIntent = -1;
+    }
+    return out;
+}
+
+bool LedRegistryModel::setPairing(LedPairing pairing, int index) {
+    if (pairing >= LedPairing::Count) {
+        return false;
+    }
+    const int8_t slot = (index >= 0 && index < static_cast<int>(kSlots)) ? static_cast<int8_t>(index) : int8_t{-1};
+    if (state().pairing != pairing || state().pairingSlot != slot) {
+        LedRegistryState& s = mutate();
+        s.pairing = pairing;
+        s.pairingSlot = slot;
+    }
+    return true;
 }
 
 }  // namespace model

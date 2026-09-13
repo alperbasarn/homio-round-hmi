@@ -17,7 +17,7 @@
 namespace model {
 
 // The eight effects the strip firmware names on the wire. Solid, Glow and Rainbow keep the old
-// LedMode numbering (0, 1, 2), so the current LIGHT screen cycle still lands on them.
+// old mode numbering (0, 1, 2), so the previous LIGHT screen cycle still lands on them.
 enum class LedEffect : uint8_t {
     Solid = 0,
     Glow = 1,
@@ -45,6 +45,10 @@ enum class LedSource : uint8_t {
     Count = 7
 };
 const char* ledSourceName(LedSource source);
+
+// The pairing flow as the screen sees it (LED-04): the bridge drives it and writes it back here.
+enum class LedPairing : uint8_t { Idle = 0, Requested = 1, Confirming = 2, Paired = 3, Failed = 4, Count = 5 };
+const char* ledPairingName(LedPairing state);
 
 constexpr size_t kLedIdCapacity = 16;
 constexpr size_t kLedNameCapacity = 24;
@@ -85,6 +89,12 @@ struct LedRegistryState {
     int8_t selected = -1;
     uint8_t used = 0;
     uint32_t refusedAnnounces = 0;
+    LedPairing pairing = LedPairing::Idle;  // written by the bridge
+    int8_t pairingSlot = -1;
+    // Intents for the bridge, each consumed exactly once (a later one replaces an unconsumed one).
+    int8_t pairIntent = -1;
+    int8_t unpairIntent = -1;
+    uint8_t codeIntent = 0;
     bool operator==(const LedRegistryState& other) const;
     bool operator!=(const LedRegistryState& other) const { return !(*this == other); }
 };
@@ -109,7 +119,10 @@ public:
         Paired = 10,         // value = bool (never-drop)
         Select = 11,         // value = slot or -1; the slot bits are unused (never-drop)
         Forget = 12,         // frees the slot (never-drop)
-        Count = 13
+        PairIntent = 13,     // value = slot: open the pairing window on that strip (never-drop)
+        CodeIntent = 14,     // value = 1..6: the blink count the user dialled (never-drop)
+        UnpairIntent = 15,   // value = slot (never-drop)
+        Count = 16
     };
     static uint8_t fieldId(Kind kind, int slot);
     static Kind kindOf(uint8_t field) { return static_cast<Kind>(field >> 3); }
@@ -137,6 +150,18 @@ public:
     bool selectById(const char* id);
     bool forget(int slot);  // frees the slot; a selection pointing at it goes to none
     void tick(Millis now);  // the presence timeout
+
+    // Pairing (LED-04). The screen and the console post intents; the bridge takes each one once
+    // and writes the flow state back.
+    bool requestPair(int slot);
+    bool requestCode(int code);
+    bool requestUnpair(int slot);
+    int takePairIntent();    // the slot, or -1
+    int takeCodeIntent();    // 1..6, or 0
+    int takeUnpairIntent();  // the slot, or -1
+    bool setPairing(LedPairing state, int slot);
+    LedPairing pairing() const { return state().pairing; }
+    int pairingSlot() const { return state().pairingSlot; }
 
     bool validSlot(int index) const {
         return index >= 0 && index < static_cast<int>(kSlots) && state().slots[index].used;

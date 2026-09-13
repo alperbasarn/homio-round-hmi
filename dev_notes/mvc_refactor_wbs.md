@@ -1034,6 +1034,7 @@ Added after the check: `BLD-20` moved into Phase 0 ahead of `BLD-03`, which now 
 - Added 2026-09-13 after the bench USB-drop root cause (stage 3 was never gated; a deep-sleeping 1.75 did not wake on a tap): `PERI-30`, deep-sleep wake on the 1.75.
 - 2026-09-13, owner pick while the bench was unavailable: `LED-01` and `LED-02` done, the pure halves of `LED-03` (topics, codec, `LedBridgeCore`) and `LED-07` (fake broker and strip) done on the host; the device bridge, the LIGHT screen (`LED-05`) and the bench gate (`LED-08`) remain.
 - 2026-09-13, continued: the device half of `LED-03` (MQTTManager raw publish and persistent subscriptions, `FrameRing`, `MqttModelBridge`, six bench console commands, main wiring); device verification owed; old topics retire with `LED-05`.
+- 2026-09-13, continued: `LED-05` (LIGHT screen on the registry: `LightScreenController`, `LightView`, rim chooser, online badge), the screen half of `LED-04` (blink prompt, knob dial, tap confirm, pairing state and intents in the registry), `CTRL-21`/`CTRL-22`/`CTRL-23` folded in; `LightController`, `LedMode` and the `ledRing` topics retired; device check owed.
 
 ### Phase 2 execution notes (2026-09-13)
 

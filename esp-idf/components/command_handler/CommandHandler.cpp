@@ -8,6 +8,7 @@
 #include "LocalAudio.h"
 #include "OTAManager.h"
 #include "adapters/MqttModelBridge.h"
+#include "model/LedRegistryModel.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -610,40 +611,44 @@ void CommandHandler::cmdLedStatus(const std::string& params) {
 
 void CommandHandler::cmdLedSelect(const std::string& params) {
     int slot = 0;
-    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, -1, 7)) {
+    if (modelQueue == nullptr || !cmdparse::parseInt(params, slot, -1, 7)) {
         printf("ledSelect:ERR:expected a slot -1..7\n");
         return;
     }
-    ledBridge->requestSelect(slot);
+    modelQueue->post(model::LedRegistryModel::make(model::LedRegistryModel::Kind::Select, 0, slot,
+                                                   static_cast<uint32_t>(esp_timer_get_time() / 1000)));
     printf("ledSelect:%d\n", slot);
 }
 
 void CommandHandler::cmdLedPair(const std::string& params) {
     int slot = 0;
-    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
+    if (modelQueue == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
         printf("ledPair:ERR:expected a slot 0..7\n");
         return;
     }
-    ledBridge->requestPair(slot);
+    modelQueue->post(model::LedRegistryModel::make(model::LedRegistryModel::Kind::PairIntent, 0, slot,
+                                                   static_cast<uint32_t>(esp_timer_get_time() / 1000)));
     printf("ledPair:%d (watch the strip, then ledCode:<blinks>)\n", slot);
 }
 
 void CommandHandler::cmdLedCode(const std::string& params) {
     int code = 0;
-    if (ledBridge == nullptr || !cmdparse::parseInt(params, code, 1, 6)) {
+    if (modelQueue == nullptr || !cmdparse::parseInt(params, code, 1, 6)) {
         printf("ledCode:ERR:expected 1..6\n");
         return;
     }
-    ledBridge->requestCode(code);
+    modelQueue->post(model::LedRegistryModel::make(model::LedRegistryModel::Kind::CodeIntent, 0, code,
+                                                   static_cast<uint32_t>(esp_timer_get_time() / 1000)));
     printf("ledCode:%d\n", code);
 }
 
 void CommandHandler::cmdLedUnpair(const std::string& params) {
     int slot = 0;
-    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
+    if (modelQueue == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
         printf("ledUnpair:ERR:expected a slot 0..7\n");
         return;
     }
-    ledBridge->requestUnpair(slot);
+    modelQueue->post(model::LedRegistryModel::make(model::LedRegistryModel::Kind::UnpairIntent, 0, slot,
+                                                   static_cast<uint32_t>(esp_timer_get_time() / 1000)));
     printf("ledUnpair:%d\n", slot);
 }

@@ -26,11 +26,6 @@ MqttModelBridge::MqttModelBridge(model::AppModel& app, MQTTManager& mqtt)
       mqtt_(mqtt),
       core_(app.ledRegistry(), app.light(), fillOwnId()),
       ring_(),
-      pendingSelect_(-2),
-      pendingPair_(-1),
-      pendingCode_(0),
-      pendingUnpair_(-1),
-      pairingState_(0),
       inbound_(0),
       publishes_(0),
       publishFailures_(0) {
@@ -40,6 +35,7 @@ MqttModelBridge::MqttModelBridge(model::AppModel& app, MQTTManager& mqtt)
 void MqttModelBridge::begin(const char* pairingLabel) {
     std::strncpy(pairingLabel_, pairingLabel != nullptr ? pairingLabel : "QNOB", sizeof(pairingLabel_) - 1);
     pairingLabel_[sizeof(pairingLabel_) - 1] = '\0';
+    core_.setPairingLabel(pairingLabel_);
     const LedTopic inbound[] = {LedTopic::Info, LedTopic::Status, LedTopic::State, LedTopic::Controllers};
     char pattern[kLedTopicCapacity];
     for (LedTopic kind : inbound) {
@@ -68,25 +64,7 @@ void MqttModelBridge::pumpInbound(model::Millis now) {
 }
 
 void MqttModelBridge::pumpOutbound(model::Millis now) {
-    const int select = pendingSelect_.exchange(-2);
-    if (select != -2) {
-        if (!app_.ledRegistry().select(select)) {
-            ESP_LOGW(TAG, "select %d refused: no such strip", select);
-        }
-    }
-    const int pair = pendingPair_.exchange(-1);
-    if (pair >= 0 && !core_.startPairing(pair, pairingLabel_, now)) {
-        ESP_LOGW(TAG, "pair %d refused (no such strip, or a pairing is in progress)", pair);
-    }
-    const int code = pendingCode_.exchange(0);
-    if (code > 0 && !core_.confirmPairing(code, now)) {
-        ESP_LOGW(TAG, "code %d refused (no pairing waiting for a code)", code);
-    }
-    const int unpair = pendingUnpair_.exchange(-1);
-    if (unpair >= 0 && !core_.unpair(unpair)) {
-        ESP_LOGW(TAG, "unpair %d refused: no such strip", unpair);
-    }
-    core_.tick(now);
+    core_.tick(now);  // pairing intents from the registry, the timeout, the flow state back
     LedBridgeCore::Outbound out;
     while (core_.nextOutbound(out, now)) {
         if (mqtt_.publishRaw(out.topic, out.payload, std::strlen(out.payload), 1, false) == ESP_OK) {
@@ -95,7 +73,6 @@ void MqttModelBridge::pumpOutbound(model::Millis now) {
             publishFailures_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    pairingState_.store(static_cast<uint8_t>(core_.pairing()), std::memory_order_relaxed);
     if (!refusedLogged_ && core_.refusedAnnounceCount() > 0) {
         refusedLogged_ = true;
         ESP_LOGW(TAG, "a ninth strip announced itself; the registry holds eight");
@@ -103,22 +80,6 @@ void MqttModelBridge::pumpOutbound(model::Millis now) {
     if (!malformedLogged_ && core_.malformedCount() > 0) {
         malformedLogged_ = true;
         ESP_LOGW(TAG, "a malformed LED document was ignored (counted from here on)");
-    }
-}
-
-void MqttModelBridge::requestSelect(int slot) { pendingSelect_.store(slot < -1 ? -1 : slot); }
-void MqttModelBridge::requestPair(int slot) { pendingPair_.store(slot); }
-void MqttModelBridge::requestCode(int code) { pendingCode_.store(code); }
-void MqttModelBridge::requestUnpair(int slot) { pendingUnpair_.store(slot); }
-
-const char* MqttModelBridge::pairingName(uint8_t state) {
-    switch (static_cast<LedBridgeCore::Pairing>(state)) {
-        case LedBridgeCore::Pairing::Idle: return "idle";
-        case LedBridgeCore::Pairing::Requested: return "requested (dial the blink count)";
-        case LedBridgeCore::Pairing::Confirming: return "confirming";
-        case LedBridgeCore::Pairing::Paired: return "paired";
-        case LedBridgeCore::Pairing::Failed: return "failed";
-        default: return "?";
     }
 }
 
@@ -146,8 +107,9 @@ int MqttModelBridge::describeStatus(char* out, size_t capacity) const {
     if (out == nullptr || capacity == 0) {
         return -1;
     }
-    return std::snprintf(out, capacity, "ledStatus: id=%s pairing=%s inbound=%lu dropped=%lu oversized=%lu high=%u publishes=%lu failed=%lu",
-                         ownId_, pairingName(pairingState_.load(std::memory_order_relaxed)),
+    const model::LedRegistryState s = app_.ledRegistry().readSnapshot();
+    return std::snprintf(out, capacity, "ledStatus: id=%s pairing=%s slot=%d inbound=%lu dropped=%lu oversized=%lu high=%u publishes=%lu failed=%lu",
+                         ownId_, model::ledPairingName(s.pairing), static_cast<int>(s.pairingSlot),
                          static_cast<unsigned long>(inbound_.load(std::memory_order_relaxed)),
                          static_cast<unsigned long>(ring_.dropped()), static_cast<unsigned long>(ring_.oversized()),
                          static_cast<unsigned>(ring_.highWater()),

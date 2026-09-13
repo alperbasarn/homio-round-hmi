@@ -146,9 +146,9 @@ struct Rig {
     void frame(Millis at) {
         now = at;
         app.drainPendingMutations(now);
+        core.tick(now);  // intents, timeout, flow state back: before the publishes, as on the device
         LedBridgeCore::Outbound out;
         while (core.nextOutbound(out, now)) strip.receive(broker, core, out, now);
-        core.tick(now);
     }
     void announceStrip() {
         char topic[64];
@@ -357,4 +357,25 @@ TEST_CASE(the_notify_path_allocates_nothing) {
         r.frame(2000 + i * 16);
     }
     CHECK(r.core.setsPublished() > 0);
+}
+
+TEST_CASE(pairing_through_registry_intents_reaches_the_screen_state) {
+    Rig r;
+    r.strip.everPaired = true;
+    r.announceStrip();
+    r.frame(1016);
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::PairIntent, 0, r.slot(), 1020)));
+    r.frame(1032);  // the drain applies the intent, the tick takes it, the request goes out
+    CHECK(r.app.ledRegistry().pairing() == LedPairing::Requested);
+    CHECK_EQ(r.app.ledRegistry().pairingSlot(), r.slot());
+    CHECK(r.strip.windowOpen);
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::CodeIntent, 0, 3, 1040)));
+    r.frame(1048);
+    CHECK(r.app.ledRegistry().pairing() == LedPairing::Paired);
+    CHECK(r.app.ledRegistry().slot(r.slot())->paired);
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::UnpairIntent, 0, r.slot(), 1060)));
+    r.frame(1064);
+    CHECK(!r.app.ledRegistry().slot(r.slot())->paired);
+    CHECK(r.app.ledRegistry().pairing() == LedPairing::Idle);
+    CHECK_EQ(r.app.ledRegistry().takePairIntent(), -1);  // consumed
 }
