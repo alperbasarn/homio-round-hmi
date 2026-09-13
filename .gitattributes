@@ -1,0 +1,5 @@
+# Scripts and tools run in WSL: keep LF in every checkout (the repo is used from Windows with autocrlf).
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+tools/bench/* text eol=lf
