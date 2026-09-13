@@ -379,3 +379,19 @@ TEST_CASE(pairing_through_registry_intents_reaches_the_screen_state) {
     CHECK(r.app.ledRegistry().pairing() == LedPairing::Idle);
     CHECK_EQ(r.app.ledRegistry().takePairIntent(), -1);  // consumed
 }
+
+TEST_CASE(a_wrong_code_fails_the_pairing_as_soon_as_the_strip_republishes_its_list) {
+    Rig r;
+    r.strip.everPaired = true;
+    r.announceStrip();
+    r.frame(1016);
+    CHECK(r.core.startPairing(r.slot(), "Knob", r.now));
+    r.frame(1032);
+    CHECK(r.core.confirmPairing(2, r.now));  // the wrong code
+    r.frame(1048);
+    CHECK(r.core.pairing() == LedBridgeCore::Pairing::Confirming);
+    r.strip.publishControllers(r.broker, r.core, r.now);  // the strip answers with its unchanged list
+    CHECK(r.core.pairing() == LedBridgeCore::Pairing::Failed);
+    CHECK(r.app.ledRegistry().pairing() == LedPairing::Failed);
+    CHECK(!r.app.ledRegistry().slot(r.slot())->paired);
+}

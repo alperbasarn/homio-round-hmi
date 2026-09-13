@@ -106,6 +106,10 @@ bool LedBridgeCore::handleInbound(const char* topic, const char* payload, model:
                 (pairing_ == Pairing::Requested || pairing_ == Pairing::Confirming)) {
                 pairing_ = Pairing::Paired;
                 registry_.setPairing(model::LedPairing::Paired, slot);  // the screen sees it this frame
+            } else if (pairingSlot_ == slot && !m.listsOwnId && pairing_ == Pairing::Confirming) {
+                // The strip republishes its unchanged list after a wrong code: the answer is no.
+                pairing_ = Pairing::Failed;
+                registry_.setPairing(model::LedPairing::Failed, slot);
             }
             return true;
         }

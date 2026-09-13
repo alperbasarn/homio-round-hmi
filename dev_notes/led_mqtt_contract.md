@@ -22,7 +22,7 @@ All under the prefix `homio/led/`. Retained topics are marked **R**.
 | Topic | Dir | R | QoS | Payload |
 |---|---|---|---|---|
 | `homio/led/<id>/info` | LED -> HMI | R | 1 | `{"id","model":"esp32c6-led-web","fw","name","max_leds","ip"}` published on every connect |
-| `homio/led/<id>/status` | LED -> HMI | R | 1 | `online` on connect; `offline` as the **LWT** (keepalive 30 s, so an unplugged strip reads offline within 45 s) |
+| `homio/led/<id>/status` | LED -> HMI | R | 1 | `online` on connect and refreshed every 60 s while connected; `offline` as the **LWT** (keepalive 30 s, so an unplugged strip reads offline within 45 s) |
 | `homio/led/<id>/state` | LED -> HMI | R | 1 | `{"power","brightness","color","effect","effect_params","effect_color","count","src","seq"}`; the same fields and ranges as `GET /api/state` (brightness 0-255, `color` `#RRGGBB`, `effect` name, five 0-255 params, `count` read-only); coalesced to at most 10 per second, always the full tuple |
 | `homio/led/<id>/set` | HMI -> LED | - | 1 | any subset of `power`, `brightness`, `color`, `effect`, `effect_params`, `effect_color` plus `"from":"<ctl>"` and `"seq"`; the LED applies, persists (debounced), then publishes `state` with `src` = that `from` |
 | `homio/led/<id>/pair` | HMI -> LED | - | 1 | `{"controller":"<ctl>","name":"<label>"}` opens the flow; `{"controller","code":N}` confirms it (section 4) |
@@ -143,8 +143,9 @@ side and the device bridge build against:
    local change still pending; any other `src` is applied in full and cancels pending changes.
 4. A `set` carries only the fields that changed since the previous `set`, plus `from` and `seq`.
 5. Commands to a strip that is offline or not paired are discarded locally; nothing is queued.
-6. Open point: the 120 s presence timeout greys an idle strip, because `state` is published on
-   change only. Either the strip refreshes the retained `status` every 60 s, or the HMI drops the
-   timeout and trusts the LWT (45 s). To decide on the bench with both firmwares.
+6. Resolved 2026-09-13: the strip refreshes its retained `status` every 60 s while connected, so
+   the 120 s presence rule holds for an idle strip. A wrong blink code makes the strip republish
+   its unchanged `controllers` document; the HMI treats that, while confirming, as a failed
+   pairing at once instead of waiting out its 60 s window.
 7. Cost on the HMI: the registry is 2,672 B in the aggregate root (three copies of an 880 B
    state), the light model 264 B; the root is 6,968 B against its 8 KB cap.
