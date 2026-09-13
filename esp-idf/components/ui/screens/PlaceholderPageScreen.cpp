@@ -9,9 +9,8 @@ constexpr const char* TAG = "PlaceholderPage";
 
 }  // namespace
 
-PlaceholderPageScreen::PlaceholderPageScreen(TouchPanel* touch)
-    : touchPanel(touch),
-      lvglReady(false),
+PlaceholderPageScreen::PlaceholderPageScreen()
+    :       lvglReady(false),
       screenInitialized(false),
       title("Placeholder"),
       subtitle("Not implemented yet"),
@@ -171,7 +170,6 @@ void PlaceholderPageScreen::update() {
     ensureUi();
     if (lvglReady) {
         refreshUi(!screenInitialized);
-        updatePcControlTouch();
         LvglDisplay::taskHandler();
     }
 }
@@ -194,35 +192,38 @@ bool PlaceholderPageScreen::isInsidePlayPauseButton(int x, int y) const {
     return x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
 }
 
-void PlaceholderPageScreen::updatePcControlTouch() {
-    if (!isPcControlPage() || touchPanel == nullptr || playPauseButton == nullptr) {
+void PlaceholderPageScreen::onInput(const input::InputEvent& event) {
+    if (!isPcControlPage() || playPauseButton == nullptr) {
         pcButtonPressed = false;
         pcButtonWasPressed = false;
         pcActionTriggeredThisPress = false;
         return;
     }
-
+    using input::InputType;
     pcButtonWasPressed = pcButtonPressed;
-    pcButtonPressed = touchPanel->isPressed() &&
-                      isInsidePlayPauseButton(touchPanel->getTouchX(), touchPanel->getTouchY());
-
-    if (touchPanel->getHasNewPress()) {
-        pcActionTriggeredThisPress = false;
-        if (pcButtonPressed && playPauseAction) {
-            playPauseAction();
-            pcActionTriggeredThisPress = true;
-        }
-    }
-
-    if (touchPanel->getHasNewRelease()) {
-        if (!pcActionTriggeredThisPress && pcButtonWasPressed && playPauseAction) {
-            playPauseAction();
-        }
-        pcActionTriggeredThisPress = false;
-    }
-
-    if (!touchPanel->isPressed()) {
-        pcActionTriggeredThisPress = false;
+    switch (event.type) {
+        case InputType::TouchPress:
+            pcButtonPressed = isInsidePlayPauseButton(event.x, event.y);
+            pcActionTriggeredThisPress = false;
+            if (pcButtonPressed && playPauseAction) {
+                playPauseAction();
+                pcActionTriggeredThisPress = true;
+            }
+            break;
+        case InputType::TouchMove:
+            pcButtonPressed = isInsidePlayPauseButton(event.x, event.y);
+            break;
+        case InputType::TouchRelease:
+        case InputType::TouchHoldRelease:
+            if (event.type == InputType::TouchRelease && !pcActionTriggeredThisPress && pcButtonWasPressed &&
+                playPauseAction) {
+                playPauseAction();
+            }
+            pcButtonPressed = false;
+            pcActionTriggeredThisPress = false;
+            break;
+        default:
+            return;
     }
 
     if (pcButtonPressed != pcButtonWasPressed) {

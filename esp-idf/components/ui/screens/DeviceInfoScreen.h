@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LvglDisplay.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include "esp_timer.h"
 #include <cstdint>
 #include <functional>
@@ -36,15 +36,12 @@ using DevicePercentSetterCallback = std::function<void(int)>;
 
 class DeviceInfoScreen {
 private:
-    TouchPanel* touchPanel;
 
     bool screenInitialized;
     bool pageBackRequested;
     bool pageLeftRequested;
     bool pageRightRequested;
     bool lvglReady;
-    bool ignoreNextRelease;
-    int64_t activatedAtMs;
 
     bool wifiConnected;
     bool internetConnected;
@@ -79,7 +76,6 @@ private:
     int64_t lastUpdateTime;
 
     static constexpr int64_t UPDATE_INTERVAL = 2000;
-    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
     static constexpr int64_t PAGE_FADE_DURATION_MS = 200;
     static constexpr int64_t PAGE_FADE_STEP_MS = 10;
 
@@ -132,7 +128,6 @@ private:
     void updateBluetoothStatus();
     void updateSoftwareUpdateState();
     void updateControlValues();
-    void handleTouch();
     void setWifiArcVisible(lv_obj_t* arc, bool visible, lv_color_t color);
     void setVerticalBar(lv_obj_t* fill, int barY, int barH, int percent);
     bool pointInRect(int x, int y, int rx, int ry, int rw, int rh) const;
@@ -147,7 +142,9 @@ private:
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    explicit DeviceInfoScreen(TouchPanel* touch);
+    DeviceInfoScreen();
+    // INPT-15: bar drags on press/move, the bottom band and the edges on release.
+    void onInput(const input::InputEvent& event);
     void deactivate();
     void activate();
 

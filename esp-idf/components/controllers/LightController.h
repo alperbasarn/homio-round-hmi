@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DisplayPanelBackend.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include "esp_timer.h"
 #include "model/LightModel.h"
 #include "model/MutationQueue.h"
@@ -23,7 +23,6 @@ using LightMQTTConfiguredCallback = std::function<bool()>;
 class LightController {
 private:
     DisplayPanelBackend* display;
-    TouchPanel* touchPanel;
 
     int setpoint;
     int lastSetpoint;
@@ -72,7 +71,6 @@ private:
     void drawModeText();
     void sendSetpointToServer();
     void requestCurrentBrightnessFromServer();
-    void checkTouchInput();
     void handleModeChange();
     int scalePx(int referencePx) const;
 
@@ -84,7 +82,10 @@ private:
     }
 
 public:
-    LightController(DisplayPanelBackend* displayBackend, TouchPanel* touch);
+    explicit LightController(DisplayPanelBackend* displayBackend);
+    // INPT-19 / CTRL-11: press anchors the drag, moves set hue (x) and brightness (y), a 3 s hold
+    // without a drag leaves; the thresholds stay here.
+    void onInput(const input::InputEvent& event);
 
     void updateScreen();
     void setSetpoint(int value);

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LvglDisplay.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include <lvgl.h>
 #include <cstdint>
 #include <functional>
@@ -9,7 +9,6 @@
 
 class PlaceholderPageScreen {
 private:
-    TouchPanel* touchPanel;
     bool lvglReady;
     bool screenInitialized;
     std::string title;
@@ -33,11 +32,11 @@ private:
     int scalePx(int referencePx) const;
     bool isPcControlPage() const;
     bool isInsidePlayPauseButton(int x, int y) const;
-    void updatePcControlTouch();
     void updatePlayPauseVisual();
 
 public:
-    explicit PlaceholderPageScreen(TouchPanel* touch = nullptr);
+    PlaceholderPageScreen();
+    void onInput(const input::InputEvent& event);
 
     void setContent(const std::string& pageTitle, const std::string& pageSubtitle);
     void setPlayPauseAction(std::function<void()> action);

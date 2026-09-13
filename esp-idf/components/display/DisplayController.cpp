@@ -124,7 +124,7 @@ DisplayController::DisplayController()
     currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
     displayIsOn(true), brightnessPercent(100), initializationProgress(0), initializationCompleteTime(0),
     currentPageX(0), currentPageY(0), lastActivityPostMs(0),
-    pendingModeRequest(-1), pendingPageRequest(kNoPageRequest), modelQueue(nullptr) {
+    pendingModeRequest(-1), pendingPageRequest(kNoPageRequest), pendingKnobDelta(0), modelQueue(nullptr) {
 }
 
 DisplayController::~DisplayController() {}
@@ -152,6 +152,12 @@ void DisplayController::update() {
     const int pendingMode = pendingModeRequest.exchange(-1);
     if (pendingMode >= 0) {
         setMode(static_cast<Mode>(pendingMode));
+    }
+
+    const int requestedDelta = pendingKnobDelta.exchange(0);
+    if (requestedDelta != 0 && currentMode != SLEEP && currentMode != INITIALIZATION) {
+        noteActivity();
+        applyKnobDelta(requestedDelta);
     }
 
     // INPT-14: touch and knob arrive through onInput(); the SLEEP exit lives in noteActivity().
@@ -415,19 +421,8 @@ void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { 
 void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
 void DisplayController::registerPlaceholderScreen(PlaceholderPageScreen* p)   { placeholderScreen = p; }
 
-void DisplayController::incrementSetpoint() {
-    if (currentMode == SOUND && soundController) soundController->incrementSetpoint();
-    if (currentMode == LIGHT && lightController) lightController->incrementSetpoint();
-}
-
-void DisplayController::decrementSetpoint() {
-    if (currentMode == SOUND && soundController) soundController->decrementSetpoint();
-    if (currentMode == LIGHT && lightController) lightController->decrementSetpoint();
-}
-
-void DisplayController::setSetpoint(int sp) {
-    if (currentMode == SOUND && soundController) soundController->updateSetpoint(sp);
-    if (currentMode == LIGHT && lightController) lightController->setSetpoint(sp);
+void DisplayController::requestKnobDelta(int delta) {
+    pendingKnobDelta.fetch_add(delta);
 }
 
 void DisplayController::transitionToMode(Mode newMode, int /*transitionType*/) {
@@ -487,6 +482,17 @@ void DisplayController::onInput(const input::InputEvent& event) {
     noteActivity();
     if (currentMode == SLEEP || currentMode == INITIALIZATION) {
         return;
+    }
+    // WP2.3: the active screen sees every event first; the matrix navigation below only acts on
+    // the pages that have no gestures of their own.
+    switch (currentMode) {
+        case INFO:        if (infoScreen) infoScreen->onInput(event); break;
+        case DEVICE_INFO: if (deviceInfoScreen) deviceInfoScreen->onInput(event); break;
+        case MATRIX_PAGE: if (placeholderScreen) placeholderScreen->onInput(event); break;
+        case HOME:        if (modeController) modeController->onInput(event); break;
+        case SOUND:       if (soundController) soundController->onInput(event); break;
+        case LIGHT:       if (lightController) lightController->onInput(event); break;
+        default: break;
     }
     switch (event.type) {
         case input::InputType::Gesture:

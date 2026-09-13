@@ -11,9 +11,8 @@ constexpr const char* TAG = "SoundCtrl";
 
 }  // namespace
 
-SoundController::SoundController(DisplayPanelBackend* displayBackend, TouchPanel* touch)
+SoundController::SoundController(DisplayPanelBackend* displayBackend)
     : display(displayBackend),
-      touchPanel(touch),
       setpoint(50),
       lastSetpoint(-1),
       lastDrawnSetpoint(-1),
@@ -120,11 +119,6 @@ void SoundController::updateScreen() {
             break;
     }
 
-    // D13 (SCRN-25): back is a hold of at least 3 s; shorter hold-releases do nothing here.
-    if (touchPanel && touchPanel->getHasNewHoldRelease() && touchPanel->getLastPressDurationMs() >= 3000) {
-        leaving = true;
-    }
-
     LvglDisplay::taskHandler();
 }
 
@@ -166,7 +160,6 @@ void SoundController::updateController() {
     updateMediaButtons();
     handleMediaButtonEvents();
     processIncomingMessage();
-    checkTouchInput();
 
     const int64_t currentMillis = millis();
     if ((setpoint != lastSentSetpoint) &&
@@ -271,9 +264,16 @@ void SoundController::handleMediaButtonEvents() {
 void SoundController::updateMediaButtons() {
 }
 
-void SoundController::checkTouchInput() {
-    if (touchPanel && touchPanel->getHasNewRelease()) {
-        togglePlayPause();
+void SoundController::onInput(const input::InputEvent& event) {
+    switch (event.type) {
+        case input::InputType::TouchRelease:
+            togglePlayPause();
+            break;
+        case input::InputType::TouchHoldRelease:
+            leaving = true;  // D13: the router only emits this at 3 s or more
+            break;
+        default:
+            break;
     }
 }
 

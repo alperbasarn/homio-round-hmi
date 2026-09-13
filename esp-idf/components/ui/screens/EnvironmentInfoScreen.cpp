@@ -32,14 +32,11 @@ const lv_color_t OUTDOOR_ARC_COLOR = lv_color_hex(0x39D9FF);
 
 }  // namespace
 
-EnvironmentInfoScreen::EnvironmentInfoScreen(TouchPanel* touch)
-    : touchPanel(touch),
-      screenInitialized(false),
+EnvironmentInfoScreen::EnvironmentInfoScreen()
+    :       screenInitialized(false),
       pageBackRequested(false),
       deviceInfoRequested(false),
       lvglReady(false),
-    ignoreNextRelease(false),
-    activatedAtMs(0),
       currentDate("1994/03/11"),
       currentTime("04:30"),
       formattedDate("11 MAR"),
@@ -79,11 +76,6 @@ EnvironmentInfoScreen::EnvironmentInfoScreen(TouchPanel* touch)
 void EnvironmentInfoScreen::activate() {
     pageBackRequested = false;
     deviceInfoRequested = false;
-    activatedAtMs = millis();
-    ignoreNextRelease = (touchPanel != nullptr) &&
-                        (touchPanel->isPressed() ||
-                         touchPanel->getHasNewRelease() ||
-                         touchPanel->getHasNewHoldRelease());
 }
 
 void EnvironmentInfoScreen::update() {
@@ -885,3 +877,6 @@ void EnvironmentInfoScreen::resetScreen() {
     LvglDisplay::invalidateScreen();
 }
 
+void EnvironmentInfoScreen::onInput(const input::InputEvent& event) {
+    (void)event;  // nothing to do: the matrix navigation is handled above this screen
+}

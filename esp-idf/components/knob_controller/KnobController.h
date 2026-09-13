@@ -9,8 +9,6 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 
-#ifdef __cplusplus
-
 // The knob link (PCKNOB-09 / PCKNOB-11). update() runs on the display task (InputRouter::poll),
 // reads the UART in bounded chunks into the line assembler, and sorts the tokens: detents are
 // summed into an atomic that consumeDelta() reads and clears; every other line is the last
@@ -57,24 +55,3 @@ private:
     static constexpr size_t kChunkBytes = 64;
     static constexpr size_t kMaxBytesPerUpdate = 512;
 };
-
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// C-compatible interface for use from C code if needed (INPT-27 deletes it)
-typedef void* knob_controller_handle_t;
-
-knob_controller_handle_t knob_controller_create(int tx_pin, int rx_pin);
-void knob_controller_destroy(knob_controller_handle_t handle);
-esp_err_t knob_controller_begin(knob_controller_handle_t handle, int baud_rate);
-void knob_controller_update(knob_controller_handle_t handle);
-bool knob_controller_has_new_message(knob_controller_handle_t handle);
-const char* knob_controller_get_command(knob_controller_handle_t handle);
-void knob_controller_send_command(knob_controller_handle_t handle, const char* cmd);
-
-#ifdef __cplusplus
-}
-#endif

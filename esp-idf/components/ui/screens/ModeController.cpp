@@ -10,11 +10,9 @@ static constexpr uint32_t COLOR_SOUND       = 0x00BFFF;  // deep sky blue
 static constexpr uint32_t COLOR_LIGHT       = 0xFFD700;  // gold
 static constexpr uint32_t COLOR_TEMPERATURE = 0xFF4500;  // orange-red
 
-ModeController::ModeController(TouchPanel* touch)
-    : touchPanel(touch),
-      currentMode(MODE_SOUND), lastMode(static_cast<Mode>(-1)), active(false),
-      modeSelected(false), pageBackRequested(false), ignoreNextRelease(false),
-      activatedAtMs(0), tapReleaseCount(0), firstTapReleaseAtMs(0),
+ModeController::ModeController()
+    :       currentMode(MODE_SOUND), lastMode(static_cast<Mode>(-1)), active(false),
+      modeSelected(false), pageBackRequested(false),
       root(nullptr), iconObj(nullptr), nameLabel(nullptr), hintLabel(nullptr),
       lvglReady(false) {
 }
@@ -116,51 +114,6 @@ void ModeController::updateScreen() {
 
     LvglDisplay::taskHandler();
 
-    if (!touchPanel) return;
-
-    // Gesture handling
-    if (touchPanel->getHasNewGesture()) {
-        touch_gesture_t g = touchPanel->getLastGesture();
-        if (g == GESTURE_SWIPE_LEFT) {
-            previousMode();
-            tapReleaseCount = 0;
-        } else if (g == GESTURE_SWIPE_RIGHT) {
-            nextMode();
-            tapReleaseCount = 0;
-        } else if (g == GESTURE_HOLD_RELEASE) {
-            if (touchPanel->getLastPressDurationMs() >= SHORT_HOLD_RELEASE_MS) {
-                tapReleaseCount = 0;
-                pageBackRequested = true;
-            }
-        }
-    }
-
-    // Double-tap to confirm mode selection
-    if (touchPanel->getHasNewRelease()) {
-        const int64_t elapsed = millis() - activatedAtMs;
-        if (ignoreNextRelease || elapsed < STALE_RELEASE_GUARD_MS) {
-            ignoreNextRelease = false;
-            tapReleaseCount = 0;
-        } else {
-            const int64_t now = millis();
-            if (tapReleaseCount == 0 || (now - firstTapReleaseAtMs) > DOUBLE_TAP_WINDOW_MS) {
-                tapReleaseCount = 1;
-                firstTapReleaseAtMs = now;
-            } else {
-                if (++tapReleaseCount >= 2) {
-                    modeSelected = true;
-                    tapReleaseCount = 0;
-                }
-            }
-        }
-    } else if (ignoreNextRelease && !touchPanel->isPressed() &&
-               (millis() - activatedAtMs) >= STALE_RELEASE_GUARD_MS) {
-        ignoreNextRelease = false;
-    }
-
-    if (tapReleaseCount > 0 && (millis() - firstTapReleaseAtMs) > DOUBLE_TAP_WINDOW_MS) {
-        tapReleaseCount = 0;
-    }
 }
 
 void ModeController::nextMode() {
@@ -178,22 +131,11 @@ void ModeController::setActive(bool isActive) {
     if (active) {
         modeSelected = false;
         pageBackRequested = false;
-        activatedAtMs = millis();
-        tapReleaseCount = 0;
-        firstTapReleaseAtMs = 0;
-        ignoreNextRelease = (touchPanel != nullptr) &&
-                            (touchPanel->isPressed() ||
-                             touchPanel->getHasNewRelease() ||
-                             touchPanel->getHasNewHoldRelease());
         ensureUi();
         if (root) {
             lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
             refreshUi();
         }
-    } else {
-        ignoreNextRelease = false;
-        tapReleaseCount = 0;
-        firstTapReleaseAtMs = 0;
     }
 }
 
@@ -208,5 +150,27 @@ void ModeController::deactivate() {
     active = false;
     if (lvglReady && root != nullptr) {
         lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ModeController::onInput(const input::InputEvent& event) {
+    if (!active) {
+        return;
+    }
+    switch (event.type) {
+        case input::InputType::Gesture:
+            if (event.gesture == input::Gesture::SwipeLeft) {
+                previousMode();
+            } else if (event.gesture == input::Gesture::SwipeRight) {
+                nextMode();
+            } else if (event.gesture == input::Gesture::DoubleTap) {
+                modeSelected = true;
+            }
+            break;
+        case input::InputType::TouchHoldRelease:
+            pageBackRequested = true;  // the router only emits this at 3 s or more (D13)
+            break;
+        default:
+            break;
     }
 }

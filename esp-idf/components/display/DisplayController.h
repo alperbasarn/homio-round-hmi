@@ -50,6 +50,7 @@ private:
   uint32_t lastActivityPostMs;
   std::atomic<int> pendingModeRequest;
   std::atomic<int> pendingPageRequest;
+  std::atomic<int> pendingKnobDelta;
   // WP1.4 shadow phase: every knob token and navigation change is also posted as a record
   // (INPT-05, MDL-31). Nothing in this class calls a model setter.
   model::MutationQueue* modelQueue;
@@ -88,9 +89,8 @@ public:
   void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
   void registerModelQueue(model::MutationQueue* queue);
 
-  void incrementSetpoint();
-  void decrementSetpoint();
-  void setSetpoint(int setpoint);
+  // INPT-22: a setpoint command on the command task lands as a delta applied on the display task.
+  void requestKnobDelta(int delta);
 
   void turnDisplayOff();
   void turnDisplayOn();

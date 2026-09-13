@@ -12,9 +12,8 @@ constexpr const char* TAG = "LightCtrl";
 
 }  // namespace
 
-LightController::LightController(DisplayPanelBackend* displayBackend, TouchPanel* touch)
+LightController::LightController(DisplayPanelBackend* displayBackend)
     : display(displayBackend),
-      touchPanel(touch),
       setpoint(50),
       lastSetpoint(-1),
       lastSentSetpoint(-1),
@@ -172,7 +171,6 @@ void LightController::updateScreen() {
     }
 
     const int64_t currentMillis = millis();
-    checkTouchInput();
 
     if ((waterLevelChange || colorChange) && (currentMillis - lastSetPointDrawnTime >= 10)) {
         drawSetPoint();
@@ -195,43 +193,51 @@ void LightController::updateScreen() {
     LvglDisplay::taskHandler();
 }
 
-void LightController::checkTouchInput() {
-    if (!touchPanel || display == nullptr) {
+void LightController::onInput(const input::InputEvent& event) {
+    if (display == nullptr) {
         return;
     }
+    using input::InputType;
+    switch (event.type) {
+        case InputType::TouchPress:
+            firstTouchX = event.x;
+            firstTouchY = event.y;
+            break;
 
-    if (touchPanel->isPressed()) {
-        const int touchX = touchPanel->getTouchX();
-        const int touchY = touchPanel->getTouchY();
-        const int screenWidth = display->width();
-        const int screenHeight = display->height();
+        case InputType::TouchMove: {
+            if (firstTouchX < 0) {
+                firstTouchX = event.x;
+                firstTouchY = event.y;
+            }
+            const int screenWidth = display->width();
+            const int screenHeight = display->height();
+            const int deltaX = event.x - firstTouchX;
+            const int deltaY = event.y - firstTouchY;
 
-        if (touchPanel->getHasNewPress()) {
-            firstTouchX = touchX;
-            firstTouchY = touchY;
+            if (std::abs(deltaX) > 10) {
+                colorHue = constrain(static_cast<float>(event.x) / static_cast<float>(screenWidth), 0.0f, 1.0f);
+                colorChange = true;
+                postHue();
+            }
+
+            if (std::abs(deltaY) > 10) {
+                waterLevel = static_cast<int>((1.0f - (static_cast<float>(event.y) / screenHeight)) * 100.0f);
+                waterLevel = constrain(waterLevel, 0, 100);
+                waterLevelChange = true;
+                postBrightness();
+            }
+            break;
         }
 
-        const int deltaX = touchX - firstTouchX;
-        const int deltaY = touchY - firstTouchY;
+        case InputType::TouchRelease:
+            firstTouchX = -1;
+            firstTouchY = -1;
+            break;
 
-        if (std::abs(deltaX) > 10) {
-            colorHue = constrain(static_cast<float>(touchX) / static_cast<float>(screenWidth), 0.0f, 1.0f);
-            colorChange = true;
-            postHue();
-        }
-
-        if (std::abs(deltaY) > 10) {
-            waterLevel = static_cast<int>((1.0f - (static_cast<float>(touchY) / screenHeight)) * 100.0f);
-            waterLevel = constrain(waterLevel, 0, 100);
-            waterLevelChange = true;
-            postBrightness();
-        }
-    } else {
-        firstTouchX = -1;
-        firstTouchY = -1;
-
-        // D13 (SCRN-25): back is a hold of at least 3 s; shorter hold-releases do nothing here.
-        if (touchPanel->getHasNewHoldRelease() && touchPanel->getLastPressDurationMs() >= 3000) {
+        case InputType::TouchHoldRelease:
+            firstTouchX = -1;
+            firstTouchY = -1;
+            // D13: the router only emits this at 3 s or more; a hold that dragged is not a back.
             if (!pageBackRequested && !colorChange && !waterLevelChange) {
                 pageBackRequested = true;
                 initialized = false;
@@ -241,7 +247,10 @@ void LightController::checkTouchInput() {
                 }
                 ESP_LOGI(TAG, "Back requested");
             }
-        }
+            break;
+
+        default:
+            break;
     }
 }
 

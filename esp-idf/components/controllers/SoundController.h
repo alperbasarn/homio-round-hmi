@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DisplayPanelBackend.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include "esp_timer.h"
 #include "model/MediaModel.h"
 #include "model/MutationQueue.h"
@@ -22,7 +22,6 @@ using MQTTConnectedCallback = std::function<bool()>;
 class SoundController {
 private:
     DisplayPanelBackend* display;
-    TouchPanel* touchPanel;
 
     int setpoint;
     int lastSetpoint;
@@ -60,7 +59,6 @@ private:
     void waitForSync();
     void updateController();
     void drawSetPoint();
-    void checkTouchInput();
     void sendSetpointToServer();
     void requestInitialStateFromServer();
     void updateMediaButtons();
@@ -72,7 +70,10 @@ private:
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    SoundController(DisplayPanelBackend* displayBackend, TouchPanel* touch);
+    explicit SoundController(DisplayPanelBackend* displayBackend);
+    // INPT-18 / CTRL-10: a tap toggles play/pause, a 3 s hold leaves; the knob arrives through
+    // DisplayController::applyKnobDelta.
+    void onInput(const input::InputEvent& event);
 
     void updateScreen();
     void updateSetpoint(int setpoint);

@@ -59,3 +59,31 @@ line per gesture, the 60 s ring stress, the wake tap, Stage 0 at 20 s, the hint 
 
 Host suite after WP2.2: 22 executables, 147 cases, all green. 1.75 binary 1,832,736 B (+1,024 B).
 Device: not flashed yet (board off the bus).
+
+## WP2.3 The polling sites cut over (2026-09-13)
+
+| Task | State | What changed | Evidence |
+|---|---|---|---|
+| INPT-15 DeviceInfoScreen | done | `onInput()`: press/move drag the brightness and sound bars, release or hold-release on the bottom band goes back and on the edges pages left/right; `handleTouch()`, `ignoreNextRelease`, `activatedAtMs` and the 300 ms guard are gone. | build; device walk pending |
+| INPT-16 EnvironmentInfoScreen | done | No gestures of its own (the matrix swipes live in `DisplayController`); the `ignoreNextRelease` guard in `activate()` is gone; `onInput()` is the shared entry point. The `forceFullRefresh` path stays as the first-paint mechanism (the row named it as a guard; it is the render path, not an input guard). | build |
+| INPT-17 ModeController | done | Swipes turn the wheel, the router's `double-tap` gesture selects, a hold-release (3 s by construction) backs out; `ignoreNextRelease`, the 250 ms guard, the tap counter and the three constants are gone. | build; "tap does nothing, double-tap selects" is the router's double-tap rule, host-tested |
+| INPT-18 / CTRL-10 SoundController | done | `onInput()`: tap release toggles play/pause, hold-release leaves; the knob arrives through `DisplayController::applyKnobDelta`; the `TouchPanel*` member and `checkTouchInput()` are gone. | build |
+| INPT-19 / CTRL-11 LightController | done | `onInput()`: press anchors, moves set hue (x) and brightness (y) past the 10 px thresholds (kept in the controller), hold-release without a drag backs out; member and `checkTouchInput()` gone. | build |
+| INPT-20 proof | done | No `TouchPanel` include or `touchPanel->` read remains outside `components/input` and `main.cpp` (the placeholder page was converted too, though the row predates it); `ui`, `controllers` and `display` no longer require `touch_panel` (`display` also dropped `knob_controller`). | `grep -rn "touchPanel->" components main` hits only `input/` and `main.cpp`; include-edge check clean |
+
+`DisplayController::onInput` forwards every event to the active screen before its own matrix
+navigation; `main.cpp` starts the router's 250 ms entry window on every mode change and arms the
+wake consumption when the mode becomes SLEEP (both after `update()`, so the frame that changed the
+screen keeps its own events). 1.75 binary 1,832,208 B (-528 B).
+
+## WP2.4 Knob ownership, part 1 (2026-09-13)
+
+| Task | State | What changed | Evidence |
+|---|---|---|---|
+| INPT-21 | done | `CommandHandler` lost its knob drain, `commands["+"]`/`["-"]`, both handlers, `registerKnobController` and the `+`/`-` MQTT allow-list entries; the `command_handler` manifest no longer requires `knob_controller`. One detent is one step: the router is the only consumer. | `grep KnobController components/command_handler` empty; no `Setpoint incremented.` line |
+| INPT-22 | done | `setpoint N` (serial or MQTT) is a D5 delta against the last value seen, clamped to +-10 (the first one only anchors), posted as a `KnobModel::Burst` record for the model and applied on the display task through `DisplayController::requestKnobDelta()` (an atomic drained in `update()`); the three setpoint proxies are gone; the parse guard (APP-01) stays. | build; a fast spin in SOUND then a switch to LIGHT cannot write an absolute value into LIGHT any more |
+| INPT-23 | code done in BLD-21, bench pending on the C6 | `hal_config.h` gates the knob pins behind `CONFIG_QNOB_ENABLE_KNOB_UART` (off on the C6, where GPIO 1/2 are the TCA9554 interrupt and PWR_KEY). The acceptance needs the C6 on the bench, which is out of this pass. | — |
+| INPT-27 | done | The `knob_controller_*` C shim and its static buffer are gone from `KnobController.{h,cpp}`. | `grep knob_controller_` hits only CMake targets |
+
+Host suite 22 executables / 147 cases green. 1.75 binary 1,830,624 B (-1,584 B). Device walk
+pending: the board keeps dropping off the USB bus (deep sleep with the pre-gate firmware).

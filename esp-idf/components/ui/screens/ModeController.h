@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LvglDisplay.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include <lvgl.h>
 #include <cstdint>
 
@@ -15,16 +15,11 @@ public:
     };
 
 private:
-    TouchPanel* touchPanel;
     Mode currentMode;
     Mode lastMode;
     bool active;
     bool modeSelected;
     bool pageBackRequested;
-    bool ignoreNextRelease;
-    int64_t activatedAtMs;
-    int tapReleaseCount;
-    int64_t firstTapReleaseAtMs;
 
     // LVGL objects
     lv_obj_t* root;
@@ -33,9 +28,6 @@ private:
     lv_obj_t* hintLabel;
     bool lvglReady;
 
-    static constexpr int64_t STALE_RELEASE_GUARD_MS = 250;
-    static constexpr int64_t DOUBLE_TAP_WINDOW_MS   = 1000;
-    static constexpr int64_t SHORT_HOLD_RELEASE_MS  = 3000;
 
     int64_t millis() const;
     const char* modeToString(Mode mode) const;
@@ -44,7 +36,10 @@ private:
     void refreshUi();
 
 public:
-    ModeController(TouchPanel* touch);
+    ModeController();
+    // INPT-17: swipes turn the wheel, the double-tap gesture selects, a 3 s hold backs out;
+    // the router already applied the D13 gate, the double-tap window and the entry window.
+    void onInput(const input::InputEvent& event);
 
     void updateScreen();
     void nextMode();

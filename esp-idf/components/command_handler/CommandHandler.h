@@ -4,12 +4,12 @@
 #include <string>
 #include <vector>
 #include <map>
+#include "model/MutationQueue.h"
 #include <functional>
 
 // Forward declarations
 class DisplayController;
 class NVSManager;
-class KnobController;
 class WiFiManager;
 class MQTTManager;
 class LocalAudio;
@@ -25,7 +25,8 @@ public:
     void begin();
     void update();
     void handleExternalCommand(const std::string& commandLine);
-    void registerKnobController(KnobController* kc);
+    // INPT-22: setpoint commands become knob bursts for the model and a D5 delta for the screen.
+    void setModelQueue(model::MutationQueue* queue) { modelQueue = queue; }
     void registerLocalAudio(LocalAudio* mc);
     void registerOTAManager(OTAManager* ota);
 
@@ -41,11 +42,12 @@ private:
 
     DisplayController* displayController;
     NVSManager* nvsManager;
-    KnobController* knobController;
     WiFiManager* wifiManager;
     MQTTManager* mqttManager;
     LocalAudio* localAudio;
     OTAManager* otaManager;
+    model::MutationQueue* modelQueue;
+    int lastSetpointSeen;  // D5: an absolute setpoint is only ever a delta against the last one
 
     std::map<std::string, Command> commands;
     std::string commandFromPC;
@@ -59,8 +61,6 @@ private:
     void publishResponse(const std::string& response);
 
     // Command handlers
-    void cmdIncrementSetpoint(const std::string& params);
-    void cmdDecrementSetpoint(const std::string& params);
     void cmdReset(const std::string& params);
     void cmdSwitchToHome(const std::string& params);
     void cmdSwitchToInfo(const std::string& params);

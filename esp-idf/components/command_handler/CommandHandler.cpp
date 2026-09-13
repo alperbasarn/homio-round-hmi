@@ -2,7 +2,7 @@
 #include "CommandParsers.h"
 #include "DisplayController.h"
 #include "NVSManager.h"
-#include "KnobController.h"
+#include "model/KnobModel.h"
 #include "WiFiManager.h"
 #include "MQTTManager.h"
 #include "LocalAudio.h"
@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -25,11 +26,12 @@ static int stdin_fd = -1;
 CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManager* wifi, MQTTManager* mqtt)
     : displayController(dc),
       nvsManager(nvs),
-      knobController(nullptr),
       wifiManager(wifi),
       mqttManager(mqtt),
       localAudio(nullptr),
-      otaManager(nullptr) {
+      otaManager(nullptr),
+      modelQueue(nullptr),
+      lastSetpointSeen(-1) {
 }
 
 void CommandHandler::begin() {
@@ -50,10 +52,6 @@ void CommandHandler::begin() {
 
     registerCommands();
     ESP_LOGI(TAG, "Command handler initialized.");
-}
-
-void CommandHandler::registerKnobController(KnobController* kc) {
-    knobController = kc;
 }
 
 void CommandHandler::registerLocalAudio(LocalAudio* mc) {
@@ -119,16 +117,6 @@ void CommandHandler::update() {
         commandFromPC.clear();
     }
 
-    // Process knob commands
-    if (knobController && knobController->getHasNewMessage()) {
-        const std::string command = trimCommand(knobController->getReceivedCommand());
-        if (!command.empty()) {
-            // CTRL-01: DisplayController consumes the same token in its per-mode switch, so every
-            // detent is handled twice until InputRouter owns the link (Phase 2).
-            ESP_LOGW(TAG, "Knob token '%s' consumed by CommandHandler (DisplayController consumes it too)", command.c_str());
-            processCommand(command, CommandSource::Knob);
-        }
-    }
 }
 
 void CommandHandler::handleExternalCommand(const std::string& commandLine) {
@@ -197,8 +185,6 @@ void CommandHandler::publishResponse(const std::string& response) {
 }
 
 void CommandHandler::registerCommands() {
-    commands["+"] = {"+", [this](const std::string& p) { this->cmdIncrementSetpoint(p); }, "Increment setpoint"};
-    commands["-"] = {"-", [this](const std::string& p) { this->cmdDecrementSetpoint(p); }, "Decrement setpoint"};
     commands["reset"] = {"reset", [this](const std::string& p) { this->cmdReset(p); }, "Restart ESP"};
     commands["home"] = {"home", [this](const std::string& p) { this->cmdSwitchToHome(p); }, "Switch to home page"};
     commands["info"] = {"info", [this](const std::string& p) { this->cmdSwitchToInfo(p); }, "Switch to info page"};
@@ -228,7 +214,7 @@ void CommandHandler::registerCommands() {
     // reset, clearNVS, connectWifi, configureMQTTServer, the static-IP writers, setDeviceName,
     // otaUpdate and calibrateOrientation.
     static const char* const kMqttAllowed[] = {
-        "+", "-", "setpoint", "home", "info", "getDeviceName", "showNetworks", "commInfo",
+        "setpoint", "home", "info", "getDeviceName", "showNetworks", "commInfo",
         "showStaticIP", "listNVSValues", "startSoundRecord", "stopSoundRecord",
         "playLastSoundRecord", "otaInfo", "otaStatus", "help",
     };
@@ -238,16 +224,6 @@ void CommandHandler::registerCommands() {
             it->second.allowedFromMqtt = true;
         }
     }
-}
-
-void CommandHandler::cmdIncrementSetpoint(const std::string& params) {
-    displayController->incrementSetpoint();
-    ESP_LOGI(TAG, "Setpoint incremented.");
-}
-
-void CommandHandler::cmdDecrementSetpoint(const std::string& params) {
-    displayController->decrementSetpoint();
-    ESP_LOGI(TAG, "Setpoint decremented.");
 }
 
 void CommandHandler::cmdReset(const std::string& params) {
@@ -320,8 +296,24 @@ void CommandHandler::cmdKnobSetpoint(const std::string& params) {
         publishResponse("setpoint:ERR:invalid_value");
         return;
     }
-    displayController->setSetpoint(setPoint);
-    ESP_LOGI(TAG, "Updated setpoint: %d", setPoint);
+    // D5 (INPT-22): the screen is authoritative. An absolute value is a delta against the last one
+    // seen here, clamped to +-10; the first one only anchors. The model gets the burst record and
+    // turns it into its own clamped delta (KnobModel::burstToDelta).
+    int delta = 0;
+    if (lastSetpointSeen >= 0) {
+        delta = setPoint - lastSetpointSeen;
+        if (delta > 10) delta = 10;
+        if (delta < -10) delta = -10;
+    }
+    lastSetpointSeen = setPoint;
+    if (modelQueue != nullptr) {
+        modelQueue->post(model::KnobModel::make(model::KnobModel::Field::Burst, setPoint,
+                                                static_cast<uint32_t>(esp_timer_get_time() / 1000)));
+    }
+    if (delta != 0) {
+        displayController->requestKnobDelta(delta);
+    }
+    ESP_LOGI(TAG, "setpoint %d -> delta %d", setPoint, delta);
 }
 
 void CommandHandler::cmdGetDeviceName(const std::string& params) {

@@ -209,12 +209,6 @@ void displayTask(void* parameter) {
 
         if (inputRouter != nullptr) {
             inputRouter->poll(frameNow);
-            // INPT-11: the first press after entering SLEEP wakes the device and is consumed.
-            const Mode modeNow = displayController->getMode();
-            if (modeNow == SLEEP && lastModeSeen != SLEEP) {
-                inputRouter->armWakeConsumption();
-            }
-            lastModeSeen = modeNow;
             if (inputRouter->lastActivityMs() != lastRouterActivityMs) {
                 lastRouterActivityMs = inputRouter->lastActivityMs();
                 displayController->noteActivity();
@@ -253,6 +247,21 @@ void displayTask(void* parameter) {
         }
 
         displayController->update();
+
+        if (inputRouter != nullptr) {
+            // INPT-11 / INPT-16: a mode change arms the wake consumption (SLEEP) or the 250 ms entry
+            // window (any other screen), so the press that caused the change never acts on the
+            // screen it entered.
+            const Mode modeAfter = displayController->getMode();
+            if (modeAfter != lastModeSeen) {
+                if (modeAfter == SLEEP) {
+                    inputRouter->armWakeConsumption();
+                } else {
+                    inputRouter->beginStaleWindow(frameNow);
+                }
+                lastModeSeen = modeAfter;
+            }
+        }
 
         // Check power management
         if (sleepHandler) {
@@ -510,14 +519,14 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    modeController = new ModeController(touchPanel);
+    modeController = new ModeController();
     if (initializationScreen == nullptr) {
         initializationScreen = new InitializationScreen();
     }
 
     // Create EnvironmentInfoScreen (time, weather, temperature). NET-11: the callbacks read the
     // model, which the network-task pollers fill; the screen still owns its own fields.
-    infoScreen = new EnvironmentInfoScreen(touchPanel);
+    infoScreen = new EnvironmentInfoScreen();
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
         const model::EnvironmentState& e = appModel.environment().state();
         date = e.date.c_str();
@@ -530,7 +539,7 @@ extern "C" void app_main(void) {
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen(touchPanel);
+    deviceInfoScreen = new DeviceInfoScreen();
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
         const model::ConnectivityState& c = appModel.connectivity().state();
         wifi = c.wifiConnected;
@@ -559,16 +568,16 @@ extern "C" void app_main(void) {
 
     // Matrix placeholder pages (timer, light, sound, temperature, PC); the PC page play/pause goes
     // to the PC over the existing sound path.
-    placeholderPageScreen = new PlaceholderPageScreen(touchPanel);
+    placeholderPageScreen = new PlaceholderPageScreen();
     placeholderPageScreen->setPlayPauseAction([]() {
         if (soundController != nullptr) {
             soundController->togglePlayPause();
         }
     });
 
-    soundController = new SoundController(displayPanelBackend.get(), touchPanel);
+    soundController = new SoundController(displayPanelBackend.get());
     soundController->setModelQueue(&modelQueue);                       // CTRL-07
-    lightController = new LightController(displayPanelBackend.get(), touchPanel);
+    lightController = new LightController(displayPanelBackend.get());
     lightController->setModelQueue(&modelQueue);                       // CTRL-08
     displayController = new DisplayController();
     displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
@@ -641,7 +650,7 @@ extern "C" void app_main(void) {
     // Initialize Command Handler
     ESP_LOGI(TAG, "Initializing command handler...");
     commandHandler = new CommandHandler(displayController, nvsManager, wifiManager, mqttManager);
-    commandHandler->registerKnobController(knobController);
+    commandHandler->setModelQueue(&modelQueue);                         // INPT-22
     commandHandler->registerLocalAudio(localAudio);
     commandHandler->registerOTAManager(otaManager);
     commandHandler->begin();

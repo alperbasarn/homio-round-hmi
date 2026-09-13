@@ -10,6 +10,6 @@ idf_component_register(
          "screens/PlaceholderPageScreen.cpp"
          "screens/ModeController.cpp"
     INCLUDE_DIRS "." "screens"
-    REQUIRES display touch_panel board_hal lvgl model input
+    REQUIRES display board_hal lvgl model input
     PRIV_REQUIRES esp_timer
 )

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LvglDisplay.h"
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include "esp_timer.h"
 #include <cstdint>
 #include <functional>
@@ -14,14 +14,11 @@ using TemperatureCallback = std::function<float()>;
 
 class EnvironmentInfoScreen {
 private:
-    TouchPanel* touchPanel;
 
     bool screenInitialized;
     bool pageBackRequested;
     bool deviceInfoRequested;
     bool lvglReady;
-    bool ignoreNextRelease;
-    int64_t activatedAtMs;
 
     // Date and time
     std::string currentDate;
@@ -55,7 +52,6 @@ private:
     static constexpr int64_t ANIMATION_FRAME_INTERVAL_MS = 20;
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
-    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
 
     // LVGL widgets
     lv_obj_t* root;
@@ -124,7 +120,10 @@ private:
     }
 
 public:
-    explicit EnvironmentInfoScreen(TouchPanel* touch);
+    EnvironmentInfoScreen();
+    // INPT-16: the home view has no gestures of its own (the matrix swipes live in the
+    // DisplayController); every screen still gets the same entry point.
+    void onInput(const input::InputEvent& event);
     void deactivate();
     void activate();
 

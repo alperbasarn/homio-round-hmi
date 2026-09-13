@@ -27,15 +27,12 @@ int clampPercent(int value) {
 
 }  // namespace
 
-DeviceInfoScreen::DeviceInfoScreen(TouchPanel* touch)
-    : touchPanel(touch),
-      screenInitialized(false),
+DeviceInfoScreen::DeviceInfoScreen()
+    :       screenInitialized(false),
       pageBackRequested(false),
       pageLeftRequested(false),
       pageRightRequested(false),
       lvglReady(false),
-      ignoreNextRelease(false),
-      activatedAtMs(0),
       wifiConnected(false),
       internetConnected(false),
       mqttConnected(false),
@@ -98,11 +95,6 @@ void DeviceInfoScreen::activate() {
     pageBackRequested = false;
     pageLeftRequested = false;
     pageRightRequested = false;
-    activatedAtMs = millis();
-    ignoreNextRelease = (touchPanel != nullptr) &&
-                        (touchPanel->isPressed() ||
-                         touchPanel->getHasNewRelease() ||
-                         touchPanel->getHasNewHoldRelease());
 }
 
 void DeviceInfoScreen::update() {
@@ -142,7 +134,6 @@ void DeviceInfoScreen::update() {
     if (lvglReady) {
         const bool forceFullRefresh = !screenInitialized;
         updateUi(forceFullRefresh);
-        handleTouch();
         LvglDisplay::taskHandler();
     }
 }
@@ -485,30 +476,16 @@ void DeviceInfoScreen::updateControlValues() {
     }
 }
 
-void DeviceInfoScreen::handleTouch() {
-    if (touchPanel == nullptr) {
-        return;
-    }
-
-    const int64_t now = millis();
-    if (ignoreNextRelease &&
-        !touchPanel->isPressed() &&
-        (touchPanel->getHasNewRelease() || touchPanel->getHasNewHoldRelease()) &&
-        (now - activatedAtMs) < STALE_RELEASE_GUARD_MS) {
-        return;
-    }
-    if (!touchPanel->isPressed()) {
-        ignoreNextRelease = false;
-    }
-
-    const int x = touchPanel->getTouchX();
-    const int y = touchPanel->getTouchY();
+void DeviceInfoScreen::onInput(const input::InputEvent& event) {
+    using input::InputType;
+    const int x = event.x;
+    const int y = event.y;
     const int displayW = LvglDisplay::getWidth();
     const int displayH = LvglDisplay::getHeight();
     const int edgeW = std::max(scalePx(24), displayW / 10);
     const int bottomH = std::max(scalePx(32), displayH / 10);
 
-    if (touchPanel->isPressed()) {
+    if (event.type == InputType::TouchPress || event.type == InputType::TouchMove) {
         if (pointInRect(x, y, brightnessBarX - scalePx(8), brightnessBarY, brightnessBarW + scalePx(16), brightnessBarH)) {
             brightnessPercent = percentFromBarY(y, brightnessBarY, brightnessBarH);
             controlsChanged = true;
@@ -522,9 +499,10 @@ void DeviceInfoScreen::handleTouch() {
                 soundSetter(soundPercent);
             }
         }
+        return;
     }
 
-    if (touchPanel->getHasNewRelease() || touchPanel->getHasNewHoldRelease()) {
+    if (event.type == InputType::TouchRelease || event.type == InputType::TouchHoldRelease) {
         if (pointInRect(x, y, 0, displayH - bottomH, displayW, bottomH)) {
             pageBackRequested = true;
         } else if (pointInRect(x, y, 0, 0, edgeW, displayH)) {
