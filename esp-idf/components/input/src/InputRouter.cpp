@@ -26,6 +26,12 @@ void InputRouter::poll(uint32_t nowMs) {
     }
     if (knob_ != nullptr) {
         knob_->update();
+        // PCKNOB-11: detents are summed by the link and cleared here; every other line is a message.
+        const int delta = knob_->consumeDelta();
+        if (delta != 0) {
+            knobTokenThisPoll_ = true;
+            translator_.onKnobDelta(delta, nowMs);
+        }
         if (knob_->getHasNewMessage()) {
             knobTokenThisPoll_ = true;
             const std::string token = knob_->getReceivedCommand();

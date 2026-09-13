@@ -48,3 +48,14 @@ no first-party warnings. Bench: the board went into its 3-minute deep sleep befo
 flash and is off the USB bus; the new `CONFIG_QNOB_DEEP_SLEEP` gate (off in the bench overlay)
 stops that from the next flash on. Pending on the device: the checklist walk with one `input`
 line per gesture, the 60 s ring stress, the wake tap, Stage 0 at 20 s, the hint strings.
+
+## WP2.2 Knob wire format, screen side (2026-09-13)
+
+| Task | State | What changed | Evidence |
+|---|---|---|---|
+| PCKNOB-09 line assembler | done | `knob_controller/KnobLineAssembler.{h,cpp}` (pure): bytes in, tokens out of an 8-deep FIFO; bare `+`/`-` complete when another sign follows or after a 25 ms hold, `+N`/`-N` complete on LF/CR, everything else is a message; lines cap at 63 bytes with a truncation counter. `KnobController::update()` reads the UART in 64-byte chunks (512 per call at most) into the assembler; the old code read the whole 512-byte ring into a 256-byte stack array and kept the first line. The last message sits in a fixed buffer behind a spinlock, so the command task copies it safely (the cross-task `std::string` copy is gone). | `test_knob_line_assembler`: `++-+` is four detents (the D6 failure was two tokens matching nothing), a line split across polls is one count, a lone sign completes after the hold, 50 detents in a second give 50 tokens with no loss when drained, FIFO overflow counts, an over-long line truncates |
+| PCKNOB-11 `consumeDelta()` | done | Detents are summed into an atomic (each token clamped to +-10, D5) that the router reads and clears every frame; `+3,-1,+,+abc,+99999` give 3, -1, 1, a message, 10. A knob on the old firmware keeps working (bare signs). `InputRouter::poll` uses `consumeDelta()` for deltas and the message path for the rest; `InputTranslator::onKnobDelta()` carries the sum. | host cases; build |
+| PCKNOB-07 / PCKNOB-08 / PCKNOB-10 (knob firmware) | waiting on Q4 | The knob-side rows change `FOC.ino` / `serial.ino` in the QNOB repository and need every knob reflashed; D6 lets the screen side land first, which it has. | owner decision |
+
+Host suite after WP2.2: 22 executables, 147 cases, all green. 1.75 binary 1,832,736 B (+1,024 B).
+Device: not flashed yet (board off the bus).

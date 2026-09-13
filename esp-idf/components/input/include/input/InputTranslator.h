@@ -53,6 +53,9 @@ public:
     void onTouch(const TouchSample& sample, uint32_t nowMs);
     // Feed one knob token ("+", "-", "+N", "-N", "setpoint=N", anything else = link activity).
     void onKnobToken(const char* token, uint32_t nowMs);
+    // Feed an already-parsed detent sum (PCKNOB-11: the link clamps per token, the sum of one poll
+    // is passed through, saturated to the record width).
+    void onKnobDelta(int delta, uint32_t nowMs);
 
     // Releases and gestures inside the window are dropped: the gesture that entered a screen must
     // not act on the screen it entered (SCRN-25).

@@ -1,28 +1,33 @@
 #include "KnobController.h"
-#include "hal_config.h"
-#include "esp_log.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+
 #include <cstring>
 
-static const char *TAG = "KnobController";
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/task.h"
+#include "hal_config.h"
+
+static const char* TAG = "KnobController";
+
+namespace {
+uint32_t nowMs32() {
+    return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+}
+}  // namespace
 
 KnobController::KnobController(int tx_pin, int rx_pin, uart_port_t uart_num)
-    : uart_num(uart_num), tx_pin(tx_pin), rx_pin(rx_pin), baud_rate(9600),
-      initialized(false), command_from_knob(""), last_action_time(0), has_new_message(false)
-{
+    : uart_num(uart_num), tx_pin(tx_pin), rx_pin(rx_pin), baud_rate(9600), initialized(false),
+      assembler(), pendingDelta(0), has_new_message(false), last_action_time(0), message_lock(), last_message() {
+    portMUX_INITIALIZE(&message_lock);
 }
 
-KnobController::~KnobController()
-{
+KnobController::~KnobController() {
     if (initialized) {
         uart_driver_delete(uart_num);
     }
 }
 
-esp_err_t KnobController::begin(int baud_rate)
-{
+esp_err_t KnobController::begin(int baud_rate) {
     this->baud_rate = baud_rate;
 
     uart_config_t uart_config = {
@@ -33,6 +38,7 @@ esp_err_t KnobController::begin(int baud_rate)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .rx_flow_ctrl_thresh = 0,
         .source_clk = UART_SCLK_DEFAULT,
+        .flags = {},
     };
 
     esp_err_t ret = uart_param_config(uart_num, &uart_config);
@@ -58,69 +64,90 @@ esp_err_t KnobController::begin(int baud_rate)
     return ESP_OK;
 }
 
-bool KnobController::getHasNewMessage() const
-{
+bool KnobController::getHasNewMessage() const {
     return has_new_message;
 }
 
-void KnobController::askSetpoint()
-{
+void KnobController::askSetpoint() {
     sendCommand("sp?");
 }
 
-void KnobController::update()
-{
+void KnobController::update() {
     if (!initialized) {
         return;
     }
 
     has_new_message = false;
+    const uint32_t now = nowMs32();
 
-    size_t available = 0;
-    uart_get_buffered_data_len(uart_num, &available);
+    // PCKNOB-09: bounded chunks straight into the assembler; the old code read the whole ring
+    // (512 B) into a 256 B stack array and kept only the first line of it.
+    size_t consumed = 0;
+    while (consumed < kMaxBytesPerUpdate) {
+        size_t available = 0;
+        if (uart_get_buffered_data_len(uart_num, &available) != ESP_OK || available == 0) {
+            break;
+        }
+        uint8_t chunk[kChunkBytes];
+        const size_t want = available < kChunkBytes ? available : kChunkBytes;
+        const int len = uart_read_bytes(uart_num, chunk, want, 0);
+        if (len <= 0) {
+            break;
+        }
+        assembler.feed(chunk, static_cast<size_t>(len), now);
+        consumed += static_cast<size_t>(len);
+        last_action_time = now;
+    }
+    assembler.tick(now);
 
-    if (available > 0) {
-        has_new_message = true;
-        command_from_knob.clear();
-        last_action_time = esp_timer_get_time() / 1000;
-
-        uint8_t data[RX_BUF_SIZE];
-        int len = uart_read_bytes(uart_num, data, available, pdMS_TO_TICKS(100));
-
-        if (len > 0) {
-            for (int i = 0; i < len; i++) {
-                if (data[i] == '\n' || data[i] == '\r') {
-                    break;
-                }
-                command_from_knob += static_cast<char>(data[i]);
-            }
-
-            if (!command_from_knob.empty()) {
-                ESP_LOGD(TAG, "Received from knob: %s", command_from_knob.c_str());
-            }
+    KnobLineAssembler::Token token;
+    while (assembler.next(token)) {
+        if (token.kind == KnobLineAssembler::Token::Kind::Delta) {
+            // Saturate far below the int range; the router clears it every frame.
+            int expected = pendingDelta.load();
+            int next;
+            do {
+                next = expected + token.delta;
+                if (next > 1000) next = 1000;
+                if (next < -1000) next = -1000;
+            } while (!pendingDelta.compare_exchange_weak(expected, next));
+            ESP_LOGD(TAG, "Knob delta %d", token.delta);
+        } else {
+            portENTER_CRITICAL(&message_lock);
+            std::strncpy(last_message, token.text, sizeof(last_message) - 1);
+            last_message[sizeof(last_message) - 1] = 0;
+            portEXIT_CRITICAL(&message_lock);
+            has_new_message = true;
+            ESP_LOGD(TAG, "Received from knob: %s", token.text);
         }
     }
 }
 
-std::string KnobController::getReceivedCommand() const
-{
-    return command_from_knob;
+int KnobController::consumeDelta() {
+    return pendingDelta.exchange(0);
 }
 
-void KnobController::sendCommand(const std::string& command)
-{
+std::string KnobController::getReceivedCommand() const {
+    char copy[KnobLineAssembler::kMaxLine];
+    portENTER_CRITICAL(&message_lock);
+    std::memcpy(copy, last_message, sizeof(copy));
+    portEXIT_CRITICAL(&message_lock);
+    copy[sizeof(copy) - 1] = 0;
+    return std::string(copy);
+}
+
+void KnobController::sendCommand(const std::string& command) {
     sendCommand(command.c_str());
 }
 
-void KnobController::sendCommand(const char* command)
-{
+void KnobController::sendCommand(const char* command) {
     if (!initialized) {
         ESP_LOGW(TAG, "UART not initialized, cannot send command");
         return;
     }
 
-    size_t len = strlen(command);
-    int written = uart_write_bytes(uart_num, command, len);
+    const size_t len = std::strlen(command);
+    const int written = uart_write_bytes(uart_num, command, len);
 
     if (written < 0) {
         ESP_LOGE(TAG, "Failed to send command: %s", command);
@@ -129,44 +156,39 @@ void KnobController::sendCommand(const char* command)
     }
 }
 
-// C-compatible interface implementation
+// C-compatible interface implementation (INPT-27 deletes it)
 extern "C" {
 
-knob_controller_handle_t knob_controller_create(int tx_pin, int rx_pin)
-{
+knob_controller_handle_t knob_controller_create(int tx_pin, int rx_pin) {
     return new KnobController(tx_pin, rx_pin);
 }
 
-void knob_controller_destroy(knob_controller_handle_t handle)
-{
+void knob_controller_destroy(knob_controller_handle_t handle) {
     delete static_cast<KnobController*>(handle);
 }
 
-esp_err_t knob_controller_begin(knob_controller_handle_t handle, int baud_rate)
-{
+esp_err_t knob_controller_begin(knob_controller_handle_t handle, int baud_rate) {
     return static_cast<KnobController*>(handle)->begin(baud_rate);
 }
 
-void knob_controller_update(knob_controller_handle_t handle)
-{
+void knob_controller_update(knob_controller_handle_t handle) {
     static_cast<KnobController*>(handle)->update();
 }
 
-bool knob_controller_has_new_message(knob_controller_handle_t handle)
-{
+bool knob_controller_has_new_message(knob_controller_handle_t handle) {
     return static_cast<KnobController*>(handle)->getHasNewMessage();
 }
 
-const char* knob_controller_get_command(knob_controller_handle_t handle)
-{
-    static std::string cmd;
-    cmd = static_cast<KnobController*>(handle)->getReceivedCommand();
-    return cmd.c_str();
+const char* knob_controller_get_command(knob_controller_handle_t handle) {
+    static char buffer[KnobLineAssembler::kMaxLine];
+    const std::string command = static_cast<KnobController*>(handle)->getReceivedCommand();
+    std::strncpy(buffer, command.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = 0;
+    return buffer;
 }
 
-void knob_controller_send_command(knob_controller_handle_t handle, const char* cmd)
-{
+void knob_controller_send_command(knob_controller_handle_t handle, const char* cmd) {
     static_cast<KnobController*>(handle)->sendCommand(cmd);
 }
 
-}
+}  // extern "C"

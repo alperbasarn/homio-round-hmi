@@ -210,3 +210,19 @@ void InputTranslator::onKnobToken(const char* token, uint32_t nowMs) {
 }
 
 }  // namespace input
+
+namespace input {
+
+void InputTranslator::onKnobDelta(int delta, uint32_t nowMs) {
+    if (delta == 0) {
+        return;
+    }
+    if (delta > 32767) delta = 32767;
+    if (delta < -32768) delta = -32768;
+    InputEvent e;
+    e.type = InputType::KnobDelta;
+    e.knobDelta = static_cast<int16_t>(delta);
+    push(e, nowMs);
+}
+
+}  // namespace input

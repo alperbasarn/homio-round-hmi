@@ -92,3 +92,37 @@ and re-posts it as the registry's first records at boot.
 6. Reject `set` from unpaired controllers with a `rejected` state.
 7. Web page: MQTT status and the paired controller list; factory reset clears controllers.
 8. Docs: this contract mirrored in the LED repository.
+
+## 7. Implementation notes from the LED side (2026-09-13, branch `feat/mqtt-controllers`)
+
+The LED firmware implements sections 1-6 on `alperbasarn/esp32c6-led-web` branch
+`feat/mqtt-controllers` (four commits, unpushed, device build clean on the pinned ESP-IDF 5.4.1 +
+esp-matter toolchain, 141 host checks, nothing yet on hardware). Cost on the C6: +39,744 B flash
+(image 2,005,904 B, 25,712 B left in the slot after the unused MQTT websocket transports were
+dropped) and +4,328 B .bss; TLS stays on (runtime toggle in NVS). The HMI side (LED-03, LED-04)
+implements against these facts:
+
+1. `<id>` is `led-` plus the last three **STA** MAC bytes; the SoftAP SSID uses the SoftAP MAC,
+   whose last byte is one higher, so the id must never be derived from the SSID. The web page
+   shows the exact id.
+2. `info.name` is the SoftAP SSID (for example `ESP32C6-LED-A1B2C3`); the strip has no separate
+   name setting.
+3. `src` on a `state` is `web` (page or `/api/config`), `matter`, `schedule` (schedules and the
+   sleep/wake timer) or `device` (the retained publish on every connect); `seq` for those is a
+   device-local counter. For a `set` the sender `seq` is echoed.
+4. A `set` from a paired controller always produces a `state`, also when a field was invalid or
+   clamped, so an optimistic view gets corrected; a `set` with no settable field is ignored.
+5. `pair` from an already paired controller is idempotent (label refreshed, green flash, no code);
+   a fifth controller is refused with a red flash; the list holds four.
+6. `set` persistence is debounced 2 s on the strip; web and Matter changes write through.
+7. `count` is read-only over MQTT. New SoftAP-gated endpoint `POST /api/mqtt/unpair {"id"}`;
+   `GET /api/state` carries `mqtt_*` fields; broker settings (`mq_host`, `mq_port`, `mq_user`,
+   `mq_pass`, `mq_tls`, `mq_ctl`) live in the app NVS namespace and the factory reset clears them
+   and the retained `controllers` and `status` topics.
+8. The blink code lights the whole strip at the current brightness clamped to 48-160.
+9. All publishing runs on the link task; inbound parsing on the esp-mqtt task; the link mutex is
+   never held across a publish or a call into the LED core.
+
+Bench steps for the strip (owner): flash the branch build, commission with Matter, set the broker
+on the SoftAP page (Configuration -> MQTT Link), watch `homio/led/#` with an MQTT client, pair by
+hand with a `pair` message (a factory-fresh strip pairs at once), drive `set`, try an unpaired id.
