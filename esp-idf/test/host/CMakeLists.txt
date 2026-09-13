@@ -70,6 +70,29 @@ target_include_directories(knob_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../../com
 target_compile_options(knob_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(knob_core PUBLIC -fsanitize=address,undefined)
 
+# BLD-43 / SCRN-03 / SCRN-04: the view and controller contracts are ESP-free headers (the LVGL
+# lock assert compiles out and lv_obj_t stays opaque here); the theme helper and the null
+# controller compile from the device files.
+add_library(ui_core STATIC "${CMAKE_CURRENT_LIST_DIR}/../../components/ui/theme/Theme.cpp")
+target_include_directories(ui_core PUBLIC
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/ui"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/ui/theme"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/ui/views"
+)
+target_compile_options(ui_core PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(ui_core PUBLIC -fsanitize=address,undefined)
+
+add_library(controllers_core STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/NullScreenController.cpp"
+)
+target_include_directories(controllers_core PUBLIC
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens"
+)
+target_compile_options(controllers_core PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(controllers_core PUBLIC -fsanitize=address,undefined)
+target_link_libraries(controllers_core PUBLIC model input_core)
+
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -80,6 +103,6 @@ file(GLOB QNOB_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_*.
 foreach(test_source IN LISTS QNOB_TEST_SOURCES)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(${test_name} "${test_source}")
-    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core input_core knob_core Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core input_core knob_core ui_core controllers_core Threads::Threads)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

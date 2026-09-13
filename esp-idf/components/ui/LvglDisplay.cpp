@@ -6,6 +6,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <algorithm>
 #include <memory>
 
@@ -179,6 +180,13 @@ void LvglDisplay::unlock() {
     if (s_initialized && s_lvglMutex != nullptr) {
         xSemaphoreGiveRecursive(s_lvglMutex);
     }
+}
+
+bool LvglDisplay::lockedByCurrentTask() {
+    if (!s_initialized || s_lvglMutex == nullptr) {
+        return false;
+    }
+    return xSemaphoreGetMutexHolder(s_lvglMutex) == xTaskGetCurrentTaskHandle();
 }
 
 void LvglDisplay::taskHandler() {

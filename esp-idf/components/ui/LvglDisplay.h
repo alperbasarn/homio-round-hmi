@@ -14,6 +14,8 @@ public:
     static bool isInitialized();
     static bool lock(int timeoutMs);
     static void unlock();
+    // SCRN-03: true when the calling task holds the LVGL lock (a view precondition, LvglLock.h).
+    static bool lockedByCurrentTask();
     static void taskHandler();
     static void invalidateScreen();
 
