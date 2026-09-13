@@ -128,3 +128,14 @@ the driver left unclassified into a `release` with the driver's press duration (
 **Finding W2 (open):** the board left the USB bus again after the walk, this time invisible to
 Windows as well (no VID 303A device), with both sleep gates off and no capture running. Cause not
 established (cable, power, or a state the gates do not cover); a re-plug brings it back.
+
+**Sleep stages held while a USB host is attached (2026-09-13).** Why a board "becomes unavailable
+on the bus": the console is the chip's own USB-Serial/JTAG block, and light sleep (stage 2, 2 min
+idle) and deep sleep (stage 3, 3 min) power that block down, so the host sees the board unplug
+itself; esptool cannot reset a chip that is not on the bus, so only a touch, the EN button or a
+power cycle brings it back. `SleepHandler::checkActivity()` now asks the driver whether a host is
+attached (`usb_serial_jtag_is_connected()`, SOF-based) and skips both stages while it is, logging
+once per idle period. This holds for every build; the two Kconfig gates stay for benches that want
+the stages off regardless. Unplugged boards sleep as before. The drop after walk 1 (gates already
+off, no device seen by Windows) is not covered by this and stays open until the reset reason of
+the next reappearance is read.

@@ -92,6 +92,7 @@ private:
     bool light_sleep_enabled;
     bool deep_sleep_skipped_logged;
     bool light_sleep_skipped_logged;
+    bool usb_hold_logged;
 
     int64_t last_activity_time;
     uint32_t cpu_freq_reduce_timeout_ms;

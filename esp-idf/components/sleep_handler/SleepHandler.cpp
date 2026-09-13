@@ -6,6 +6,22 @@
 #include "driver/rtc_io.h"
 #include "esp_clk_tree.h"
 #include "soc/rtc.h"
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#endif
+
+namespace {
+// A host on the USB-Serial/JTAG port (the bench, a flashing PC). Light and deep sleep power that
+// block down, so a sleeping board vanishes from the bus until a touch or a power cycle; while a
+// host is attached the two sleep stages are skipped. Nothing changes when the port is unplugged.
+bool usbHostAttached() {
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+    return usb_serial_jtag_is_connected();
+#else
+    return false;
+#endif
+}
+}  // namespace
 
 static const char *TAG = "SleepHandler";
 
@@ -54,6 +70,7 @@ SleepHandler::SleepHandler(SemaphoreHandle_t* mutex)
       light_sleep_enabled(false),
       deep_sleep_skipped_logged(false),
       light_sleep_skipped_logged(false),
+      usb_hold_logged(false),
       last_activity_time(0),
       cpu_freq_reduce_timeout_ms(CPU_FREQ_REDUCE_TIMEOUT_MS),
       power_save_timeout_ms(POWER_SAVE_TIMEOUT_MS),
@@ -103,6 +120,7 @@ void SleepHandler::registerActivity()
 {
     resetActivityTime();
     cpu_freq_reduce_failed = false;
+    usb_hold_logged = false;
 
     // Exit light sleep mode if active
     if (light_sleep_enabled) {
@@ -189,9 +207,15 @@ void SleepHandler::checkActivity()
         }
     }
 
+    const bool hostAttached = usbHostAttached();
+    if (hostAttached && !usb_hold_logged && inactivity_time >= light_sleep_timeout_ms) {
+        usb_hold_logged = true;
+        ESP_LOGI(TAG, "Stages 2 and 3 held: a USB host is attached");
+    }
+
     // Stage 2: Light sleep at 2m (CONFIG_QNOB_LIGHT_SLEEP=n keeps a bench board on the USB bus)
 #if CONFIG_QNOB_LIGHT_SLEEP
-    if (!light_sleep_enabled && inactivity_time >= light_sleep_timeout_ms &&
+    if (!hostAttached && !light_sleep_enabled && inactivity_time >= light_sleep_timeout_ms &&
         inactivity_time < deep_sleep_timeout_ms) {
 
         ESP_LOGI(TAG, "Stage 2: Entering light sleep after %lld ms", inactivity_time);
