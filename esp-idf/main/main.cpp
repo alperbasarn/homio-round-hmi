@@ -12,6 +12,9 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#endif
 #include "esp_timer.h"
 #include "driver/gpio.h"
 
@@ -279,6 +282,21 @@ void networkTask(void* parameter) {
     while (true) {
         const int64_t now = nowMs();
 
+        // Bench heartbeat: one line every 30 s so a long capture shows what preceded a USB drop.
+        static int64_t lastHeartbeatMs = 0;
+        if (now - lastHeartbeatMs >= 30000) {
+            lastHeartbeatMs = now;
+            bool usbHost = false;
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+            usbHost = usb_serial_jtag_is_connected();
+#endif
+            ESP_LOGI(TAG, "heartbeat uptime=%llds usb_host=%s heap=%u min_heap=%u mode=%s",
+                     static_cast<long long>(now / 1000), usbHost ? "attached" : "absent",
+                     static_cast<unsigned>(esp_get_free_heap_size()),
+                     static_cast<unsigned>(esp_get_minimum_free_heap_size()),
+                     displayController ? displayController->getModeName().c_str() : "-");
+        }
+
         // PERI-07: battery acquisition lives here, off the render loop, and runs with WiFi down.
         if (batteryHandler && batteryHandler->isInitialized()) {
             batteryHandler->analyze();
@@ -358,6 +376,7 @@ extern "C" void app_main(void) {
 
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "QNOB Screen Application Starting...");
+    ESP_LOGI(TAG, "Reset reason code %d (see sysInfo for the name)", static_cast<int>(esp_reset_reason()));
     ESP_LOGI(TAG, "===========================================");
 
     // Initialize HAL

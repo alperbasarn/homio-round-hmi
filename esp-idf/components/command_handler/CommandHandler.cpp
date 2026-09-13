@@ -11,6 +11,9 @@
 #include "esp_err.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#endif
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -207,6 +210,7 @@ void CommandHandler::registerCommands() {
     commands["playLastSoundRecord"] = {"playLastSoundRecord", [this](const std::string& p) { this->cmdPlayLastSoundRecord(p); }, "playLastSoundRecord - Play the most recent recording"};
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
+    commands["sysInfo"] = {"sysInfo", [this](const std::string& p) { this->cmdSysInfo(p); }, "Reset reason, uptime, heap, USB host"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
 
@@ -214,7 +218,7 @@ void CommandHandler::registerCommands() {
     // reset, clearNVS, connectWifi, configureMQTTServer, the static-IP writers, setDeviceName,
     // otaUpdate and calibrateOrientation.
     static const char* const kMqttAllowed[] = {
-        "setpoint", "home", "info", "getDeviceName", "showNetworks", "commInfo",
+        "setpoint", "home", "info", "getDeviceName", "showNetworks", "commInfo", "sysInfo",
         "showStaticIP", "listNVSValues", "startSoundRecord", "stopSoundRecord",
         "playLastSoundRecord", "otaInfo", "otaStatus", "help",
     };
@@ -529,4 +533,36 @@ void CommandHandler::cmdOTAStatus(const std::string& params) {
     printf("OTA busy: %s\n", busy ? "yes" : "no");
     printf("OTA last error: %s\n", err);
     publishResponse(std::string("otaStatus:busy=") + (busy ? "yes" : "no") + ",last_error=" + err);
+}
+
+// Bench diagnostics: why did the board come back, how long has it been up, and is a USB host
+// attached (the sleep hold keys off that).
+void CommandHandler::cmdSysInfo(const std::string& params) {
+    (void)params;
+    const char* reason = "unknown";
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON: reason = "power-on"; break;
+        case ESP_RST_SW: reason = "software (esp_restart)"; break;
+        case ESP_RST_PANIC: reason = "panic"; break;
+        case ESP_RST_INT_WDT: reason = "interrupt watchdog"; break;
+        case ESP_RST_TASK_WDT: reason = "task watchdog"; break;
+        case ESP_RST_WDT: reason = "other watchdog"; break;
+        case ESP_RST_DEEPSLEEP: reason = "deep-sleep wake"; break;
+        case ESP_RST_BROWNOUT: reason = "brownout"; break;
+        case ESP_RST_SDIO: reason = "sdio"; break;
+        case ESP_RST_USB: reason = "usb"; break;
+        case ESP_RST_JTAG: reason = "jtag"; break;
+        case ESP_RST_EFUSE: reason = "efuse"; break;
+        case ESP_RST_PWR_GLITCH: reason = "power glitch"; break;
+        case ESP_RST_CPU_LOCKUP: reason = "cpu lockup"; break;
+        default: break;
+    }
+    const int64_t upMs = esp_timer_get_time() / 1000;
+    bool usbHost = false;
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+    usbHost = usb_serial_jtag_is_connected();
+#endif
+    printf("sysInfo: reset=%s uptime=%llds free_heap=%u min_free_heap=%u usb_host=%s\n", reason,
+           static_cast<long long>(upMs / 1000), static_cast<unsigned>(esp_get_free_heap_size()),
+           static_cast<unsigned>(esp_get_minimum_free_heap_size()), usbHost ? "attached" : "absent");
 }

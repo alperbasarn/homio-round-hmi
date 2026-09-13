@@ -71,6 +71,7 @@ SleepHandler::SleepHandler(SemaphoreHandle_t* mutex)
       deep_sleep_skipped_logged(false),
       light_sleep_skipped_logged(false),
       usb_hold_logged(false),
+      wake_source_missing_logged(false),
       last_activity_time(0),
       cpu_freq_reduce_timeout_ms(CPU_FREQ_REDUCE_TIMEOUT_MS),
       power_save_timeout_ms(POWER_SAVE_TIMEOUT_MS),
@@ -121,6 +122,8 @@ void SleepHandler::registerActivity()
     resetActivityTime();
     cpu_freq_reduce_failed = false;
     usb_hold_logged = false;
+    light_sleep_skipped_logged = false;
+    deep_sleep_skipped_logged = false;
 
     // Exit light sleep mode if active
     if (light_sleep_enabled) {
@@ -216,7 +219,7 @@ void SleepHandler::checkActivity()
     // Stage 2: Light sleep at 2m (CONFIG_QNOB_LIGHT_SLEEP=n keeps a bench board on the USB bus)
 #if CONFIG_QNOB_LIGHT_SLEEP
     if (!hostAttached && !light_sleep_enabled && inactivity_time >= light_sleep_timeout_ms &&
-        inactivity_time < deep_sleep_timeout_ms) {
+        inactivity_time < deep_sleep_timeout_ms && wakeSourceAvailable()) {
 
         ESP_LOGI(TAG, "Stage 2: Entering light sleep after %lld ms", inactivity_time);
         light_sleep_enabled = true;
@@ -234,11 +237,19 @@ void SleepHandler::checkActivity()
     }
 #endif
 
-    // Stage 3: Deep sleep at 3m
-    if (inactivity_time >= deep_sleep_timeout_ms) {
+    // Stage 3: Deep sleep at 3m (CONFIG_QNOB_DEEP_SLEEP=n keeps a bench board on the USB bus; a
+    // host on the port holds it too). Never without a wake pin: only a power cycle would end it.
+#if CONFIG_QNOB_DEEP_SLEEP
+    if (!hostAttached && inactivity_time >= deep_sleep_timeout_ms && wakeSourceAvailable()) {
         ESP_LOGI(TAG, "Stage 3: Entering deep sleep after %lld ms", inactivity_time);
         enterDeepSleep();
     }
+#else
+    if (!deep_sleep_skipped_logged && inactivity_time >= deep_sleep_timeout_ms) {
+        deep_sleep_skipped_logged = true;
+        ESP_LOGI(TAG, "Stage 3 skipped: deep sleep disabled by CONFIG_QNOB_DEEP_SLEEP");
+    }
+#endif
 }
 
 void SleepHandler::reduceCpuFrequency()
@@ -286,6 +297,36 @@ void SleepHandler::restoreCpuFrequency()
     } else {
         ESP_LOGW(TAG, "Failed to restore CPU frequency to %lu MHz", (unsigned long)original_cpu_freq_mhz);
     }
+}
+
+bool SleepHandler::hasWakeSource() const
+{
+#if CONFIG_IDF_TARGET_ESP32S3
+    // EXT1 wake needs an RTC-capable pin (GPIO 0..21 on the S3). A board whose touch INT and knob
+    // RX sit above that range, or that has no knob link, cannot be woken by anything but power.
+    const int pins[] = {WAKEUP_PIN_TOUCH, WAKEUP_PIN_KNOB};
+    for (int pin : pins) {
+        if (pin >= 0 && rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
+            return true;
+        }
+    }
+    return false;
+#else
+    return true;  // the C6 wakes on GPIO 1 (touch via the expander) and GPIO 2 (PWR key)
+#endif
+}
+
+bool SleepHandler::wakeSourceAvailable()
+{
+    if (hasWakeSource()) {
+        return true;
+    }
+    if (!wake_source_missing_logged) {
+        wake_source_missing_logged = true;
+        ESP_LOGE(TAG, "No RTC-capable wake pin (touch %d, knob %d): light and deep sleep refused, only a power cycle would end them",
+                 WAKEUP_PIN_TOUCH, WAKEUP_PIN_KNOB);
+    }
+    return false;
 }
 
 void SleepHandler::configureWakeupSources()
@@ -346,6 +387,9 @@ void SleepHandler::enterDeepSleep()
         ESP_LOGW(TAG, "Sleep handler disabled, not entering deep sleep");
         return;
     }
+    if (!wakeSourceAvailable()) {
+        return;
+    }
 
     ESP_LOGI(TAG, "Preparing for deep sleep...");
 
@@ -370,6 +414,9 @@ void SleepHandler::enterDeepSleep()
 void SleepHandler::enterLightSleep(uint32_t duration_ms)
 {
     ESP_LOGI(TAG, "Entering light sleep for %lu ms", duration_ms);
+    if (duration_ms == 0 && !wakeSourceAvailable()) {
+        return;  // an indefinite sleep with nothing to end it
+    }
 
     if (duration_ms > 0) {
         esp_sleep_enable_timer_wakeup(duration_ms * 1000ULL);

@@ -139,3 +139,46 @@ once per idle period. This holds for every build; the two Kconfig gates stay for
 the stages off regardless. Unplugged boards sleep as before. The drop after walk 1 (gates already
 off, no device seen by Windows) is not covered by this and stays open until the reset reason of
 the next reappearance is read.
+
+## Gesture walk 2 on the 1.75 (2026-09-13, `bench/walk2.log`, mode wheel)
+
+USB-hold build, 75 s capture, `home` sent at 3 s, owner at the panel.
+
+| Check | Result |
+|---|---|
+| Five spaced taps | four logged in the window, every press with its `release` (172..190 ms), no self-selection on the wheel (W1 fixed) |
+| Swipe right / left | `gesture swipe-right` -> `ModeController: Mode: LIGHT`, `gesture swipe-left` -> `SOUND` |
+| 4 s hold | `hold-release d=4013` -> `Mode: HOME -> INFO` (D13 back) |
+| Idle | stage 0 at 20 s once, SLEEP at 30 s, board stayed on the bus |
+| Ring / watchdog | 0 overflow, 0 watchdog |
+
+**Finding W3 (open, paused by the owner):** with W1's synthesized release a swipe lift produced a
+`release` as well as the gesture (the driver flags the gesture on the lift poll). A first attempt
+(exclude polls that carry a gesture) leaves a trailing release one poll later, so its host case
+`a_swipe_lift_is_the_gesture_and_not_also_a_release` fails at its last check; it sits in
+`git stash` ("touch-lift half-step"). The proper fix treats a gesture lift as the lift itself
+(clear `touchDown_`/`pressSeen_` on it) and waits for the go-ahead.
+
+Phase 2 device acceptance on the 1.75 is met on every item that does not need the C6 or the knob
+link: one `input` line per gesture, the D13 gate both ways, the double-tap, the wake tap, the
+sound effects, the stage-0 frequency step. Still owner-owned: the 60 s knob ring stress once a
+knob is connected, and the P2 gate's "one detent = one step" on real detents.
+
+### USB bus drop: root cause (2026-09-13)
+
+The board left the USB bus after every idle period even with `CONFIG_QNOB_LIGHT_SLEEP=n` and
+`CONFIG_QNOB_DEEP_SLEEP=n` in the bench overlay, and a tap did not bring it back. Cause: only stage
+2 (light sleep) was ever gated. Stage 3 (deep sleep, 180 s idle) had neither the
+`#if CONFIG_QNOB_DEEP_SLEEP` guard nor the USB-host hold: commits ad96502 and 314c16d added the
+Kconfig symbol and the `deep_sleep_skipped_logged` member but never the guard. Three minutes after
+the last gesture the board deep-slept, which powers the USB-Serial/JTAG block down; no 90 s capture
+could show it. Fix: stage 3 is under `#if CONFIG_QNOB_DEEP_SLEEP`, held while a USB host is
+attached, and both sleep stages are refused (one error per boot) on a board without an RTC-capable
+wake pin.
+
+Why the tap did not wake it: deep-sleep wake on the 1.75 is EXT1 on GPIO 11 (the CST9217 INT), and
+`prepareCst9217ForSleep()` only logs. The INT did not end the sleep on the bench, so a
+deep-sleeping 1.75 needs a power cycle. Tracked as PERI-30; a product question, not a bench one.
+
+Diagnostics for the next drop: a `sysInfo` console command (reset reason, uptime, heap, USB host
+attached), a 30 s heartbeat line from the network task, and the reset reason in the boot log.

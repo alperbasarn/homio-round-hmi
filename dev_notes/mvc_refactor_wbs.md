@@ -18,11 +18,11 @@ Task IDs are the reader IDs from the 11-cluster sweep (`DISP- SCRN- CTRL- INPT- 
 | 1 | WP1.0 floor (crashes, secrets, the four never-worked paths, tag `p0-fixed`); then `model`, `Observable`, D1/D18 queue, host harness, shadow population | 79 | 230.5 |
 | 2 | `InputRouter` + `InputEvent`; all 21 polling sites; knob framing; knob ownership; `LocalAudio` move | 33 | 103.0 |
 | 3 | Screen splits, the Instrument shell, MEDIA/CLIMATE, adapters, PC protocol v2, Spotify | 120 | 399.5 |
-| 4 | `ScreenRouter` replaces `DisplayController`; power/sleep split; panel-backend purge | 29 | 76.5 |
+| 4 | `ScreenRouter` replaces `DisplayController`; power/sleep split; panel-backend purge | 30 | 79.5 |
 | 5 | Transport out of views; `MqttModelBridge` owns every topic | 19 | 69.0 |
 | 6 | `AppComposition`; ownership; task topology | 23 | 70.0 |
 | 7 | CMake tightening, cycle proof, dead-code purge | 15 | 41.0 |
-| **Total** | | **335** | **1019.0** |
+| **Total** | | **336** | **1022.0** |
 
 Per-phase figures are the row counts and hour sums of the tables in §3 and §4, stated per work package so the roll-up is checkable by hand; `BLD-39` scripts the check and `BLD-36` runs it in CI.
 
@@ -462,7 +462,7 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | LED-02 | `LightModel` becomes the control state of the selected instance: power, brightness 0–100, colour, effect index over the eight names, five params, effect colour; `LedMode` and `modeControl` deleted (this settles `CTRL-23`); echo suppression on `src`/`seq` and a 100 ms limiter (the `MDL-12` light window moves from 10 ms) | model/LightModel.{h,cpp}, model/RateLimit.{h,cpp}, test/host/test_light_model.cpp | 4 | LED-01, MDL-16, MDL-17, CTRL-23 | A 200-detent drag yields at most 10 publishes/s with a trailing flush; a `state` echo with the sent `seq` never re-publishes; a web-page change with `src=web` wins |
 | LED-05 | LIGHT screen on the registry: instance chooser on the rim when more than one strip is paired, power on tap, brightness on the knob, effect cycle on swipe, colour on the ring drag, an online badge; unpaired-but-available strips shown greyed with a pair affordance | ui/views/LightView.{h,cpp}, controllers/screens/LightScreenController.{h,cpp} | 6 | CTRL-21, CTRL-22, LED-02 | Every control reaches the model only; two paired strips switch on the rim; an offline strip greys its badge within 45 s; screenshot against the `p0-fixed` LIGHT layout with the chooser as the only addition |
 
-### Phase 4 — Router replaces DisplayController (29 tasks, 76.5h)
+### Phase 4 — Router replaces DisplayController (30 tasks, 79.5h)
 
 | ID | Task | Files | Est h | Depends on | Verification |
 |---|---|---|---|---|---|
@@ -491,6 +491,7 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | PERI-22 | Restore power state on light-sleep wake (`power_save_enabled` stays set today) | SleepHandler.cpp | 1.5 | DISP-15 | Wake logs exit-power-save, CPU restore and display-on with no further touch |
 | PERI-23 | Stop the sleep handler reconfiguring GPIOs it does not own (the knob UART pins 1/2) | SleepHandler.{h,cpp} | 3 | PERI-22, INPT-23 | Detents still arrive after a light-sleep wake |
 | PERI-24 | Sleep-inhibit lease taken by OTA and by recording, released on every path | SleepHandler.{h,cpp}, OTAManager.cpp, local_audio/LocalAudio.cpp | 2.5 | DISP-15, PERI-11 | A >200s OTA is not killed at 180s; deep sleep resumes 180s after it finishes |
+| PERI-30 | Deep-sleep wake on the 1.75: EXT1 on GPIO 11 (the CST9217 INT) did not wake the board on the bench (2026-09-13); find the INT idle level and its pulse on a tap, or wake on the PWR key through the AXP2101 | sleep_handler/SleepHandler.cpp, touch_panel/TouchPanel.cpp, board_hal/hal_config.h | 3 | DISP-15 | Product build (`CONFIG_QNOB_DEEP_SLEEP=y`, port unplugged): 180 s idle, then one tap wakes the board and the boot log says `Wakeup cause: EXT1` |
 | PCKNOB-18 | `quiet`/`resume` so the knob is silent while the screen sleeps but the first detent still wakes it | serial.ino, HapticController3.ino, KnobController.{h,cpp} | 3 | PCKNOB-17, PERI-24 | A detent wakes once and is not double-applied; the console is silent while asleep |
 | PERI-25 | Delete sleep_handler dead code (`mutex_ptr`, the 8-function C API, five setters two of which write the same field, two predicates, `WAKEUP_PIN_KNOB`) | SleepHandler.{h,cpp} | 1.5 | PERI-23 | Build clean, binary delta within the `BLD-38` row, four stages still logged |
 | BLD-22 | Strip `display` back to the panel layer — **drops the cycle edge** `PRIV_REQUIRES controllers ui sleep_handler`, plus `touch_panel` and `knob_controller` | display/CMakeLists.txt, DisplayController.{h,cpp} | 2 | DISP-19, BLD-11 | The `BLD-45` dump shows `display` with no project-local component beyond `board_hal` and the two `esp_lcd_*` drivers, and no cycle |
@@ -860,7 +861,7 @@ Derived edge by edge from the `Depends on` columns as the longest path over (id,
 | 25 | OTA-06 | 2.0 | 84.5 | OTA-06 deps `OTA-04, OTA-05, NET-23` |
 | 26 | OTA-07 | 3.0 | **87.5** | OTA-07 deps `OTA-05, OTA-06` |
 
-**Total on the path: 87.5h of 1019.0h — 8.6%, over 26 of 335 tasks.** The work is wide, not deep: 91% of it sits off the path and parallelises once the model, the queue and the Phase-1 component edges exist. The path is made of the measurement root, the CMake edge declarations, the input router, the boot controller, the router, the command router, the composition split and, since D21, the OTA port (`PERI-26` through `OTA-07`) — not of any screen; the CMake tail (`BLD-26`..`BLD-36`, 86.5h) runs one hour shorter beside it. `DISP-11` (7h) and `INPT-07`/`INPT-08` (6h each) are the longest single tasks on it.
+**Total on the path: 87.5h of 1022.0h — 8.6%, over 26 of 336 tasks.** The work is wide, not deep: 91% of it sits off the path and parallelises once the model, the queue and the Phase-1 component edges exist. The path is made of the measurement root, the CMake edge declarations, the input router, the boot controller, the router, the command router, the composition split and, since D21, the OTA port (`PERI-26` through `OTA-07`) — not of any screen; the CMake tail (`BLD-26`..`BLD-36`, 86.5h) runs one hour shorter beside it. `DISP-11` (7h) and `INPT-07`/`INPT-08` (6h each) are the longest single tasks on it.
 
 Note what is **not** on the path and why the previous draft thought it was: `MEDIA-16` depends on `DISP-11`-free predecessors only, so the old `MEDIA-16 → DISP-11` edge was reversed; `INPT-06` has no predecessor, so `MDL-31 → INPT-06` never existed; `MDL-30` waits on every struct including `MDL-28` (6h) and `UIX-10` (5h), which the old path skipped.
 
@@ -1030,6 +1031,7 @@ Added after the check: `BLD-20` moved into Phase 0 ahead of `BLD-03`, which now 
 - Added on owner request 2026-09-12: `APP-28` (persisted runtime fields through a model subscriber, Phase 5, 5h) and `APP-29` (one writer for the settings store, Phase 6, 3h); section 1 totals are now 320 tasks / 960.0h. Both came out of the WP1.4 persistence review: runtime state that should survive a reboot stays model-owned and NVS subscribes; configuration stays a store with a single writer.
 - Bench 1 on the 1.75 (2026-09-12/13, `dev_notes/phase1-log.md`): the INFO screen halted in an LVGL out-of-memory assert at 466 px (fixed with `CONFIG_LV_MEM_CUSTOM=y`, LVGL error logging on); first clean pass with every drain `offtask=0`; three open findings (SleepHandler 120 MHz retry flood, bars hysteresis, two early rejected records). Owner decision 2026-09-13: this branch stays the base and the screen layer of `main` (homio-round-hmi, 123 commits past the 2026-04-21 fork, clean on the board) was ported file by file with the WP1.4 posts and the WP1.2 lifts re-applied; the 1.75 runs the panel at rotation 0 with touch mirror X/Y (the Phase 0 270-degree software rotation was a transcription error). **The visual reference for every later `p0-fixed` comparison is the ported main screen set**, not the pre-port screens; `MATRIX_PAGE` placeholders post no `ActiveScreen` until Phase 3. The C6 and 1.28 were dropped from this pass on the owner request.
 - Added on owner decision 2026-09-13 (D20, D21): the `LED-01`..`LED-08` cluster (LED strips over MQTT: registry model, LightModel reshape, LIGHT screen on the registry, topic contract and bridge routes, blink-code pairing, fake-broker tests, bench gate, persistence; 36h across Phases 3/5/6) and the `OTA-01`..`OTA-07` cluster (the esp32c6-led-web release flow ported: signed manifest, release poll, verified install, `UpdateModel`, probation with strikes and revert, commands, pipeline; 23h in Phase 6). Section 1 totals are now 335 tasks / 1019.0h. The LED-side task list lives in `dev_notes/led_mqtt_contract.md`. Open questions Q7, Q8 and Q17 are answered by D20.
+- Added 2026-09-13 after the bench USB-drop root cause (stage 3 was never gated; a deep-sleeping 1.75 did not wake on a tap): `PERI-30`, deep-sleep wake on the 1.75.
 
 ### Phase 2 execution notes (2026-09-13)
 

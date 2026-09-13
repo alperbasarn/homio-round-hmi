@@ -93,6 +93,7 @@ private:
     bool deep_sleep_skipped_logged;
     bool light_sleep_skipped_logged;
     bool usb_hold_logged;
+    bool wake_source_missing_logged;
 
     int64_t last_activity_time;
     uint32_t cpu_freq_reduce_timeout_ms;
@@ -107,6 +108,8 @@ private:
     // Helper methods
     void reduceCpuFrequency();
     void restoreCpuFrequency();
+    bool hasWakeSource() const;      // an RTC-capable pin can end a sleep on this board
+    bool wakeSourceAvailable();      // hasWakeSource() with a once-per-boot error when it is missing
     void configureWakeupSources();
 };
 

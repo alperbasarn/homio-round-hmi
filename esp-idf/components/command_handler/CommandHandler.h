@@ -74,6 +74,7 @@ private:
     void cmdSetDeviceName(const std::string& params);
     void cmdConfigureMQTTServer(const std::string& params);
     void cmdCommInfo(const std::string& params);
+    void cmdSysInfo(const std::string& params);
     void cmdConfigureStaticIP(const std::string& params);
     void cmdEnableStaticIP(const std::string& params);
     void cmdDisableStaticIP(const std::string& params);
