@@ -190,3 +190,15 @@ at 20 s (240 to 160 MHz), stage 1 at 30 s (screen off), "Stages 2 and 3 held" an
 at 120 s, "Stage 3 skipped" at 180 s; a heartbeat every 30 s through 240 s with the USB host
 attached and the free heap flat; `sysInfo` answered at 40 s and 235 s (`reset=usb`); 0 watchdog,
 0 panic; the port was still enumerated after the capture. The bench board stays on the bus.
+
+**A second cause exists (2026-09-13, afternoon):** the board left the bus again on the swipe-lift
+build, which has stage 3 compiled out, about six minutes after a 90 s capture ended with the port
+released. The 260 s run with the port held never dropped. Firmware paths reviewed and clean:
+no restart, PM, PLL or PMU-rail code outside the sleep handler; stage 0 (240 to 160 MHz, both on
+the 480 MHz PLL) and stage 1 (SH8601 brightness 0) are the only idle actions; the AXP2101 reports
+no battery, so the board lives on VBUS through the PMU. Evidence to collect next: a black box in
+RTC no-init memory (uptime, mode, USB host, PMU status, rewritten every heartbeat; reported at
+boot and by `sysInfo`, valid only when the chip kept power) and the AXP2101 power-on source and
+power-off reason registers (0x20 / 0x21) at boot. After the next drop the owner presses RST
+instead of re-plugging so the black box survives; then a held-port run of 15 minutes tells
+whether a held port is immune (a host-side USB power event) or not (a PMU or VBUS event).

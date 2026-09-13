@@ -29,6 +29,9 @@ public:
     void setModelQueue(model::MutationQueue* queue) { modelQueue = queue; }
     void registerLocalAudio(LocalAudio* mc);
     void registerOTAManager(OTAManager* ota);
+    // Bench diagnostics: extra lines appended to sysInfo by the composition (black box, PMU).
+    using DiagnosticsProvider = std::function<void()>;
+    void registerDiagnosticsProvider(DiagnosticsProvider provider) { diagnosticsProvider = provider; }
 
 private:
     using CommandFunction = std::function<void(const std::string& params)>;
@@ -46,6 +49,7 @@ private:
     MQTTManager* mqttManager;
     LocalAudio* localAudio;
     OTAManager* otaManager;
+    DiagnosticsProvider diagnosticsProvider;
     model::MutationQueue* modelQueue;
     int lastSetpointSeen;  // D5: an absolute setpoint is only ever a delta against the last one
 

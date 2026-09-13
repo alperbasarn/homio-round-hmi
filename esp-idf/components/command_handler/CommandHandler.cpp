@@ -565,4 +565,7 @@ void CommandHandler::cmdSysInfo(const std::string& params) {
     printf("sysInfo: reset=%s uptime=%llds free_heap=%u min_free_heap=%u usb_host=%s\n", reason,
            static_cast<long long>(upMs / 1000), static_cast<unsigned>(esp_get_free_heap_size()),
            static_cast<unsigned>(esp_get_minimum_free_heap_size()), usbHost ? "attached" : "absent");
+    if (diagnosticsProvider) {
+        diagnosticsProvider();
+    }
 }

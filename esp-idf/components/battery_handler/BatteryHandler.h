@@ -81,4 +81,25 @@ public:
     bool isBatteryConnected() const;
     bool isInitialized() const { return initialized; }
     bool isCharging() const;
+
+    // Bench diagnostics (USB-drop investigation): the AXP2101 status, power-on source, power-off
+    // reason and IRQ registers, raw. Reads only; nothing is cleared. valid is false on boards
+    // without the PMU source.
+    struct PmuSnapshot {
+        bool valid = false;
+        uint8_t status1 = 0;        // 0x00
+        uint8_t status2 = 0;        // 0x01
+        uint8_t inputCurLimit = 0;  // 0x16
+        uint8_t pwronStatus = 0;    // 0x20
+        uint8_t pwroffStatus = 0;   // 0x21
+        uint8_t pwroffEn = 0;       // 0x22
+        uint8_t voffSet = 0;        // 0x24
+        uint8_t irqOffOnLevel = 0;  // 0x27
+        uint8_t irq1 = 0;           // 0x48
+        uint8_t irq2 = 0;           // 0x49
+        uint8_t irq3 = 0;           // 0x4A
+    };
+    PmuSnapshot readPmuSnapshot() const;
+    // One line: the raw registers plus the decoded power-on source and power-off reason.
+    static void formatPmuSnapshot(const PmuSnapshot& s, char* out, size_t outLen);
 };

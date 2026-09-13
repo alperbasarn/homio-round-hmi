@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
 #endif
@@ -125,6 +126,74 @@ static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
 static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
+
+// Bench black box (USB-drop investigation). Lives in RTC no-init memory, so it survives every
+// reset that keeps the chip powered (software, watchdog, brownout, the RST button) and is garbage
+// after a real power loss. The heartbeat rewrites it every 30 s; boot reads the previous record
+// before the first write. sysInfo reports both the previous record and the PMU registers at boot.
+struct BenchBlackBox {
+    uint32_t magic;
+    uint32_t seq;
+    uint32_t uptimeS;
+    uint8_t usbHost;
+    uint8_t mode;
+    uint8_t pmuStatus1;
+    uint8_t pmuStatus2;
+    uint8_t pmuOff;
+    uint8_t irq1;
+    uint8_t irq2;
+    uint8_t irq3;
+    uint32_t check;
+};
+static constexpr uint32_t kBlackBoxMagic = 0x51424258u;  // "QBBX"
+static RTC_NOINIT_ATTR BenchBlackBox s_blackBox;
+static BenchBlackBox s_previousRun;
+static bool s_previousRunValid = false;
+static BatteryHandler::PmuSnapshot s_bootPmu;
+
+static uint32_t blackBoxChecksum(const BenchBlackBox& b) {
+    uint32_t c = b.magic ^ (b.seq * 2654435761u) ^ (b.uptimeS * 40503u);
+    c ^= static_cast<uint32_t>(b.usbHost) << 24;
+    c ^= static_cast<uint32_t>(b.mode) << 16;
+    c ^= static_cast<uint32_t>(b.pmuStatus1) << 8;
+    c ^= b.pmuStatus2;
+    c ^= static_cast<uint32_t>(b.pmuOff) << 12;
+    c ^= static_cast<uint32_t>(b.irq1) << 20;
+    c ^= static_cast<uint32_t>(b.irq2) << 4;
+    c ^= static_cast<uint32_t>(b.irq3) << 28;
+    return c;
+}
+
+static void blackBoxBootCheck() {
+    if (s_blackBox.magic == kBlackBoxMagic && s_blackBox.check == blackBoxChecksum(s_blackBox)) {
+        s_previousRun = s_blackBox;
+        s_previousRunValid = true;
+        ESP_LOGI(TAG, "Black box: previous run uptime=%us seq=%u usb_host=%u mode=%u pmu=%02x/%02x off=%02x irq=%02x/%02x/%02x (the chip kept power through the last reset)",
+                 static_cast<unsigned>(s_previousRun.uptimeS), static_cast<unsigned>(s_previousRun.seq),
+                 s_previousRun.usbHost, s_previousRun.mode, s_previousRun.pmuStatus1, s_previousRun.pmuStatus2,
+                 s_previousRun.pmuOff, s_previousRun.irq1, s_previousRun.irq2, s_previousRun.irq3);
+    } else {
+        ESP_LOGI(TAG, "Black box: no record (first boot, or power was lost)");
+    }
+    s_blackBox = BenchBlackBox{};
+    s_blackBox.magic = kBlackBoxMagic;
+    s_blackBox.check = blackBoxChecksum(s_blackBox);
+}
+
+static void blackBoxWrite(uint32_t uptimeS, bool usbHost, uint8_t mode, const BatteryHandler::PmuSnapshot& pmu) {
+    s_blackBox.magic = kBlackBoxMagic;
+    ++s_blackBox.seq;
+    s_blackBox.uptimeS = uptimeS;
+    s_blackBox.usbHost = usbHost ? 1 : 0;
+    s_blackBox.mode = mode;
+    s_blackBox.pmuStatus1 = pmu.status1;
+    s_blackBox.pmuStatus2 = pmu.status2;
+    s_blackBox.pmuOff = pmu.pwroffStatus;
+    s_blackBox.irq1 = pmu.irq1;
+    s_blackBox.irq2 = pmu.irq2;
+    s_blackBox.irq3 = pmu.irq3;
+    s_blackBox.check = blackBoxChecksum(s_blackBox);
+}
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
 static Microphone* microphone = nullptr;
@@ -290,11 +359,16 @@ void networkTask(void* parameter) {
 #if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
             usbHost = usb_serial_jtag_is_connected();
 #endif
-            ESP_LOGI(TAG, "heartbeat uptime=%llds usb_host=%s heap=%u min_heap=%u mode=%s",
+            const BatteryHandler::PmuSnapshot pmu =
+                batteryHandler ? batteryHandler->readPmuSnapshot() : BatteryHandler::PmuSnapshot{};
+            const uint8_t modeCode = displayController ? static_cast<uint8_t>(displayController->getMode()) : 255;
+            ESP_LOGI(TAG, "heartbeat uptime=%llds usb_host=%s heap=%u min_heap=%u mode=%s pmu=%02x/%02x off=%02x irq=%02x/%02x/%02x",
                      static_cast<long long>(now / 1000), usbHost ? "attached" : "absent",
                      static_cast<unsigned>(esp_get_free_heap_size()),
                      static_cast<unsigned>(esp_get_minimum_free_heap_size()),
-                     displayController ? displayController->getModeName().c_str() : "-");
+                     displayController ? displayController->getModeName().c_str() : "-",
+                     pmu.status1, pmu.status2, pmu.pwroffStatus, pmu.irq1, pmu.irq2, pmu.irq3);
+            blackBoxWrite(static_cast<uint32_t>(now / 1000), usbHost, modeCode, pmu);
         }
 
         // PERI-07: battery acquisition lives here, off the render loop, and runs with WiFi down.
@@ -377,6 +451,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "QNOB Screen Application Starting...");
     ESP_LOGI(TAG, "Reset reason code %d (see sysInfo for the name)", static_cast<int>(esp_reset_reason()));
+    blackBoxBootCheck();
     ESP_LOGI(TAG, "===========================================");
 
     // Initialize HAL
@@ -394,6 +469,12 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "Battery handler init failed - battery monitoring disabled");
     }
     batteryPoller = new adapters::BatteryPoller(batteryHandler, modelQueue);
+    {
+        char pmuLine[224];
+        s_bootPmu = batteryHandler->readPmuSnapshot();
+        BatteryHandler::formatPmuSnapshot(s_bootPmu, pmuLine, sizeof(pmuLine));
+        ESP_LOGI(TAG, "PMU at boot: %s", pmuLine);
+    }
 
     // Initialize NVS
     ESP_LOGI(TAG, "Initializing NVS...");
@@ -672,6 +753,23 @@ extern "C" void app_main(void) {
     commandHandler->setModelQueue(&modelQueue);                         // INPT-22
     commandHandler->registerLocalAudio(localAudio);
     commandHandler->registerOTAManager(otaManager);
+    commandHandler->registerDiagnosticsProvider([]() {
+        char line[224];
+        if (s_previousRunValid) {
+            printf("sysInfo: previous run uptime=%us seq=%u usb_host=%u mode=%u pmu=%02x/%02x off=%02x irq=%02x/%02x/%02x (chip kept power)\n",
+                   static_cast<unsigned>(s_previousRun.uptimeS), static_cast<unsigned>(s_previousRun.seq),
+                   s_previousRun.usbHost, s_previousRun.mode, s_previousRun.pmuStatus1, s_previousRun.pmuStatus2,
+                   s_previousRun.pmuOff, s_previousRun.irq1, s_previousRun.irq2, s_previousRun.irq3);
+        } else {
+            printf("sysInfo: previous run: no record (first boot, or power was lost)\n");
+        }
+        BatteryHandler::formatPmuSnapshot(s_bootPmu, line, sizeof(line));
+        printf("sysInfo: boot %s\n", line);
+        if (batteryHandler != nullptr) {
+            BatteryHandler::formatPmuSnapshot(batteryHandler->readPmuSnapshot(), line, sizeof(line));
+            printf("sysInfo: now %s\n", line);
+        }
+    });
     commandHandler->begin();
 
     // Set MQTT callbacks for sound controller

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "BatteryHandler.h"
 
 #include "esp_adc/adc_cali_scheme.h"
@@ -498,4 +499,58 @@ bool BatteryHandler::isBatteryConnected() const {
 
 bool BatteryHandler::isCharging() const {
     return charging;
+}
+
+// ---- Bench diagnostics: PMU snapshot (USB-drop investigation) ----------------------------------
+
+BatteryHandler::PmuSnapshot BatteryHandler::readPmuSnapshot() const {
+    PmuSnapshot s;
+    if (!initialized || pmuHandle == nullptr) {
+        return s;
+    }
+    s.valid = pmuReadRegisterU8(0x00, s.status1) && pmuReadRegisterU8(0x01, s.status2) &&
+              pmuReadRegisterU8(0x16, s.inputCurLimit) && pmuReadRegisterU8(0x20, s.pwronStatus) &&
+              pmuReadRegisterU8(0x21, s.pwroffStatus) && pmuReadRegisterU8(0x22, s.pwroffEn) &&
+              pmuReadRegisterU8(0x24, s.voffSet) && pmuReadRegisterU8(0x27, s.irqOffOnLevel) &&
+              pmuReadRegisterU8(0x48, s.irq1) && pmuReadRegisterU8(0x49, s.irq2) &&
+              pmuReadRegisterU8(0x4A, s.irq3);
+    return s;
+}
+
+void BatteryHandler::formatPmuSnapshot(const PmuSnapshot& s, char* out, size_t outLen) {
+    if (out == nullptr || outLen == 0) {
+        return;
+    }
+    if (!s.valid) {
+        snprintf(out, outLen, "pmu=none");
+        return;
+    }
+    // Bit meanings per XPowersLib (AXP2101): 0x20 power-on source, 0x21 power-off reason.
+    static const char* const kOnBits[8] = {"pwron_low", "irq_low", "vbus_insert", "bat_normal",
+                                           "bat_insert", "always_high", "b6", "b7"};
+    static const char* const kOffBits[8] = {"src_pulldown", "sw", "pwron_low", "vsys_uv",
+                                            "vbus_ov", "dc_uv", "dc_ov", "overtemp"};
+    int n = snprintf(out, outLen,
+                     "pmu st=%02x/%02x ilim=%02x on=%02x off=%02x offen=%02x voff=%02x lvl=%02x "
+                     "irq=%02x/%02x/%02x bat=%s vbus=%s on:",
+                     s.status1, s.status2, s.inputCurLimit, s.pwronStatus, s.pwroffStatus,
+                     s.pwroffEn, s.voffSet, s.irqOffOnLevel, s.irq1, s.irq2, s.irq3,
+                     (s.status1 & (1u << 3)) ? "present" : "absent",
+                     (s.status1 & (1u << 5)) ? "good" : "no");
+    for (int b = 0; b < 8 && n > 0 && static_cast<size_t>(n) < outLen; ++b) {
+        if (s.pwronStatus & (1u << b)) {
+            n += snprintf(out + n, outLen - static_cast<size_t>(n), " %s", kOnBits[b]);
+        }
+    }
+    if (n > 0 && static_cast<size_t>(n) < outLen) {
+        n += snprintf(out + n, outLen - static_cast<size_t>(n), " off:");
+    }
+    for (int b = 0; b < 8 && n > 0 && static_cast<size_t>(n) < outLen; ++b) {
+        if (s.pwroffStatus & (1u << b)) {
+            n += snprintf(out + n, outLen - static_cast<size_t>(n), " %s", kOffBits[b]);
+        }
+    }
+    if (n > 0 && static_cast<size_t>(n) < outLen && s.pwroffStatus == 0) {
+        snprintf(out + n, outLen - static_cast<size_t>(n), " none");
+    }
 }
