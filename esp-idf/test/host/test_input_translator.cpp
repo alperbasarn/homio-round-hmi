@@ -232,3 +232,21 @@ TEST_CASE(sfx_listener_clicks_on_press_and_releases_on_release) {
     CHECK_EQ(fb.swipes, 1);
     CHECK(fb.lastSwipe == Gesture::SwipeLeft);
 }
+
+TEST_CASE(a_lift_the_driver_did_not_classify_is_still_a_release) {
+    InputTranslator t;
+    InputEvent ev[8];
+    t.onTouch(pressAt(233, 233), 0);
+    t.onTouch(holdAt(250, 240), 16);   // drifted past the tap radius, short of a swipe
+    TouchSample lift;                  // pressed false, no flags: the driver gave up on it
+    lift.x = 250;
+    lift.y = 240;
+    lift.pressDurationMs = 120;
+    t.onTouch(lift, 140);
+    const size_t n = drain(t, ev, 8);
+    CHECK_EQ(n, static_cast<size_t>(3));
+    CHECK(ev[2].type == InputType::TouchRelease && ev[2].durationMs == 120u && ev[2].x == 250);
+    // Nothing further while the finger stays up.
+    t.onTouch(lift, 200);
+    CHECK_EQ(drain(t, ev, 8), static_cast<size_t>(0));
+}

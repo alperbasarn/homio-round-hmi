@@ -103,3 +103,28 @@ pending: the board keeps dropping off the USB bus (deep sleep with the pre-gate 
 - `tools/bench_serial.py` is unchanged; a scratch `bench_wait_flash.sh` waits for the board to
   reappear after a tap and flashes at once, which is how the sleep-gated build gets onto a board
   that still runs pre-gate firmware.
+
+## Gesture walk 1 on the 1.75 (2026-09-13, `bench/walk1.log`)
+
+Sleep-gated Phase 2 build, 120 s capture, owner at the panel. 318 events, 0 ring overflow, 0
+watchdog. What the log shows against `dev_notes/gesture_table.md`:
+
+| Check | Result |
+|---|---|
+| One `input` line per gesture | yes: `press`, `release` with `durationMs`, `gesture swipe-*`, `gesture double-tap`, with the hit zone on every touch event |
+| Double-tap | two releases 318 ms apart produced one `double-tap` gesture |
+| Swipes drive the matrix | swipe-down on INFO -> Device Info; swipes on Device Info ignored; bottom-band tap -> INFO; swipe-up on INFO -> the first placeholder page; left/right on INFO and on the pages ignored (no page at x != 0) |
+| D13 | a 917 ms press came back as a `release` (a tap), a ~2.7 s hold produced nothing (consumed below 3 s); the 3 s hold still to be exercised on a screen that has a back action |
+| Wake tap consumed (INPT-11) | `Mode: MATRIX_PAGE -> SLEEP` at 141.9 s, `Mode: SLEEP -> MATRIX_PAGE` at 195.7 s with no `input` line for the waking press or its release; the next logged press is 6.6 s later |
+| Sound effects | click on every press, release sound on every release, one swipe sound per swipe |
+| Stage 0 | 240 -> 160 MHz once at 20 s idle, restored on the wake |
+
+**Finding W1 (fixed):** only 4 of 32 presses had a matching `release`. The driver reports neither
+a release nor a gesture when the finger drifts more than the 25 px tap radius but less than the
+40 px swipe threshold during a tap, so those lifts vanished. `InputTranslator` now turns every lift
+the driver left unclassified into a `release` with the driver's press duration (host case
+`a_lift_the_driver_did_not_classify_is_still_a_release`). The driver thresholds are untouched.
+
+**Finding W2 (open):** the board left the USB bus again after the walk, this time invisible to
+Windows as well (no VID 303A device), with both sleep gates off and no capture running. Cause not
+established (cable, power, or a state the gates do not cover); a re-plug brings it back.

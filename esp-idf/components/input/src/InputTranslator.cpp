@@ -105,7 +105,10 @@ void InputTranslator::onTouch(const TouchSample& s, uint32_t nowMs) {
         }
     }
 
-    const bool releasing = s.newRelease || s.newHoldRelease;
+    // A lift the driver did not classify (a tap that drifted 25..40 px: past its tap radius, short
+    // of a swipe) is still a release; without this the finger simply vanished (bench walk 1).
+    const bool unclassifiedLift = touchDown_ && !s.pressed && !s.newPress && !s.newRelease && !s.newHoldRelease;
+    const bool releasing = s.newRelease || s.newHoldRelease || unclassifiedLift;
     if (releasing) {
         touchDown_ = false;
         const bool consumed = wakeConsuming_;
