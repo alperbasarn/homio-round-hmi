@@ -172,3 +172,17 @@ TEST_CASE(pairing_intents_are_taken_once_and_the_flow_state_is_written_back) {
     CHECK(r.setPairing(LedPairing::Idle, -1));
     CHECK_EQ(r.pairingSlot(), -1);
 }
+
+TEST_CASE(the_first_strip_that_becomes_mine_is_selected_until_a_tap_says_otherwise) {
+    LedRegistryModel r;
+    const int a = r.announce("led-aaaaaa", "A", 0);
+    const int b = r.announce("led-bbbbbb", "B", 0);
+    CHECK_EQ(r.selectedIndex(), -1);
+    CHECK(r.setPaired(b, true));
+    CHECK_EQ(r.selectedIndex(), b);
+    CHECK(r.setPaired(a, true));
+    CHECK_EQ(r.selectedIndex(), b);  // an explicit choice is never overridden
+    CHECK(r.select(a));
+    CHECK(r.setPaired(a, false));
+    CHECK_EQ(r.selectedIndex(), a);  // unpairing does not move the selection by itself
+}

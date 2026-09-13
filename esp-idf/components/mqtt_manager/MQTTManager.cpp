@@ -247,6 +247,7 @@ esp_err_t MQTTManager::initialize(bool useLightConfig)
     // Buffer sizes
     mqtt_cfg.buffer.size = MQTT_MAX_PACKET_SIZE;
     mqtt_cfg.buffer.out_size = MQTT_MAX_PACKET_SIZE;
+    mqtt_cfg.outbox.limit = 8192;  // LED-03: enqueued publishes are bounded; over the limit they fail fast
 
     // Network timeout
     mqtt_cfg.network.timeout_ms = MQTT_CONNECTION_TIMEOUT_MS;
@@ -345,7 +346,9 @@ esp_err_t MQTTManager::publishRaw(const char* topic, const char* payload, size_t
     if (!mqtt_connected || topic == nullptr || payload == nullptr) {
         return ESP_ERR_INVALID_STATE;
     }
-    const int msg_id = esp_mqtt_client_publish(mqtt_client, topic, payload, static_cast<int>(length), qos, retain ? 1 : 0);
+    // Enqueue, never publish inline: esp_mqtt_client_publish writes the packet on the caller and can
+    // block for network.timeout_ms when the socket is full, and the caller here is the display task.
+    const int msg_id = esp_mqtt_client_enqueue(mqtt_client, topic, payload, static_cast<int>(length), qos, retain ? 1 : 0, true);
     return msg_id < 0 ? ESP_FAIL : ESP_OK;
 }
 

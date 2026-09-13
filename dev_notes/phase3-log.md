@@ -144,3 +144,34 @@ Deviations: hue comes from the angle of the ring drag, not from the x position t
 used (the row says "ring drag"); the chooser also shows for a single unpaired strip so the pair
 affordance is reachable; the LVGL lock is still taken by the host for every LIGHT frame (the row
 asks for none on idle frames), the view merely does no LVGL work then.
+
+## Independent review of the day's device-facing code (2026-09-13, evening)
+
+Two review agents, one on boot order, threading and LVGL locking, one on the LED path and the
+contract across both firmwares, each told to refute rather than confirm. Every finding below was
+re-read in the code before it was acted on. Neither found a crash in the code written today; the
+threading of the early display task, the lock discipline, the LVGL 8.4 API use, the RTC black box
+and the sleep gates were checked and held. What did not hold, and what changed:
+
+| Finding | Fix |
+|---|---|
+| `home` / `info` console and MQTT commands called `DisplayController::setMode()` on the command or MQTT task while the display task renders (pre-existing, real LVGL corruption risk). | `DisplayController::requestMode()` stores the pending mode; `update()` applies it on the display task. |
+| A `set` was taken from the light model and lost when the publish failed (broker down while the strip still counted as online); the recovery replay was then dropped as a stale echo. | `pumpOutbound()` publishes only while connected; a failed publish hands the fields back (`restorePending`); the echo rule drops an older seq only while a newer set is pending or in flight (`ackedSeq`), otherwise a replay is applied as the truth. |
+| Any `state` carrying `rejected:true` unpaired this knob, whoever was rejected, and the strip retained rejections as the state every later subscriber replayed. | The knob unpairs only when the rejection names its own id; the strip publishes rejections without the retain flag. |
+| The rim chooser was drawn at 200..219 px while the router's rim annulus is 140..190 px: a tap or a hold on a visible segment was a dead-zone event, and a hold on an unpaired segment backed out to INFO. | The arcs are sized to the annulus (diameter 380, width 50 in the 466 px space). |
+| The 12-frame inbound ring is smaller than the retained burst of four documents per strip on every reconnect. | 33 frames (four per slot plus the free one). |
+| `esp_mqtt_client_publish` ran inline on the display task and can block for the network timeout when the socket is full. | `publishRaw` enqueues into the outbox (`esp_mqtt_client_enqueue`, stored) with an 8 KB outbox limit. |
+| `leds` copies the 2.7 KB registry snapshot onto the 4 KB command task stack. | Command task stack 8 KB. |
+| Nothing ever selected a strip after boot, so every knob turn was discarded, and the single-strip case hid the chooser while asking for it. | The first strip that becomes mine is selected when nothing is; the chooser shows while nothing is selected. |
+| A brightness-only `set` switched a strip the user had just turned off back on (the web page rule applied to MQTT). | The strip couples power to brightness only for the full-tuple web path. |
+| The LED timers were fed the 32-bit frame clock (a wrap after 49.7 days stops the publishes). | The pumps take the 64-bit clock. |
+| A pair intent for a second strip while a flow was running was consumed and refused silently. | The latest request wins: the running flow is dropped and the new one starts. |
+| The RTC black box was one record rewritten in place (a reset mid-write loses it); the LIGHT hint was 600 px wide on a 466 px panel and the small labels used the 14 px face. | Two alternating records, the newer valid one wins; wrapped, centred hint and prompt; Montserrat 28 for the name and effect. |
+
+Left as noted, not changed: re-entering INITIALIZATION would show a full arc (no caller exists);
+the strip prints `seq` as a 32-bit long (unreachable in practice); the LVGL lock is still taken
+for every LIGHT frame.
+
+Verification after the fixes: 29 host suites green with five new cases; the 1.75 builds (the
+Montserrat 28 face now links, +38 KB); include edges clean; the strip's 141 checks and its pinned
+build are green (+16 B).

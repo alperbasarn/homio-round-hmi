@@ -11,6 +11,7 @@ LedBridgeCore::LedBridgeCore(model::LedRegistryModel& registry, model::LightMode
     for (size_t i = 0; i < kQueue; ++i) {
         queue_[i].topic[0] = '\0';
         queue_[i].payload[0] = '\0';
+        queue_[i].fields = 0;
     }
 }
 
@@ -84,9 +85,9 @@ bool LedBridgeCore::handleInbound(const char* topic, const char* payload, model:
             if (m.fields & LedStateParams) std::memcpy(next.params, m.state.params, model::kLedParamCount);
             if (m.fields & LedStateEffectColor) next.effectRgb = m.state.effectRgb;
             if (m.fields & LedStateCount) next.count = m.state.count;
-            if (m.rejected) {
-                registry_.setPaired(slot, false);  // the strip does not obey this HMI
-            }
+            if (m.rejected && m.source == model::LedSource::Self) {
+                registry_.setPaired(slot, false);  // the strip does not obey this HMI (a rejection of
+            }                                      // another controller is not about us)
             registry_.applyState(slot, next, m.source, m.seq, now);
             return true;
         }
@@ -133,6 +134,7 @@ bool LedBridgeCore::enqueue(const char* id, LedTopic kind, const char* payload) 
     }
     std::strncpy(slot.payload, payload, kPayloadCapacity - 1);
     slot.payload[kPayloadCapacity - 1] = '\0';
+    slot.fields = 0;
     ++queueCount_;
     return true;
 }
@@ -166,6 +168,7 @@ bool LedBridgeCore::nextOutbound(Outbound& out, model::Millis now) {
     if (encodeLedSet(out.payload, kPayloadCapacity, light_.asStripState(), fields, ownId_.c_str(), seq) < 0) {
         return false;
     }
+    out.fields = fields;
     ++sets_;
     return true;
 }
@@ -219,8 +222,8 @@ bool LedBridgeCore::unpair(int slot) {
 void LedBridgeCore::tick(model::Millis now) {
     const int pairSlot = registry_.takePairIntent();
     if (pairSlot >= 0) {
-        if (pairing_ == Pairing::Paired || pairing_ == Pairing::Failed) {
-            resetPairing();  // a new request after a finished flow starts over
+        if (pairing_ != Pairing::Idle) {
+            resetPairing();  // the latest request wins: a finished flow starts over, a running one is dropped
         }
         startPairing(pairSlot, label_.c_str(), now);
     }

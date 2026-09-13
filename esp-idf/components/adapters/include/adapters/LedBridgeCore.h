@@ -26,6 +26,7 @@ public:
     struct Outbound {
         char topic[kTopicCapacity];
         char payload[kPayloadCapacity];
+        uint16_t fields;  // the LightModel::Pending bits a set carries (0 for a control message)
     };
 
     LedBridgeCore(model::LedRegistryModel& registry, model::LightModel& light, const char* ownId);

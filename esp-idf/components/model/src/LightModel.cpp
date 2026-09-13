@@ -217,6 +217,7 @@ bool LightModel::follow(int slot, const LedStripState* reported) {
     }
     pending_ = 0;
     publish_.reset();
+    ackedSeq_ = sentSeq_;  // nothing in flight for the new strip
     if (next != state()) {
         mutate() = next;
     }
@@ -225,11 +226,17 @@ bool LightModel::follow(int slot, const LedStripState* reported) {
 
 bool LightModel::adoptRemote(const LedStripState& s, LedSource source, uint32_t seq) {
     const bool echo = source == LedSource::Self && seq <= sentSeq_;
-    if (echo && seq < sentSeq_) {
-        return false;  // a stale echo of an older set; newer ones are in flight
+    if (echo) {
+        const bool inFlight = ackedSeq_ != sentSeq_;
+        if (seq < sentSeq_ && (pending_ != 0 || inFlight)) {
+            return false;  // a stale echo of an older set; a newer one is pending or in flight
+        }
+        if (seq == sentSeq_) {
+            ackedSeq_ = seq;
+        }
     }
     // An echo respects fields with a newer local change still pending; a remote change wins.
-    const uint16_t keep = echo ? pending_ : 0u;
+    const uint16_t keep = (echo && seq == sentSeq_) ? pending_ : 0u;
     LightState next = state();
     if (!(keep & PendingPower)) next.power = s.power;
     if (!(keep & PendingBrightness)) next.brightness = s.brightness;
@@ -257,6 +264,14 @@ uint32_t LightModel::takePending(uint16_t& fields) {
         ++sentSeq_;
     }
     return sentSeq_;
+}
+
+void LightModel::restorePending(uint16_t fields) {
+    if (fields == 0) {
+        return;
+    }
+    pending_ |= fields;
+    publish_.markChanged();
 }
 
 LedStripState LightModel::asStripState() const {

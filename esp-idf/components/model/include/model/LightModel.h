@@ -79,16 +79,20 @@ public:
     // The strip this state controls. Switching adopts the reported state (when known) silently
     // and discards anything pending for the previous strip.
     bool follow(int slot, const LedStripState* reported);
-    // A `state` from the strip: source Self with seq below sentSeq() is a stale echo and ignored;
-    // seq equal to sentSeq() is the final echo and applied except where a newer local change is
-    // still pending; anything else is a remote change, applied in full, and it cancels whatever
-    // was pending. Never marks a field pending. Returns true when the local state changed.
+    // A `state` from the strip. Source Self with the current seq is the final echo: applied except
+    // where a newer local change is still pending. Source Self with an older seq is stale only
+    // while a newer set is pending or in flight (not yet echoed); once everything is acknowledged
+    // it is the strip telling the truth (a replay after a reconnect) and is applied. Any other
+    // source is a remote change, applied in full, and it cancels whatever was pending. Never marks a field pending. Returns true when the local state changed.
     bool adoptRemote(const LedStripState& s, LedSource source, uint32_t seq);
 
     // Bridge side. takePending() clears the pending fields and returns the seq for that publish.
     uint16_t pendingFields() const { return pending_; }
     uint32_t sentSeq() const { return sentSeq_; }
     uint32_t takePending(uint16_t& fields);
+    // The publish of a taken set failed: the fields are pending again and the window is re-armed.
+    void restorePending(uint16_t fields);
+    uint32_t ackedSeq() const { return ackedSeq_; }
     // Drops pending changes and resets the window: a command the strip may not receive (offline,
     // not mine) is refused locally, never queued.
     void discardPending() { pending_ = 0; publish_.reset(); }
@@ -110,6 +114,7 @@ private:
     RateLimiter publish_;
     uint16_t pending_ = 0;
     uint32_t sentSeq_ = 0;
+    uint32_t ackedSeq_ = 0;  // the last own seq the strip echoed
 };
 
 }  // namespace model

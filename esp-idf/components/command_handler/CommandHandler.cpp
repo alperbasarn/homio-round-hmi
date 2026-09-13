@@ -249,12 +249,12 @@ void CommandHandler::cmdReset(const std::string& params) {
 }
 
 void CommandHandler::cmdSwitchToHome(const std::string& params) {
-    displayController->setMode(HOME);
+    displayController->requestMode(HOME);  // never setMode() here: this runs on the command or MQTT task
     ESP_LOGI(TAG, "Switched to home page.");
 }
 
 void CommandHandler::cmdSwitchToInfo(const std::string& params) {
-    displayController->setMode(INFO);
+    displayController->requestMode(INFO);
     ESP_LOGI(TAG, "Switched to info page.");
 }
 

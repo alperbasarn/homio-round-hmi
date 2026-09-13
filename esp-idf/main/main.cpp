@@ -156,7 +156,8 @@ struct BenchBlackBox {
     uint32_t check;
 };
 static constexpr uint32_t kBlackBoxMagic = 0x51424258u;  // "QBBX"
-static RTC_NOINIT_ATTR BenchBlackBox s_blackBox;
+// Two slots written alternately: a reset in the middle of a write leaves the other slot intact.
+static RTC_NOINIT_ATTR BenchBlackBox s_blackBox[2];
 static BenchBlackBox s_previousRun;
 static bool s_previousRunValid = false;
 static BatteryHandler::PmuSnapshot s_bootPmu;
@@ -174,9 +175,16 @@ static uint32_t blackBoxChecksum(const BenchBlackBox& b) {
     return c;
 }
 
+static bool blackBoxValid(const BenchBlackBox& b) {
+    return b.magic == kBlackBoxMagic && b.check == blackBoxChecksum(b);
+}
+
 static void blackBoxBootCheck() {
-    if (s_blackBox.magic == kBlackBoxMagic && s_blackBox.check == blackBoxChecksum(s_blackBox)) {
-        s_previousRun = s_blackBox;
+    const bool valid0 = blackBoxValid(s_blackBox[0]);
+    const bool valid1 = blackBoxValid(s_blackBox[1]);
+    if (valid0 || valid1) {
+        const bool pick1 = valid1 && (!valid0 || s_blackBox[1].seq > s_blackBox[0].seq);
+        s_previousRun = pick1 ? s_blackBox[1] : s_blackBox[0];
         s_previousRunValid = true;
         ESP_LOGI(TAG, "Black box: previous run uptime=%us seq=%u usb_host=%u mode=%u pmu=%02x/%02x off=%02x irq=%02x/%02x/%02x (the chip kept power through the last reset)",
                  static_cast<unsigned>(s_previousRun.uptimeS), static_cast<unsigned>(s_previousRun.seq),
@@ -185,24 +193,31 @@ static void blackBoxBootCheck() {
     } else {
         ESP_LOGI(TAG, "Black box: no record (first boot, or power was lost)");
     }
-    s_blackBox = BenchBlackBox{};
-    s_blackBox.magic = kBlackBoxMagic;
-    s_blackBox.check = blackBoxChecksum(s_blackBox);
+    for (BenchBlackBox& b : s_blackBox) {
+        b = BenchBlackBox{};
+        b.magic = kBlackBoxMagic;
+        b.check = blackBoxChecksum(b);
+    }
 }
 
+static uint32_t s_blackBoxSeq = 0;
+
 static void blackBoxWrite(uint32_t uptimeS, bool usbHost, uint8_t mode, const BatteryHandler::PmuSnapshot& pmu) {
-    s_blackBox.magic = kBlackBoxMagic;
-    ++s_blackBox.seq;
-    s_blackBox.uptimeS = uptimeS;
-    s_blackBox.usbHost = usbHost ? 1 : 0;
-    s_blackBox.mode = mode;
-    s_blackBox.pmuStatus1 = pmu.status1;
-    s_blackBox.pmuStatus2 = pmu.status2;
-    s_blackBox.pmuOff = pmu.pwroffStatus;
-    s_blackBox.irq1 = pmu.irq1;
-    s_blackBox.irq2 = pmu.irq2;
-    s_blackBox.irq3 = pmu.irq3;
-    s_blackBox.check = blackBoxChecksum(s_blackBox);
+    const uint32_t seq = ++s_blackBoxSeq;
+    BenchBlackBox& b = s_blackBox[seq & 1u];
+    b.magic = 0;  // invalid while being written
+    b.seq = seq;
+    b.uptimeS = uptimeS;
+    b.usbHost = usbHost ? 1 : 0;
+    b.mode = mode;
+    b.pmuStatus1 = pmu.status1;
+    b.pmuStatus2 = pmu.status2;
+    b.pmuOff = pmu.pwroffStatus;
+    b.irq1 = pmu.irq1;
+    b.irq2 = pmu.irq2;
+    b.irq3 = pmu.irq3;
+    b.magic = kBlackBoxMagic;
+    b.check = blackBoxChecksum(b);
 }
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
@@ -263,7 +278,7 @@ void displayTask(void* parameter) {
         // SCRN-09: before app_main publishes the composition, only the boot controller runs.
         const bool ready = s_compositionComplete.load(std::memory_order_acquire);
         if (ready && ledBridge != nullptr) {
-            ledBridge->pumpInbound(frameNow);  // LED-03: inbound frames into the registry, before the drain
+            ledBridge->pumpInbound(nowMs());  // LED-03: inbound frames into the registry, before the drain (64-bit clock: the LED windows must not wrap)
         }
         appModel.drainPendingMutations(frameNow);
         if (ready && inputRouter != nullptr) {
@@ -307,7 +322,7 @@ void displayTask(void* parameter) {
 
         displayController->update();
         if (ready && ledBridge != nullptr) {
-            ledBridge->pumpOutbound(frameNow);  // LED-03: console requests, then the publishes
+            ledBridge->pumpOutbound(nowMs());  // LED-03: pairing intents, then the publishes
         }
 
         if (ready && inputRouter != nullptr) {

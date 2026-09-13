@@ -20,7 +20,9 @@ namespace adapters {
 
 class MqttModelBridge {
 public:
-    static constexpr size_t kRingFrames = 12;
+    // Every (re)connect replays four retained documents per strip in one burst before the display
+    // task gets a frame: room for all eight strips plus the free slot.
+    static constexpr size_t kRingFrames = 4 * model::LedRegistryState::kSlots + 1;
     static constexpr size_t kFrameTopic = 64;
     static constexpr size_t kFramePayload = 320;
 

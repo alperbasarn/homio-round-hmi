@@ -91,6 +91,8 @@ public:
 
   // INPT-22: a setpoint command on the command task lands as a delta applied on the display task.
   void requestKnobDelta(int delta);
+  // A mode switch asked for off the display task (console, MQTT command): applied in update().
+  void requestMode(Mode mode) { pendingModeRequest.store(static_cast<int>(mode)); }
 
   void turnDisplayOff();
   void turnDisplayOn();

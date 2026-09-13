@@ -409,7 +409,7 @@
 // Task Stack Sizes
 #define DISPLAY_STACK_SIZE      8192
 #define NETWORK_STACK_SIZE      8192
-#define COMMAND_STACK_SIZE      4096
+#define COMMAND_STACK_SIZE      8192  // the leds console command copies a 2.7 KB registry snapshot
 
 // Timeouts
 #define MQTT_CONNECT_TIMEOUT_MS     5000

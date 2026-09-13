@@ -58,9 +58,11 @@ inline int ordinalOfSlot(const model::LedRegistryState& s, int slot) {
     return -1;
 }
 
-// The chooser shows when there is a choice, or when the only strip still needs pairing.
+// The chooser shows when there is a choice, when nothing is selected yet, or when the only strip
+// still needs pairing (so the pair affordance is reachable).
 inline bool chooserVisible(const model::LedRegistryState& s) {
     if (s.used >= 2) return true;
+    if (s.used >= 1 && s.selected < 0) return true;
     for (size_t i = 0; i < model::LedRegistryState::kSlots; ++i) {
         if (s.slots[i].used && !s.slots[i].paired) return true;
     }

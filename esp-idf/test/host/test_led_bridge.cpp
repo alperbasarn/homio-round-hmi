@@ -395,3 +395,38 @@ TEST_CASE(a_wrong_code_fails_the_pairing_as_soon_as_the_strip_republishes_its_li
     CHECK(r.app.ledRegistry().pairing() == LedPairing::Failed);
     CHECK(!r.app.ledRegistry().slot(r.slot())->paired);
 }
+
+TEST_CASE(a_rejection_aimed_at_another_controller_does_not_unpair_this_one) {
+    Rig r;
+    r.announceStrip();
+    r.frame(1016);
+    r.pairFresh();
+    CHECK(r.app.ledRegistry().slot(r.slot())->paired);
+    r.strip.publishState(r.broker, r.core, "qnob-ffffff", 9, true, r.now);  // a neighbour was rejected
+    r.frame(1100);
+    CHECK(r.app.ledRegistry().slot(r.slot())->paired);
+    r.strip.publishState(r.broker, r.core, kOwn, 9, true, r.now);  // this knob was rejected
+    r.frame(1200);
+    CHECK(!r.app.ledRegistry().slot(r.slot())->paired);
+}
+
+TEST_CASE(pairing_becomes_mine_selects_the_strip_and_a_second_request_restarts_the_flow) {
+    Rig r;
+    r.strip.everPaired = true;
+    r.announceStrip();
+    r.frame(1016);
+    CHECK_EQ(r.app.ledRegistry().selectedIndex(), -1);
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::PairIntent, 0, r.slot(), 1020)));
+    r.frame(1032);
+    CHECK(r.core.pairing() == LedBridgeCore::Pairing::Requested);
+    // The user changes their mind and holds the segment again: the flow restarts, not refused.
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::PairIntent, 0, r.slot(), 1040)));
+    r.frame(1048);
+    CHECK(r.core.pairing() == LedBridgeCore::Pairing::Requested);
+    CHECK(r.app.mutations().post(LedRegistryModel::make(LedRegistryModel::Kind::CodeIntent, 0, 3, 1060)));
+    r.frame(1064);
+    CHECK(r.core.pairing() == LedBridgeCore::Pairing::Paired);
+    CHECK_EQ(r.app.ledRegistry().selectedIndex(), r.slot());  // the first strip that is mine is selected
+    r.frame(1080);
+    CHECK_EQ(r.app.light().state().stripSlot, r.slot());
+}

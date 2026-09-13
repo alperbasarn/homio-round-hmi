@@ -65,12 +65,17 @@ void MqttModelBridge::pumpInbound(model::Millis now) {
 
 void MqttModelBridge::pumpOutbound(model::Millis now) {
     core_.tick(now);  // pairing intents from the registry, the timeout, the flow state back
+    if (!mqtt_.isConnected()) {
+        return;  // pending sets and queued control messages wait for the broker
+    }
     LedBridgeCore::Outbound out;
     while (core_.nextOutbound(out, now)) {
         if (mqtt_.publishRaw(out.topic, out.payload, std::strlen(out.payload), 1, false) == ESP_OK) {
             publishes_.fetch_add(1, std::memory_order_relaxed);
         } else {
             publishFailures_.fetch_add(1, std::memory_order_relaxed);
+            app_.light().restorePending(out.fields);  // a set that never left keeps its fields pending
+            break;
         }
     }
     if (!refusedLogged_ && core_.refusedAnnounceCount() > 0) {

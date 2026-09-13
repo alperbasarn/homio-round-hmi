@@ -34,10 +34,12 @@ void LightView::doBuild(lv_obj_t* parent) {
     lv_obj_set_width(fill_, w);
     lv_obj_set_style_bg_opa(fill_, LV_OPA_COVER, 0);
 
-    // The rim chooser: eight arcs, hidden until a strip occupies them.
-    const int padding = std::max(2, w / 32);
-    const int arcDiam = std::min(w, h) - 2 * padding;
-    const int arcWidth = std::max(8, (10 * w) / 240);
+    // The rim chooser: eight arcs, hidden until a strip occupies them. They cover exactly the rim
+    // annulus the router classifies as HitZone::Rim (140..190 px of a 466 px side), so a tap or a
+    // hold on a visible segment is a rim event to the controller.
+    const int side = std::min(w, h);
+    const int arcDiam = (2 * 190 * side) / 466;
+    const int arcWidth = std::max(8, (50 * side) / 466);
     for (size_t i = 0; i < model::LedRegistryState::kSlots; ++i) {
         lv_obj_t* arc = lv_arc_create(root_);
         lv_obj_set_size(arc, arcDiam, arcDiam);
@@ -60,6 +62,11 @@ void LightView::doBuild(lv_obj_t* parent) {
 #else
     const lv_font_t* bigFont = LV_FONT_DEFAULT;
 #endif
+#if defined(CONFIG_LV_FONT_MONTSERRAT_28)
+    const lv_font_t* textFont = (w >= 400) ? &lv_font_montserrat_28 : LV_FONT_DEFAULT;
+#else
+    const lv_font_t* textFont = LV_FONT_DEFAULT;
+#endif
     levelLabel_ = lv_label_create(root_);
     lv_obj_set_style_text_font(levelLabel_, bigFont, 0);
     lv_obj_set_style_text_color(levelLabel_, lv_color_white(), 0);
@@ -67,11 +74,13 @@ void LightView::doBuild(lv_obj_t* parent) {
     lv_obj_align(levelLabel_, LV_ALIGN_CENTER, 0, -scalePx(10));
 
     effectLabel_ = lv_label_create(root_);
+    lv_obj_set_style_text_font(effectLabel_, textFont, 0);
     lv_obj_set_style_text_color(effectLabel_, lv_color_hex(kText), 0);
     lv_label_set_text(effectLabel_, "");
     lv_obj_align(effectLabel_, LV_ALIGN_CENTER, 0, scalePx(24));
 
     nameLabel_ = lv_label_create(root_);
+    lv_obj_set_style_text_font(nameLabel_, textFont, 0);
     lv_obj_set_style_text_color(nameLabel_, lv_color_hex(kText), 0);
     lv_label_set_text(nameLabel_, "no strip");
     lv_obj_align(nameLabel_, LV_ALIGN_TOP_MID, 0, scalePx(34));
@@ -85,11 +94,17 @@ void LightView::doBuild(lv_obj_t* parent) {
     lv_obj_align(badge_, LV_ALIGN_TOP_MID, 0, scalePx(24));
 
     hintLabel_ = lv_label_create(root_);
+    lv_obj_set_width(hintLabel_, w - 2 * scalePx(28));
+    lv_label_set_long_mode(hintLabel_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(hintLabel_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(hintLabel_, lv_color_hex(kHint), 0);
-    lv_label_set_text(hintLabel_, "Tap: power  \xE2\x80\xA2  Knob: brightness  \xE2\x80\xA2  Swipe: effect  \xE2\x80\xA2  Ring: colour  \xE2\x80\xA2  Hold 3 s: back");
+    lv_label_set_text(hintLabel_, "Tap power  •  Knob brightness  •  Swipe effect\nRing colour  •  Hold 3 s back");
     lv_obj_align(hintLabel_, LV_ALIGN_BOTTOM_MID, 0, -scalePx(18));
 
     promptLabel_ = lv_label_create(root_);
+    lv_obj_set_width(promptLabel_, w - 2 * scalePx(40));
+    lv_label_set_long_mode(promptLabel_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(promptLabel_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(promptLabel_, lv_color_white(), 0);
     lv_obj_set_style_bg_color(promptLabel_, lv_color_hex(kDimGrey), 0);
     lv_obj_set_style_bg_opa(promptLabel_, LV_OPA_80, 0);

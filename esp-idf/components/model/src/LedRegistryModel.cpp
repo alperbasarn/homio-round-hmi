@@ -344,6 +344,11 @@ bool LedRegistryModel::setPaired(int index, bool paired) {
     if (state().slots[index].paired != paired) {
         mutate().slots[index].paired = paired;
     }
+    // The first strip that becomes mine is the one the LIGHT screen drives, until a rim tap says
+    // otherwise; without this a fresh boot has nothing selected and every knob turn is discarded.
+    if (paired && state().selected < 0) {
+        mutate().selected = static_cast<int8_t>(index);
+    }
     return true;
 }
 

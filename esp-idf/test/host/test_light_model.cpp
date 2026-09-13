@@ -160,3 +160,25 @@ TEST_CASE(light_model_allocates_nothing) {
     }
     CHECK(notified > 0);
 }
+
+TEST_CASE(an_older_echo_is_applied_once_nothing_is_pending_or_in_flight) {
+    LightModel l;
+    uint16_t fields = 0;
+    CHECK(l.setBrightness(70));
+    CHECK_EQ(l.takePending(fields), 1u);
+    l.adoptRemote(reported(true, 70, 0x00FFFF, LedEffect::Solid), LedSource::Self, 1);  // the echo: nothing changes, but it acknowledges
+    CHECK_EQ(l.ackedSeq(), 1u);
+    // A replay of the retained state after a reconnect carries the truth: applied, not dropped.
+    CHECK(l.adoptRemote(reported(true, 60, 0x00FFFF, LedEffect::Solid), LedSource::Self, 0));
+    CHECK_EQ(l.state().brightness, 60);
+    // A failed publish hands the fields back and re-arms the window.
+    CHECK(l.setBrightness(80));
+    CHECK_EQ(l.takePending(fields), 2u);
+    CHECK_EQ(l.pendingFields(), 0u);
+    l.restorePending(fields);
+    CHECK_EQ(l.pendingFields(), static_cast<uint16_t>(LightModel::PendingBrightness));
+    CHECK(l.publishPending());
+    // While that set is pending, an older echo is stale again.
+    CHECK(!l.adoptRemote(reported(true, 60, 0x00FFFF, LedEffect::Solid), LedSource::Self, 1));
+    CHECK_EQ(l.state().brightness, 80);
+}
