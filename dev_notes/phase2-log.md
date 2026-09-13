@@ -182,3 +182,9 @@ deep-sleeping 1.75 needs a power cycle. Tracked as PERI-30; a product question, 
 
 Diagnostics for the next drop: a `sysInfo` console command (reset reason, uptime, heap, USB host
 attached), a 30 s heartbeat line from the network task, and the reset reason in the boot log.
+
+**Verification (bench, 2026-09-13, 260 s capture with the port held, `bench_step4.sh`):** stage 0
+at 20 s (240 to 160 MHz), stage 1 at 30 s (screen off), "Stages 2 and 3 held" and "Stage 2 skipped"
+at 120 s, "Stage 3 skipped" at 180 s; a heartbeat every 30 s through 240 s with the USB host
+attached and the free heap flat; `sysInfo` answered at 40 s and 235 s (`reset=usb`); 0 watchdog,
+0 panic; the port was still enumerated after the capture. The bench board stays on the bus.
