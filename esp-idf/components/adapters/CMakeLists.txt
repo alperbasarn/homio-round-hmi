@@ -7,7 +7,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/sources.cmake")
 
 idf_component_register(
-    SRCS ${ADAPTERS_PURE_SOURCES} "src/Adapters.cpp" "src/ModelHost.cpp"
+    SRCS ${ADAPTERS_PURE_SOURCES} "src/Adapters.cpp" "src/ModelHost.cpp" "src/MqttModelBridge.cpp"
     INCLUDE_DIRS "include"
     REQUIRES model
     PRIV_REQUIRES mqtt_manager wifi_manager internet_handler time_handler weather_handler battery_handler esp_timer

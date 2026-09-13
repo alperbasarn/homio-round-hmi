@@ -7,6 +7,7 @@
 #include "MQTTManager.h"
 #include "LocalAudio.h"
 #include "OTAManager.h"
+#include "adapters/MqttModelBridge.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -33,6 +34,7 @@ CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManag
       mqttManager(mqtt),
       localAudio(nullptr),
       otaManager(nullptr),
+      ledBridge(nullptr),
       modelQueue(nullptr),
       lastSetpointSeen(-1) {
 }
@@ -63,6 +65,10 @@ void CommandHandler::registerLocalAudio(LocalAudio* mc) {
 
 void CommandHandler::registerOTAManager(OTAManager* ota) {
     otaManager = ota;
+}
+
+void CommandHandler::registerLedBridge(adapters::MqttModelBridge* bridge) {
+    ledBridge = bridge;
 }
 
 void CommandHandler::update() {
@@ -211,6 +217,12 @@ void CommandHandler::registerCommands() {
     commands["otaUpdate"] = {"otaUpdate", [this](const std::string& p) { this->cmdOTAUpdate(p); }, "otaUpdate:URL - Start OTA update"};
     commands["otaInfo"] = {"otaInfo", [this](const std::string& p) { this->cmdOTAInfo(p); }, "Show OTA firmware info"};
     commands["sysInfo"] = {"sysInfo", [this](const std::string& p) { this->cmdSysInfo(p); }, "Reset reason, uptime, heap, USB host"};
+    commands["leds"] = {"leds", [this](const std::string& p) { this->cmdLeds(p); }, "List the LED strips the broker has shown (LED-03)"};
+    commands["ledStatus"] = {"ledStatus", [this](const std::string& p) { this->cmdLedStatus(p); }, "LED bridge counters and pairing state"};
+    commands["ledSelect"] = {"ledSelect", [this](const std::string& p) { this->cmdLedSelect(p); }, "ledSelect:<slot> - drive this strip from the light model (-1 clears)"};
+    commands["ledPair"] = {"ledPair", [this](const std::string& p) { this->cmdLedPair(p); }, "ledPair:<slot> - open the pairing window on a strip"};
+    commands["ledCode"] = {"ledCode", [this](const std::string& p) { this->cmdLedCode(p); }, "ledCode:<1-6> - confirm the blink count"};
+    commands["ledUnpair"] = {"ledUnpair", [this](const std::string& p) { this->cmdLedUnpair(p); }, "ledUnpair:<slot> - forget a strip on both sides"};
     commands["otaStatus"] = {"otaStatus", [this](const std::string& p) { this->cmdOTAStatus(p); }, "Show OTA status"};
     commands["help"] = {"help", [this](const std::string& p) { this->cmdHelp(p); }, "Show available commands"};
 
@@ -568,4 +580,70 @@ void CommandHandler::cmdSysInfo(const std::string& params) {
     if (diagnosticsProvider) {
         diagnosticsProvider();
     }
+}
+
+// ---- LED bench console (LED-03): the LIGHT screen on the registry (LED-05) is the real UI ----
+
+void CommandHandler::cmdLeds(const std::string& params) {
+    (void)params;
+    if (ledBridge == nullptr) {
+        printf("leds: no bridge\n");
+        return;
+    }
+    char lines[640];
+    if (ledBridge->describeRegistry(lines, sizeof(lines)) > 0) {
+        printf("%s", lines);
+    }
+}
+
+void CommandHandler::cmdLedStatus(const std::string& params) {
+    (void)params;
+    if (ledBridge == nullptr) {
+        printf("ledStatus: no bridge\n");
+        return;
+    }
+    char line[224];
+    if (ledBridge->describeStatus(line, sizeof(line)) > 0) {
+        printf("%s\n", line);
+    }
+}
+
+void CommandHandler::cmdLedSelect(const std::string& params) {
+    int slot = 0;
+    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, -1, 7)) {
+        printf("ledSelect:ERR:expected a slot -1..7\n");
+        return;
+    }
+    ledBridge->requestSelect(slot);
+    printf("ledSelect:%d\n", slot);
+}
+
+void CommandHandler::cmdLedPair(const std::string& params) {
+    int slot = 0;
+    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
+        printf("ledPair:ERR:expected a slot 0..7\n");
+        return;
+    }
+    ledBridge->requestPair(slot);
+    printf("ledPair:%d (watch the strip, then ledCode:<blinks>)\n", slot);
+}
+
+void CommandHandler::cmdLedCode(const std::string& params) {
+    int code = 0;
+    if (ledBridge == nullptr || !cmdparse::parseInt(params, code, 1, 6)) {
+        printf("ledCode:ERR:expected 1..6\n");
+        return;
+    }
+    ledBridge->requestCode(code);
+    printf("ledCode:%d\n", code);
+}
+
+void CommandHandler::cmdLedUnpair(const std::string& params) {
+    int slot = 0;
+    if (ledBridge == nullptr || !cmdparse::parseInt(params, slot, 0, 7)) {
+        printf("ledUnpair:ERR:expected a slot 0..7\n");
+        return;
+    }
+    ledBridge->requestUnpair(slot);
+    printf("ledUnpair:%d\n", slot);
 }

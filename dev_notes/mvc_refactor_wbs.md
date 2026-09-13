@@ -1033,6 +1033,7 @@ Added after the check: `BLD-20` moved into Phase 0 ahead of `BLD-03`, which now 
 - Added on owner decision 2026-09-13 (D20, D21): the `LED-01`..`LED-08` cluster (LED strips over MQTT: registry model, LightModel reshape, LIGHT screen on the registry, topic contract and bridge routes, blink-code pairing, fake-broker tests, bench gate, persistence; 36h across Phases 3/5/6) and the `OTA-01`..`OTA-07` cluster (the esp32c6-led-web release flow ported: signed manifest, release poll, verified install, `UpdateModel`, probation with strikes and revert, commands, pipeline; 23h in Phase 6). Section 1 totals are now 335 tasks / 1019.0h. The LED-side task list lives in `dev_notes/led_mqtt_contract.md`. Open questions Q7, Q8 and Q17 are answered by D20.
 - Added 2026-09-13 after the bench USB-drop root cause (stage 3 was never gated; a deep-sleeping 1.75 did not wake on a tap): `PERI-30`, deep-sleep wake on the 1.75.
 - 2026-09-13, owner pick while the bench was unavailable: `LED-01` and `LED-02` done, the pure halves of `LED-03` (topics, codec, `LedBridgeCore`) and `LED-07` (fake broker and strip) done on the host; the device bridge, the LIGHT screen (`LED-05`) and the bench gate (`LED-08`) remain.
+- 2026-09-13, continued: the device half of `LED-03` (MQTTManager raw publish and persistent subscriptions, `FrameRing`, `MqttModelBridge`, six bench console commands, main wiring); device verification owed; old topics retire with `LED-05`.
 
 ### Phase 2 execution notes (2026-09-13)
 

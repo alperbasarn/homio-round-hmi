@@ -71,6 +71,9 @@ void MQTTManager::handleMQTTEvent(esp_mqtt_event_handle_t event)
             subscribe(MQTT_TOPIC_SOUND_RESPONSE);
             subscribe(MQTT_TOPIC_COMMAND);
             subscribe(MQTT_TOPIC_INDOOR_TEMP);
+            for (const auto& entry : persistent_subscriptions) {
+                subscribe(entry.first, entry.second);
+            }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -335,6 +338,28 @@ esp_err_t MQTTManager::publish(const std::string& topic, const std::string& mess
 
     ESP_LOGI(TAG, "Published to %s: %s (msg_id=%d)", topic.c_str(), message.c_str(), msg_id);
     return ESP_OK;
+}
+
+esp_err_t MQTTManager::publishRaw(const char* topic, const char* payload, size_t length, int qos, bool retain)
+{
+    if (!mqtt_connected || topic == nullptr || payload == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const int msg_id = esp_mqtt_client_publish(mqtt_client, topic, payload, static_cast<int>(length), qos, retain ? 1 : 0);
+    return msg_id < 0 ? ESP_FAIL : ESP_OK;
+}
+
+void MQTTManager::addSubscription(const std::string& topic, int qos)
+{
+    for (const auto& entry : persistent_subscriptions) {
+        if (entry.first == topic) {
+            return;
+        }
+    }
+    persistent_subscriptions.emplace_back(topic, qos);
+    if (mqtt_connected) {
+        subscribe(topic, qos);
+    }
 }
 
 esp_err_t MQTTManager::subscribe(const std::string& topic, int qos)

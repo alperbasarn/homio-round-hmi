@@ -47,6 +47,10 @@ public:
     esp_err_t publish(const std::string& topic, const std::string& message, int qos = 0, bool retain = false);
     esp_err_t subscribe(const std::string& topic, int qos = 0);
     esp_err_t unsubscribe(const std::string& topic);
+    // LED-03: a publish without the sender= prefix (the LED contract documents are plain JSON) and a
+    // subscription that is taken on every connect, not only the hard-coded set above.
+    esp_err_t publishRaw(const char* topic, const char* payload, size_t length, int qos = 1, bool retain = false);
+    void addSubscription(const std::string& topic, int qos = 1);
 
     // Sound message handling (for backward compatibility with Arduino version)
     bool hasSoundMessage() const { return has_sound_message; }
@@ -87,6 +91,7 @@ private:
     int64_t last_connect_attempt;
 
     MQTTMessageCallback on_message;
+    std::vector<std::pair<std::string, int>> persistent_subscriptions;  // LED-03
     std::function<bool()> internet_predicate;
     bool internetAvailable() const;
 

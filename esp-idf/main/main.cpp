@@ -69,6 +69,7 @@
 #include "adapters/ConnectivityPoller.h"
 #include "adapters/EnvironmentPoller.h"
 #include "adapters/ModelHost.h"
+#include "adapters/MqttModelBridge.h"
 #include "model/AppModel.h"
 
 #include <atomic>
@@ -216,6 +217,7 @@ static SleepHandler* sleepHandler = nullptr;
 static adapters::ConnectivityPoller* connectivityPoller = nullptr;
 static adapters::EnvironmentPoller* environmentPoller = nullptr;
 static adapters::BatteryPoller* batteryPoller = nullptr;
+static adapters::MqttModelBridge* ledBridge = nullptr;       // LED-03: the LED family over MQTT
 
 
 // Task handles
@@ -256,10 +258,12 @@ void displayTask(void* parameter) {
 
         // D1: drain once at the top of the frame, before anything reads the models.
         const uint32_t frameNow = nowMs();
-        appModel.drainPendingMutations(frameNow);
-
         // SCRN-09: before app_main publishes the composition, only the boot controller runs.
         const bool ready = s_compositionComplete.load(std::memory_order_acquire);
+        if (ready && ledBridge != nullptr) {
+            ledBridge->pumpInbound(frameNow);  // LED-03: inbound frames into the registry, before the drain
+        }
+        appModel.drainPendingMutations(frameNow);
         if (ready && inputRouter != nullptr) {
             inputRouter->poll(frameNow);
             if (inputRouter->lastActivityMs() != lastRouterActivityMs) {
@@ -300,6 +304,9 @@ void displayTask(void* parameter) {
         }
 
         displayController->update();
+        if (ready && ledBridge != nullptr) {
+            ledBridge->pumpOutbound(frameNow);  // LED-03: console requests, then the publishes
+        }
 
         if (ready && inputRouter != nullptr) {
             // INPT-11 / INPT-16: a mode change arms the wake consumption (SLEEP) or the 250 ms entry
@@ -598,6 +605,9 @@ extern "C" void app_main(void) {
     otaManager = new OTAManager(wifiManager);
 
     connectivityPoller = new adapters::ConnectivityPoller(wifiManager, internetHandler, mqttManager, modelQueue);
+    // LED-03: the LED strips over the same broker; frames cross from the MQTT task to the display task.
+    ledBridge = new adapters::MqttModelBridge(appModel, *mqttManager);
+    ledBridge->begin(nvsManager != nullptr ? nvsManager->deviceName.c_str() : "QNOB");
     environmentPoller = new adapters::EnvironmentPoller(internetHandler->getTimeHandler(),
                                                         internetHandler->getWeatherHandler(), modelQueue);
 
@@ -725,6 +735,7 @@ extern "C" void app_main(void) {
     commandHandler->setModelQueue(&modelQueue);                         // INPT-22
     commandHandler->registerLocalAudio(localAudio);
     commandHandler->registerOTAManager(otaManager);
+    commandHandler->registerLedBridge(ledBridge);
     commandHandler->registerDiagnosticsProvider([]() {
         char line[224];
         if (s_previousRunValid) {
@@ -768,6 +779,9 @@ extern "C" void app_main(void) {
     // Set global MQTT message callback (runs on the MQTT task). MDL-31: every value that reaches
     // a screen from here also reaches the model as a record; nothing writes a model directly.
     mqttManager->setMessageCallback([&](const std::string& topic, const std::string& payload) {
+        if (ledBridge != nullptr && ledBridge->onMqttMessage(topic, payload)) {
+            return;  // LED-03: queued for the display task
+        }
         if (topic == MQTT_TOPIC_COMMAND) {
             if (commandHandler) {
                 commandHandler->handleExternalCommand(payload);

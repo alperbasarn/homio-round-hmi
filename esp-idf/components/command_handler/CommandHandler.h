@@ -14,6 +14,7 @@ class WiFiManager;
 class MQTTManager;
 class LocalAudio;
 class OTAManager;
+namespace adapters { class MqttModelBridge; }
 
 // Where a command line came from. Serial and the knob link are physical and trusted;
 // MQTT is an unauthenticated shared channel and only runs allowlisted commands (APP-03).
@@ -29,6 +30,7 @@ public:
     void setModelQueue(model::MutationQueue* queue) { modelQueue = queue; }
     void registerLocalAudio(LocalAudio* mc);
     void registerOTAManager(OTAManager* ota);
+    void registerLedBridge(adapters::MqttModelBridge* bridge);  // LED-03 bench console
     // Bench diagnostics: extra lines appended to sysInfo by the composition (black box, PMU).
     using DiagnosticsProvider = std::function<void()>;
     void registerDiagnosticsProvider(DiagnosticsProvider provider) { diagnosticsProvider = provider; }
@@ -49,6 +51,7 @@ private:
     MQTTManager* mqttManager;
     LocalAudio* localAudio;
     OTAManager* otaManager;
+    adapters::MqttModelBridge* ledBridge;
     DiagnosticsProvider diagnosticsProvider;
     model::MutationQueue* modelQueue;
     int lastSetpointSeen;  // D5: an absolute setpoint is only ever a delta against the last one
@@ -79,6 +82,12 @@ private:
     void cmdConfigureMQTTServer(const std::string& params);
     void cmdCommInfo(const std::string& params);
     void cmdSysInfo(const std::string& params);
+    void cmdLeds(const std::string& params);
+    void cmdLedStatus(const std::string& params);
+    void cmdLedSelect(const std::string& params);
+    void cmdLedPair(const std::string& params);
+    void cmdLedCode(const std::string& params);
+    void cmdLedUnpair(const std::string& params);
     void cmdConfigureStaticIP(const std::string& params);
     void cmdEnableStaticIP(const std::string& params);
     void cmdDisableStaticIP(const std::string& params);

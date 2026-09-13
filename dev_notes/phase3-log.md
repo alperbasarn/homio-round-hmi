@@ -102,3 +102,25 @@ Deviations and open points:
   timeout and trusts the LWT. Recorded in the contract as an open point.
 - `LedBridgeCore` is a new pure class between the codec and the device bridge (the row names only
   `MqttModelBridge`); it exists so the whole LED path is testable without a client.
+
+## LED integration, the device half of LED-03 (2026-09-13)
+
+| Piece | What landed |
+|---|---|
+| `MQTTManager` | `publishRaw()` (no `sender=` prefix: the LED documents are plain JSON and the strip parses them as such) and `addSubscription()` (a list re-subscribed on every connect, and at once when already connected). The hard-coded sound and command subscriptions are untouched. |
+| `adapters/FrameRing.h` | A single-producer single-consumer ring of text frames (topic 64, payload 320, twelve slots), acquire/release on two indices, drop and oversize counters, high-water mark. Host suite `test_frame_ring` (3 cases). |
+| `adapters/MqttModelBridge.{h,cpp}` | The device half: the controller id from the STA MAC (`qnob-` + three bytes), the four inbound subscriptions, `onMqttMessage()` on the MQTT event task copying `homio/led/...` frames into the ring, `pumpInbound()` before the drain and `pumpOutbound()` after the screen update on the display task (console requests, pairing timeout, the publishes through `publishRaw` at QoS 1), one warning each for a refused ninth strip and a malformed document, and two snapshot-based descriptions for the console. |
+| Console (`CommandHandler`) | `leds`, `ledStatus`, `ledSelect:<slot>`, `ledPair:<slot>`, `ledCode:<1-6>`, `ledUnpair:<slot>` (serial only, not in the MQTT allow-list). The requests cross to the display task through atomics; the listing reads the registry snapshot. This is the bench UI until the LIGHT screen on the registry (LED-05). |
+| `main.cpp` | The bridge is built right after the MQTT manager, the message callback hands it every LED topic first, the display frame pumps it, the command handler gets it. |
+
+Verification: 28 host suites green; the 1.75 builds (0x1c2ad0, the codec and bridge now linked);
+include edges clean. Owed on the bench: a broker configured on the knob
+(`configureMQTTServer:host:port[:user:pass]`), a strip on the `dev` branch of the LED firmware
+pointed at the same broker, then `leds` showing it, `ledPair`, `ledSelect`, a brightness change
+from the console reaching the strip, and the two-strip gate (LED-08).
+
+Deviations from the row: `ledRing/*` and `esp32/light/*` are not retired yet; the old LIGHT screen
+still publishes to them and stays usable until LED-05 replaces it. The knob does not persist
+pairings yet (LED-06), so after a reboot a strip is "available" until its `controllers` document
+replays from the broker (it is retained, so this takes one subscribe). The bridge holds the old
+`sender=`-prefixed path for every other topic; Phase 5 moves them over.
