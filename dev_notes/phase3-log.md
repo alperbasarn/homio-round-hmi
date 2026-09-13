@@ -67,3 +67,38 @@ Deviations from the rows:
 - The LVGL pump for the boot screen (`LvglDisplay::taskHandler()`) is called by
   `DisplayController::update()` for the INITIALIZATION mode; the other modes still pump from
   inside their screens until each is split.
+
+## LED integration, the host half: LED-01, LED-02, LED-03 and LED-07 without a client (2026-09-13)
+
+Owner pick while the bench is unavailable: the model layer and everything pure around it.
+
+| Row | Status | What landed |
+|---|---|---|
+| LED-01 `LedRegistryModel` | done | `model/LedRegistryModel.{h,cpp}`: eight fixed slots {id[16], name[24], used, paired, online, stateKnown, lastSeenMs, state{power, brightness 0..100, rgb, effect, params[5], effectRgb, count}, lastSource, lastSeq, stateGeneration}, the selected slot, `refusedAnnounces`. Display-task setters (`announce`, `setOnline`, `noteSeen`, `applyState`, per-field setters, `setPaired`, `select`, `forget`) and records whose field byte is `(kind << 3) | slot`, so two strips never coalesce into each other. `tick()` applies the 120 s presence timeout. `LedEffect` (solid, glow, rainbow, chase, sparkle, wave, fire, aurora, in that order so the old LedMode numbering survives) and `LedSource` live here. |
+| LED-02 `LightModel` reshape | done | `LightState` is now {power, brightness, hue, rgb, effect, params[5], effectRgb, stripSlot}; `LedMode`, `Field::Mode`, `cycleMode`, saturation are gone. Local setters mark fields pending (`Pending*` bits) and the 100 ms limiter; `takePending()` hands the bridge the fields and a fresh seq; `adoptRemote()` applies a `state` from the strip without ever marking a publish. `AppModel::followSelectedStrip()` mirrors the selected registry slot into the light state on every drain (a selection change adopts the reported tuple; a new generation adopts through the echo rule). `ColorMath` gained `rgbToHue` / `rgbFromHue`. |
+| LED-03, codec and routing | host half done | `adapters/LedTopics.{h,cpp}` (the `homio/led/<id>/<leaf>` family, subscriptions, the `qnob-` controller id), `adapters/LedJson.{h,cpp}` (a flat in-place JSON reader, no cJSON, no heap; decoders for `info`, `status`, `state`, `controllers`; encoders for `set`, `pair`, the pair confirm and `unpair`), `adapters/LedBridgeCore.{h,cpp}` (routes inbound into the registry, emits one `set` per window for the selected strip, refuses commands to a strip that is offline or not mine, runs the pairing state machine with the 60 s window). All three compile on the host and on the device (`ADAPTERS_PURE_SOURCES`). Not done: the device wrapper (`MqttModelBridge` subscribing through `MQTTManager`, the inbound frame ring across tasks, the retirement of `ledRing/*` and `esp32/light/*`). |
+| LED-07 fake-broker tests | host half done | `test_led_bridge.cpp`: a fake broker with retained topics and a fake strip answering as the contract says. Nine cases: available-not-mine with a refused local command, one-tap pairing of a fresh strip and unpair, the blink code with a wrong code timing out, a `set` carrying only the changed field with a silent echo, a 2 s drag at 19..22 sets with the last value landing, a web change applied without an echo publish, LWT offline refusing commands and online restoring them, a retained replay changing nothing, the ninth strip refused, and no allocation on the path. |
+
+Verification: 27 host suites green (`test_led_registry_model` 6 cases, `test_light_model` 7,
+`test_led_json` 6, `test_led_bridge` 9; every older suite adapted where the light state changed);
+the 1.75 builds; include edges clean; `LightController` posts `Field::Effect` where it posted
+`Field::Mode`. Measured: `AppModel` 6968 B, `LedRegistryModel` 2672 B (three copies of the state:
+working, last notified, snapshot) against the 1.2 KB the contract guessed; the 8 KB cap holds.
+
+Deviations and open points:
+
+- Strings (id, name) never travel in a `ModelUpdate`; they reach the registry through the
+  display-task setters, the same way the media path carries titles. The bridge drains its inbound
+  frames on the display task and calls them; the records exist for numeric, cross-task producers.
+- Echo rule refined against the contract text: an echo with a seq below the last sent one is a
+  stale echo and is dropped (applying it would flash the older value); the echo of the last set is
+  applied except for fields with a newer local change still pending; any remote source wins in full
+  and cancels what was pending.
+- A command to a strip that is offline or not mine is discarded at once (`discardPending`), which
+  is the contract "refused locally, no queueing".
+- The 120 s presence rule needs the strip to say something within 120 s. It publishes `state` on
+  changes only, so an idle strip goes grey after two minutes although it is online. Proposed for
+  the LED side: refresh the retained `status` every 60 s (one tiny publish), or the HMI drops the
+  timeout and trusts the LWT. Recorded in the contract as an open point.
+- `LedBridgeCore` is a new pure class between the codec and the device bridge (the row names only
+  `MqttModelBridge`); it exists so the whole LED path is testable without a client.

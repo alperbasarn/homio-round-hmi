@@ -10,7 +10,8 @@ namespace model {
 
 AppModel::AppModel()
     : mutations_(), clock_(), wired_(false), unrouted_(0), rejected_(0), lastCommitCount_(0), lastCommitMask_(0),
-      media_(), light_(), climate_(), environment_(), connectivity_(), power_(), navigation_(), knob_() {}
+      lightFollowedGeneration_(0), media_(), light_(), climate_(), environment_(), connectivity_(), power_(),
+      navigation_(), knob_(), ledRegistry_() {}
 
 bool AppModel::wireSubscriptions(WireFn wire, void* context) {
     if (wired_) {
@@ -28,19 +29,36 @@ bool AppModel::wireSubscriptions(WireFn wire, void* context) {
     power_.seal();
     navigation_.seal();
     knob_.seal();
+    ledRegistry_.seal();
     return true;
 }
 
 size_t AppModel::drainPendingMutations(Millis nowMs) {
     const size_t drained = mutations_.drain([this, nowMs](const ModelUpdate& record) { apply(record, nowMs); });
     knob_.tick(nowMs);
+    ledRegistry_.tick(nowMs);
+    followSelectedStrip();
     lastCommitCount_ = commitAll();
     traceDrain(drained);
     return drained;
 }
 
+void AppModel::followSelectedStrip() {
+    const int selected = ledRegistry_.selectedIndex();
+    const LedSlot* slot = ledRegistry_.selectedSlot();
+    if (selected != light_.state().stripSlot) {
+        light_.follow(selected, (slot != nullptr && slot->stateKnown) ? &slot->state : nullptr);
+        lightFollowedGeneration_ = slot != nullptr ? slot->stateGeneration : 0u;
+        return;
+    }
+    if (slot != nullptr && slot->stateKnown && slot->stateGeneration != lightFollowedGeneration_) {
+        lightFollowedGeneration_ = slot->stateGeneration;
+        light_.adoptRemote(slot->state, slot->lastSource, slot->lastSeq);
+    }
+}
+
 size_t AppModel::commitAll() {
-    uint8_t mask = 0;
+    uint16_t mask = 0;
     mask |= media_.commit() ? (1u << static_cast<unsigned>(Aggregate::Media)) : 0u;
     mask |= light_.commit() ? (1u << static_cast<unsigned>(Aggregate::Light)) : 0u;
     mask |= climate_.commit() ? (1u << static_cast<unsigned>(Aggregate::Climate)) : 0u;
@@ -49,6 +67,7 @@ size_t AppModel::commitAll() {
     mask |= power_.commit() ? (1u << static_cast<unsigned>(Aggregate::Power)) : 0u;
     mask |= navigation_.commit() ? (1u << static_cast<unsigned>(Aggregate::Navigation)) : 0u;
     mask |= knob_.commit() ? (1u << static_cast<unsigned>(Aggregate::Knob)) : 0u;
+    mask |= ledRegistry_.commit() ? (1u << static_cast<unsigned>(Aggregate::LedRegistry)) : 0u;
     lastCommitMask_ = mask;
     size_t notified = 0;
     for (unsigned bit = 0; bit < static_cast<unsigned>(Aggregate::Count); ++bit) {
@@ -68,6 +87,7 @@ void AppModel::apply(const ModelUpdate& record, Millis nowMs) {
         case Aggregate::Power: accepted = power_.applyUpdate(record, nowMs); break;
         case Aggregate::Navigation: accepted = navigation_.applyUpdate(record, nowMs); break;
         case Aggregate::Knob: accepted = knob_.applyUpdate(record, nowMs); break;
+        case Aggregate::LedRegistry: accepted = ledRegistry_.applyUpdate(record, nowMs); break;
         case Aggregate::Count:
         default:
             ++unrouted_;
@@ -98,6 +118,7 @@ void AppModel::traceDrain(size_t drained) const {
     if (mask & (1u << static_cast<unsigned>(Aggregate::Power))) { trace::formatPower(power_.state(), line, sizeof(line)); trace::log(line); }
     if (mask & (1u << static_cast<unsigned>(Aggregate::Navigation))) { trace::formatNavigation(navigation_.state(), line, sizeof(line)); trace::log(line); }
     if (mask & (1u << static_cast<unsigned>(Aggregate::Knob))) { trace::formatKnob(knob_.state(), line, sizeof(line)); trace::log(line); }
+    if (mask & (1u << static_cast<unsigned>(Aggregate::LedRegistry))) { trace::formatLedRegistry(ledRegistry_.state(), line, sizeof(line)); trace::log(line); }
 }
 #else
 void AppModel::traceDrain(size_t drained) const {

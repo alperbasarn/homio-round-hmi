@@ -7,4 +7,7 @@ set(ADAPTERS_PURE_SOURCES
     "${ADAPTERS_DIR}/src/ConnectivityPoller.cpp"
     "${ADAPTERS_DIR}/src/EnvironmentPoller.cpp"
     "${ADAPTERS_DIR}/src/BatteryPoller.cpp"
+    "${ADAPTERS_DIR}/src/LedTopics.cpp"
+    "${ADAPTERS_DIR}/src/LedJson.cpp"
+    "${ADAPTERS_DIR}/src/LedBridgeCore.cpp"
 )

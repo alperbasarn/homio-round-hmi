@@ -74,3 +74,34 @@ Rgb batteryRgb(BatteryBand band) {
 }
 
 }  // namespace model
+
+namespace model {
+
+float rgbToHue(uint32_t rgb) {
+    const float r = static_cast<float>((rgb >> 16) & 0xFFu) / 255.0f;
+    const float g = static_cast<float>((rgb >> 8) & 0xFFu) / 255.0f;
+    const float b = static_cast<float>(rgb & 0xFFu) / 255.0f;
+    const float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    const float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    const float delta = mx - mn;
+    if (delta <= 0.0f) {
+        return 0.0f;
+    }
+    float h;
+    if (mx == r) {
+        h = (g - b) / delta;
+        if (h < 0.0f) h += 6.0f;
+    } else if (mx == g) {
+        h = (b - r) / delta + 2.0f;
+    } else {
+        h = (r - g) / delta + 4.0f;
+    }
+    h /= 6.0f;
+    return h < 0.0f ? 0.0f : (h >= 1.0f ? 0.0f : h);
+}
+
+uint32_t rgbFromHue(float hue) {
+    return hsvToRgb(hue, 1.0f, 1.0f);
+}
+
+}  // namespace model

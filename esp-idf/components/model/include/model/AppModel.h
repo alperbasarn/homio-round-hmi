@@ -7,6 +7,7 @@
 #include "model/ConnectivityModel.h"
 #include "model/EnvironmentModel.h"
 #include "model/KnobModel.h"
+#include "model/LedRegistryModel.h"
 #include "model/LightModel.h"
 #include "model/MediaModel.h"
 #include "model/MutationQueue.h"
@@ -49,7 +50,7 @@ public:
     uint32_t unroutedRecords() const { return unrouted_; }
     uint32_t rejectedRecords() const { return rejected_; }
     size_t lastCommitCount() const { return lastCommitCount_; }
-    uint8_t lastCommitMask() const { return lastCommitMask_; }  // bit i = Aggregate i committed
+    uint16_t lastCommitMask() const { return lastCommitMask_; }  // bit i = Aggregate i committed
 
     MediaModel& media() { return media_; }
     LightModel& light() { return light_; }
@@ -59,6 +60,7 @@ public:
     PowerModel& power() { return power_; }
     NavigationModel& navigation() { return navigation_; }
     KnobModel& knob() { return knob_; }
+    LedRegistryModel& ledRegistry() { return ledRegistry_; }
 
     const MediaModel& media() const { return media_; }
     const LightModel& light() const { return light_; }
@@ -68,9 +70,11 @@ public:
     const PowerModel& power() const { return power_; }
     const NavigationModel& navigation() const { return navigation_; }
     const KnobModel& knob() const { return knob_; }
+    const LedRegistryModel& ledRegistry() const { return ledRegistry_; }
 
 private:
     void apply(const ModelUpdate& record, Millis nowMs);
+    void followSelectedStrip();  // LED-02: the light state mirrors the selected registry slot
     void traceDrain(size_t drained) const;
 
     MutationQueue mutations_;
@@ -79,7 +83,8 @@ private:
     uint32_t unrouted_;
     uint32_t rejected_;
     size_t lastCommitCount_;
-    uint8_t lastCommitMask_;
+    uint16_t lastCommitMask_;
+    uint32_t lightFollowedGeneration_;
 
     MediaModel media_;
     LightModel light_;
@@ -89,6 +94,7 @@ private:
     PowerModel power_;
     NavigationModel navigation_;
     KnobModel knob_;
+    LedRegistryModel ledRegistry_;
 };
 
 }  // namespace model

@@ -15,16 +15,6 @@ const char* bindingName(KnobBinding b) {
     return b == KnobBinding::Seek ? "seek" : "volume";
 }
 
-const char* ledModeName(LedMode m) {
-    switch (m) {
-        case LedMode::Static: return "static";
-        case LedMode::Glow: return "glow";
-        case LedMode::Rainbow: return "rainbow";
-        case LedMode::Count: break;
-    }
-    return "?";
-}
-
 const char* validMark(bool valid) {
     return valid ? "" : "?";
 }
@@ -41,8 +31,23 @@ int formatMedia(const MediaState& s, char* out, size_t capacity) {
 }
 
 int formatLight(const LightState& s, char* out, size_t capacity) {
-    return std::snprintf(out, capacity, "light b=%u hue=%.2f sat=%.2f mode=%s", static_cast<unsigned>(s.brightness),
-                         static_cast<double>(s.hue), static_cast<double>(s.saturation), ledModeName(s.mode));
+    return std::snprintf(out, capacity, "light b=%u pwr=%d rgb=%06lx hue=%.2f fx=%s slot=%d",
+                         static_cast<unsigned>(s.brightness), s.power ? 1 : 0, static_cast<unsigned long>(s.rgb),
+                         static_cast<double>(s.hue), ledEffectName(s.effect), static_cast<int>(s.stripSlot));
+}
+
+int formatLedRegistry(const LedRegistryState& s, char* out, size_t capacity) {
+    int n = std::snprintf(out, capacity, "leds n=%u sel=%d", static_cast<unsigned>(s.used), static_cast<int>(s.selected));
+    for (size_t i = 0; i < LedRegistryState::kSlots && n >= 0 && static_cast<size_t>(n) < capacity; ++i) {
+        const LedSlot& slot = s.slots[i];
+        if (!slot.used) {
+            continue;
+        }
+        n += std::snprintf(out + n, capacity - static_cast<size_t>(n), " %u:%s%s%s%s b=%u fx=%u", static_cast<unsigned>(i),
+                           slot.id.c_str(), slot.online ? "+" : "-", slot.paired ? "*" : "", slot.stateKnown ? "" : "?",
+                           static_cast<unsigned>(slot.state.brightness), static_cast<unsigned>(slot.state.effect));
+    }
+    return n;
 }
 
 int formatClimate(const ClimateState& s, char* out, size_t capacity) {

@@ -22,6 +22,10 @@ struct Rgb {
 // publish uses value = level/100 so the LED brightness is folded into the colour.
 uint32_t hsvToRgb(float hue, float saturation, float value);
 uint8_t channelFromRgb(uint32_t rgb, int shift);
+// LED-02: the ring hue of a wire colour (0..1; a grey has none and reads 0) and back at full
+// saturation and value.
+float rgbToHue(uint32_t rgb);
+uint32_t rgbFromHue(float hue);
 
 // static_cast<uint8_t>(from + (to - from) * t): the old lerp, kept literally so the tests can
 // compare against the old colour functions bit for bit.

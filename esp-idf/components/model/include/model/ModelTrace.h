@@ -8,6 +8,7 @@
 #include "model/ConnectivityModel.h"
 #include "model/EnvironmentModel.h"
 #include "model/KnobModel.h"
+#include "model/LedRegistryModel.h"
 #include "model/LightModel.h"
 #include "model/MediaModel.h"
 #include "model/NavigationModel.h"
@@ -27,6 +28,7 @@ int formatConnectivity(const ConnectivityState& s, char* out, size_t capacity);
 int formatPower(const PowerState& s, char* out, size_t capacity);
 int formatNavigation(const NavigationState& s, char* out, size_t capacity);
 int formatKnob(const KnobState& s, char* out, size_t capacity);
+int formatLedRegistry(const LedRegistryState& s, char* out, size_t capacity);
 
 }  // namespace trace
 }  // namespace model

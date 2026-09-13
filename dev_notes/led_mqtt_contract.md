@@ -126,3 +126,25 @@ implements against these facts:
 Bench steps for the strip (owner): flash the branch build, commission with Matter, set the broker
 on the SoftAP page (Configuration -> MQTT Link), watch `homio/led/#` with an MQTT client, pair by
 hand with a `pair` message (a factory-fresh strip pairs at once), drive `set`, try an unpaired id.
+
+## 8. Implementation notes from the HMI side (2026-09-13, host half)
+
+The HMI implements the model and codec half of sections 1-4 on the host (`LED-01`, `LED-02`,
+the pure part of `LED-03`, the fake-broker part of `LED-07`; see `phase3-log.md`). Facts the LED
+side and the device bridge build against:
+
+1. Effect index order on the HMI: solid 0, glow 1, rainbow 2, chase 3, sparkle 4, wave 5, fire 6,
+   aurora 7; the wire carries the name, never the index.
+2. Units: brightness is 0..100 inside the HMI and 0..255 on the wire, converted once
+   (`LightModel::wireFromPercent` / `percentFromWire`, 50 -> 127 -> 50). Colours are `#rrggbb`
+   on the wire (either case accepted) and 24-bit integers inside.
+3. Echo rule as implemented: a `state` with `src` = this HMI and `seq` below the last sent one is
+   dropped as stale; `seq` equal to the last sent one is applied except for fields with a newer
+   local change still pending; any other `src` is applied in full and cancels pending changes.
+4. A `set` carries only the fields that changed since the previous `set`, plus `from` and `seq`.
+5. Commands to a strip that is offline or not paired are discarded locally; nothing is queued.
+6. Open point: the 120 s presence timeout greys an idle strip, because `state` is published on
+   change only. Either the strip refreshes the retained `status` every 60 s, or the HMI drops the
+   timeout and trusts the LWT (45 s). To decide on the bench with both firmwares.
+7. Cost on the HMI: the registry is 2,672 B in the aggregate root (three copies of an 880 B
+   state), the light model 264 B; the root is 6,968 B against its 8 KB cap.

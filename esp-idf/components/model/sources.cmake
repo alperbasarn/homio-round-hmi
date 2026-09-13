@@ -13,6 +13,7 @@ set(MODEL_SOURCES
     "${MODEL_DIR}/src/PowerRules.cpp"
     "${MODEL_DIR}/src/MediaModel.cpp"
     "${MODEL_DIR}/src/LightModel.cpp"
+    "${MODEL_DIR}/src/LedRegistryModel.cpp"
     "${MODEL_DIR}/src/ClimateModel.cpp"
     "${MODEL_DIR}/src/EnvironmentModel.cpp"
     "${MODEL_DIR}/src/ConnectivityModel.cpp"

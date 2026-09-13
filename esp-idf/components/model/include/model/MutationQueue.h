@@ -14,6 +14,7 @@ enum class Aggregate : uint8_t {
     Power,
     Navigation,
     Knob,
+    LedRegistry,
     Count
 };
 

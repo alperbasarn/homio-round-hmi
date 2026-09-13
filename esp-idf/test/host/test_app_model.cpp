@@ -98,6 +98,7 @@ TEST_CASE(sizes_are_printed_for_the_budget) {
                 sizeof(ModelUpdate), sizeof(MediaModel), sizeof(LightModel), sizeof(ClimateModel),
                 sizeof(EnvironmentModel), sizeof(ConnectivityModel), sizeof(PowerModel), sizeof(NavigationModel),
                 sizeof(KnobModel), sizeof(MutationQueue), sizeof(AppModel));
+    std::printf("sizeof: LedRegistryModel=%zu LightModel=%zu\n", sizeof(LedRegistryModel), sizeof(LightModel));
     // Host pointers are 8 bytes; the device figure comes from size-components once APP-06
     // instantiates the AppModel. The host ceiling only catches gross regressions.
     CHECK(sizeof(AppModel) <= 8192);

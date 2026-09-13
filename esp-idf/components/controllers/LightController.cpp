@@ -59,8 +59,8 @@ void LightController::postHue() {
 
 void LightController::postMode() {
     if (modelQueue == nullptr) return;
-    // LED_MODE_STATIC/GLOW/RAINBOW share the model's LedMode numbering.
-    modelQueue->post(model::LightModel::make(model::LightModel::Field::Mode, static_cast<int32_t>(currentMode),
+    // LED_MODE_STATIC/GLOW/RAINBOW are LedEffect Solid/Glow/Rainbow (0, 1, 2) in the model.
+    modelQueue->post(model::LightModel::make(model::LightModel::Field::Effect, static_cast<int32_t>(currentMode),
                                              static_cast<uint32_t>(millis())));
 }
 
