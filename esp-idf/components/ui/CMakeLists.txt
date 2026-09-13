@@ -4,6 +4,7 @@ idf_component_register(
          "theme/Theme.cpp"
          "views/InitializationView.cpp"
          "views/LightView.cpp"
+         "views/MediaView.cpp"
          "fonts/lv_font_montserrat_72_time.c"
          "fonts/lv_font_montserrat_96_time.c"
          "fonts/lv_font_montserrat_64_info.c"

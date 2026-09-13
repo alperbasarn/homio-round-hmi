@@ -8,7 +8,6 @@
 #include <cstdint>
 
 // Forward declarations
-class SoundController;
 class ModeController;
 namespace controllers { class BootScreenController; class ScreenController; }
 class EnvironmentInfoScreen;
@@ -29,7 +28,7 @@ enum Mode {
 
 class DisplayController {
 private:
-  SoundController* soundController;
+  controllers::ScreenController* mediaScreen;   // MEDIA-16: the MEDIA screen on the target registry
   controllers::ScreenController* lightScreen;   // LED-05: the LIGHT screen on the registry
   ModeController* modeController;
   controllers::BootScreenController* bootController;   // SCRN-08: the boot ramp and its view
@@ -79,7 +78,7 @@ public:
   bool showNamedScreen(const std::string& screenName);
   std::string getModeName() const;
 
-  void registerSoundController(SoundController* sound);
+  void registerMediaScreen(controllers::ScreenController* media);
   void registerLightScreen(controllers::ScreenController* light);
   void registerModeController(ModeController* mode);
   void registerBootController(controllers::BootScreenController* boot);

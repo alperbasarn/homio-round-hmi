@@ -99,11 +99,11 @@ int encodeControl(char* out, size_t capacity, Control verb) {
     return finish(std::snprintf(out, capacity, "%s", word), capacity);
 }
 
-int encodeStateRequest(char* out, size_t capacity, bool v2) {
+int encodeStateRequest(char* out, size_t capacity) {
     if (out == nullptr || capacity == 0) {
         return -1;
     }
-    return finish(std::snprintf(out, capacity, "%s", v2 ? "request:v2" : "request"), capacity);
+    return finish(std::snprintf(out, capacity, "%s", "request"), capacity);
 }
 
 int encodeSeekAbsolute(char* out, size_t capacity, int percent) {

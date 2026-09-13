@@ -70,6 +70,14 @@ target_include_directories(knob_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../../com
 target_compile_options(knob_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(knob_core PUBLIC -fsanitize=address,undefined)
 
+# MEDIA-02..05 / BLD-12: the media target layer is pure and compiles here from the device files.
+include("${CMAKE_CURRENT_LIST_DIR}/../../components/media_target/sources.cmake")
+add_library(media_target STATIC ${MEDIA_TARGET_SOURCES})
+target_include_directories(media_target PUBLIC "${MEDIA_TARGET_INCLUDE_DIR}")
+target_compile_options(media_target PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(media_target PUBLIC -fsanitize=address,undefined)
+target_link_libraries(media_target PUBLIC model)
+
 # BLD-43 / SCRN-03 / SCRN-04: the view and controller contracts are ESP-free headers (the LVGL
 # lock assert compiles out and lv_obj_t stays opaque here); the theme helper and the null
 # controller compile from the device files.
@@ -86,6 +94,8 @@ add_library(controllers_core STATIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/NullScreenController.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/BootScreenController.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/LightScreenController.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/MediaScreenController.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/KnobBindingMachine.cpp"
 )
 target_include_directories(controllers_core PUBLIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers"
@@ -93,15 +103,7 @@ target_include_directories(controllers_core PUBLIC
 )
 target_compile_options(controllers_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(controllers_core PUBLIC -fsanitize=address,undefined)
-target_link_libraries(controllers_core PUBLIC model input_core ui_core)
-
-# MEDIA-02..05 / BLD-12: the media target layer is pure and compiles here from the device files.
-include("${CMAKE_CURRENT_LIST_DIR}/../../components/media_target/sources.cmake")
-add_library(media_target STATIC ${MEDIA_TARGET_SOURCES})
-target_include_directories(media_target PUBLIC "${MEDIA_TARGET_INCLUDE_DIR}")
-target_compile_options(media_target PUBLIC ${QNOB_HOST_FLAGS})
-target_link_options(media_target PUBLIC -fsanitize=address,undefined)
-target_link_libraries(media_target PUBLIC model)
+target_link_libraries(controllers_core PUBLIC model input_core ui_core media_target)
 
 find_package(Threads REQUIRED)
 

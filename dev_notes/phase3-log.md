@@ -211,7 +211,7 @@ component that depends on `model` only.
 | `media_target/IMediaTarget.h` | `MediaError` (Ok, NotAvailable, NotSupported, Busy, InvalidArgument, Transport), `MediaCaps` (volume, playPause, toggle, seek absolute/relative, trackInfo, position, `seekStepPercent`) and the virtual target: every call takes the caller clock and answers an error code; `tick()` once per frame. |
 | `MediaTargetRegistry` + `NullMediaTarget` | Two fixed slots; `target(id)` never returns a null pointer: an unregistered slot answers a null target whose every call is NotAvailable. No heap. |
 | `PcProtocol` | Encoders byte-identical to the three literals SoundController publishes (`setpoint:<n>`, `play`/`pause`, `request`), plus `toggle`, `request:v2`, `seek_abs:<pct>`, `seek_rel:<ms>`. `parseResponse` strips the `sender=` envelope (reporting the sender), takes the bare words, `setpoint:<n>` and `state:`/`volume:`/`position:`/`duration:`/`title:`/`player:` pairs in any order; a value out of range never sets its field; a comma inside a title survives; an empty payload sets nothing (it used to mute the device). |
-| `PcMediaAdapter` | The PC app as a target behind an injected publish function. Volume: one publish per 120 ms window with the last value never lost, a settling retry 200 ms after the last detent, a failed publish kept pending and retried. Echo: a generation counter per sent setpoint; the PC reporting the value we last sent acknowledges it and never reaches the model, any other value while a publish is in flight (or the knob still turning) is dropped as stale until the 1.5 s window says the publish was lost. Play/pause gated on the last known state; `toggle` refused as Busy for 600 ms after any control until the reply lands. Seek default-closed until a v2 reply was seen. `request:v2` on link-up and on demand; an old PC answers v1 and the duration stays 0, which hides the position bar. Replies land as `MediaModel` records (IsPlaying, Volume, Position, SeekResolution, StateSynced, Availability, StateSeen); title and player go through the model pointer on the display task. |
+| `PcMediaAdapter` | The PC app as a target behind an injected publish function. Volume: one publish per 120 ms window with the last value never lost, a settling retry 200 ms after the last detent, a failed publish kept pending and retried. Echo: a generation counter per sent setpoint; the PC reporting the value we last sent acknowledges it and never reaches the model, any other value while a publish is in flight (or the knob still turning) is dropped as stale until the 1.5 s window says the publish was lost. Play/pause gated on the last known state; `toggle` refused as Busy for 600 ms after any control until the reply lands. Seek default-closed until a v2 reply was seen. the v1 request word on link-up and on demand (a v2 PC answers the same word with the full tuple, so nothing is negotiated); an old PC answers without a position and the duration stays 0, which hides the position bar. Replies land as `MediaModel` records (IsPlaying, Volume, Position, SeekResolution, StateSynced, Availability, StateSeen); title and player go through the model pointer on the display task. |
 | Build | `components/media_target` registered with `REQUIRES model` only; `controllers` gains the edge (BLD-43's deferred one); the host project compiles the component from the device files. |
 
 A fact found on the way that the WBS rows only hint at: the PC app runs the same
@@ -237,3 +237,46 @@ needed because the publish function and the clock are injected, so the component
 include at all. MEDIA-07 says "generation-counter echo suppression"; the counter is per publish
 and the acknowledgement is by value, since the v1 PC echoes no sequence. MEDIA-15's PC protocol
 table exists (`test_pc_protocol.cpp`); its binding-machine half waits on MEDIA-14.
+
+## MEDIA screen: MEDIA-13/14/15/16, MEDIA-06, CTRL-15 first cut (2026-09-13, night)
+
+The SoundController is gone. The MEDIA screen is a `ScreenController` on the target registry,
+hosted by `DisplayController` under the SOUND mode the way LIGHT is (tick under the LVGL lock,
+navigation request polled once per frame), with its own view and a pure knob binding machine.
+
+| Piece | What landed |
+|---|---|
+| `controllers/KnobBindingMachine` (MEDIA-14) | VOLUME / SEEK_IDLE / SEEK_ACCUM as a pure class taking a `MediaState` snapshot per call. VOLUME: every detent is one clamped SetVolume. SEEK: detents gather into one scrub position (1 % per detent, one 10 % step per detent on the coarse PC path, snapped to that grid), one SeekTo on the release that ends the scrub (consumed, so it is not a tap) or after 450 ms idle; an idle SEEK reverts to VOLUME after 6 s; back discards. Seek cannot be entered without a duration and a seek resolution. |
+| `controllers/screens/MediaScreenController` (MEDIA-13) | `onEnter` builds the view, asks the active target for its state, resets the binding to VOLUME and sets the knob context; `tick` runs the phase (WaitForSync, Live, Unsynced after 3 s with no reply: the timeout the old controller never had, so an offline board renders, the knob works and a tap explains itself) and renders. Tap: `target.toggle`; a refusal is counted and flashed for 1.2 s, `Busy` (the adapter's toggle suppression) is silent. Knob: VolumeLocal record plus `target.setVolume`, or the scrub through the machine (PendingSeek records). Double tap: enter or leave SEEK. Swipe left/right: next / previous (D14). Hold: back to INFO, a scrub discarded. The rim is reserved for the target overlay (UIX-28). Never names a target. |
+| `ui/views/MediaView` + `MediaScreenState` (CTRL-15, first cut) | R1 volume ring at the design's geometry (420 of 466 px, 25 px wide, rotation 120, 300 degrees), R2 timeline inside it (21 px, absent while the duration is unknown, white while scrubbing), the percent (48), the state line (Playing / Paused / Seek N% / Knob: seek), the target eyebrow, the scrolling title, a status line (Syncing..., Not available, the availability text) and the hint. Change-driven render. |
+| `IMediaTarget::next/previous` | Added to the contract (the plan lists them); the PC adapter maps them onto `forward` / `rewind` (next-track / previous-track keys on the PC). |
+| Device wiring (MEDIA-16, MEDIA-06) | `main.cpp` builds the registry, the PC adapter and the screen; `esp32/sound/*` messages are pushed into an 8-frame `FrameRing` on the MQTT task and drained into the adapter on the display task before the model drain; the link state is refreshed every frame; the adapters tick after the screen update. The adapter publishes through `publishRaw` (enqueue, QoS 0) with the same `sender=` envelope `MQTTManager::publish` builds, so the PC sees the same bytes and the display task never writes on the socket (the old controller did, and the screen entry now publishes under the LVGL lock). The DEVICE_INFO sound row reads the model volume and writes a VolumeLocal record plus `target.setVolume`; the PC placeholder page's play/pause calls `target.toggle`. |
+| Retired | `SoundController.{h,cpp}`, its three MQTT callbacks and the `find("sound")` branch in main; `DisplayController` holds a `ScreenController*` for SOUND. `grep SoundController` over components, main and the tests is clean. |
+
+Decisions taken on the way:
+
+- The state request stays the v1 word `request`. The current PC app accepts any body containing
+  `request` (`is_state_request`), so `request:v2` would have worked, but a v2 PC can simply
+  answer the plain word with the full tuple and the adapter learns v2 from the reply
+  (position or duration present). Nothing is negotiated; MEDIA-10's "v1 fallback" is therefore
+  the absence of those fields, not a second request.
+- MEDIA-13's "pushes volume to the knob" waits for the knob write path (WP3.6). `KnobModel`
+  drops every burst as stale while a write is pending, and nothing sends the write yet, so a push
+  now would wedge the replica; the controller sets the knob context only.
+- The old controller published `setpoint:` at most every 25 ms and toggled on any tap; the new
+  path coalesces to one publish per 120 ms and gates play/pause on the known state (the PC app
+  maps both verbs onto one toggling media key).
+
+Verification: host suites `test_knob_binding_machine` (4 cases) and `test_media_screen_controller`
+(6 cases, with a fake target and a recording view), 33 suites green; the 1.75 builds (0x1ce300,
+42 % free); include edges clean (25 components). Owed on the device, added to the runbook as A5
+(offline) and step 9 (with the PC app): the MEDIA layout, the 3 s sync timeout, the knob and tap
+paths, the echo-free ring, the coalesced setpoint rate, the no-double-toggle rule and the
+DEVICE_INFO sound row.
+
+Deviations: CTRL-15 asks for the three-ring stack measured against the design; this is the R1
+and R2 geometry with the disc text, the R3 rail and the state views (UIX-18/19/25) remain.
+UIX-28's gesture table is still unpublished; the double tap for SEEK and the reserved rim are
+this cut's choices, written into `gesture_table.md`. CTRL-31 (navigation flags) is already met
+by the outbox. The `MediaModel` volume limiter and echo suppressor from MDL-14 are unused now
+that the adapter owns both; they go with the Phase 5 model clean-up.

@@ -16,6 +16,8 @@ public:
     MediaError play(model::Millis) override { return MediaError::NotAvailable; }
     MediaError pause(model::Millis) override { return MediaError::NotAvailable; }
     MediaError toggle(model::Millis) override { return MediaError::NotAvailable; }
+    MediaError next(model::Millis) override { return MediaError::NotAvailable; }
+    MediaError previous(model::Millis) override { return MediaError::NotAvailable; }
     MediaError seekAbsolute(int, model::Millis) override { return MediaError::NotAvailable; }
     MediaError seekRelative(int32_t, model::Millis) override { return MediaError::NotAvailable; }
     MediaError requestState(model::Millis) override { return MediaError::NotAvailable; }

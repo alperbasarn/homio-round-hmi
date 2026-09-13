@@ -24,6 +24,7 @@ carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_L
 | A2 WP3.1, eyes | during A1 | the arc fills through the whole boot (no jump, no second ramp), then INFO |
 | A3 gesture walk | `capture.sh 120 <log>` then use the panel | one `input` line per gesture; a swipe gives a gesture line and no release line (W3); INFO <-> DEVICE_INFO round trip; wheel -> LIGHT shows "no strip" and a 3 s hold returns to INFO; a tap in SLEEP wakes and is consumed |
 | A4 sleep gate | `sleep_check.sh` | `Stage 3 skipped` at 180 s, heartbeats through 240 s, port still present |
+| A5 MEDIA offline | during A3 | wheel -> MEDIA (double-tap SOUND) shows the ring at the last volume, `Syncing...`, then `No broker` after 3 s; the knob moves the ring with one `input` line per detent and no publish; a tap flashes `Not available` for a second; a double-tap flashes it too (no duration known); a 3 s hold returns to INFO; the DEVICE_INFO sound bar shows the same volume |
 
 ## 2. USB-drop protocol (the second cause is still open)
 
@@ -59,6 +60,13 @@ carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_L
    Plug it back: `online` again within its reconnect backoff.
 8. Two strips (LED-08): both listed, both pair, the rim shows two segments, a rim tap switches,
    each strip follows its own controls.
+9. PC media (MEDIA-16, needs the PC app on the same broker): wheel -> MEDIA syncs within a
+   second (`Playing`/`Paused` and the PC volume). Tap: the PC toggles, the label follows the
+   reply. Knob: the PC volume follows with at most one `setpoint:` per 120 ms on the MQTT
+   client, and the ring never jumps back when the echo arrives. Two quick taps: one toggle
+   only (the second answers `Busy` in the log, never a double-toggle). Swipe left/right: next
+   and previous track. DEVICE_INFO: dragging the sound bar moves the PC volume. Stop the PC
+   app: `PC not answering` after the next request, the knob still moves the ring.
 
 ## 4. After the session
 

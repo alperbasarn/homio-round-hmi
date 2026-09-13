@@ -18,8 +18,7 @@ TEST_CASE(the_v1_bodies_are_byte_identical_and_the_v2_verbs_encode) {
     CHECK(encodeControl(out, sizeof(out), Control::Play) == 4 && std::strcmp(out, "play") == 0);
     CHECK(encodeControl(out, sizeof(out), Control::Pause) == 5 && std::strcmp(out, "pause") == 0);
     CHECK(encodeControl(out, sizeof(out), Control::Toggle) > 0 && std::strcmp(out, "toggle") == 0);
-    CHECK(encodeStateRequest(out, sizeof(out), false) == 7 && std::strcmp(out, "request") == 0);
-    CHECK(encodeStateRequest(out, sizeof(out), true) == 10 && std::strcmp(out, "request:v2") == 0);
+    CHECK(encodeStateRequest(out, sizeof(out)) == 7 && std::strcmp(out, "request") == 0);
     CHECK(encodeSeekAbsolute(out, sizeof(out), 37) > 0 && std::strcmp(out, "seek_abs:37") == 0);
     CHECK_EQ(encodeSeekAbsolute(out, sizeof(out), -1), -1);
     CHECK(encodeSeekRelative(out, sizeof(out), -5000) > 0 && std::strcmp(out, "seek_rel:-5000") == 0);

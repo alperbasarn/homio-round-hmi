@@ -39,7 +39,11 @@
 
 // Controllers
 #include "CommandHandler.h"
-#include "SoundController.h"
+#include "MediaScreenController.h"
+#include "MediaView.h"
+#include "adapters/FrameRing.h"
+#include "media_target/MediaTargetRegistry.h"
+#include "media_target/PcMediaAdapter.h"
 #include "LightScreenController.h"
 #include "LightView.h"
 #include "LocalAudio.h"
@@ -122,7 +126,28 @@ static MQTTManager* mqttManager = nullptr;
 static InternetHandler* internetHandler = nullptr;
 static DisplayController* displayController = nullptr;
 static CommandHandler* commandHandler = nullptr;
-static SoundController* soundController = nullptr;
+static ui::MediaView* mediaView = nullptr;                                  // MEDIA-16
+static controllers::MediaScreenController* mediaScreen = nullptr;         // MEDIA-16
+static media::MediaTargetRegistry* mediaTargets = nullptr;                // MEDIA-03
+static media::PcMediaAdapter* pcMedia = nullptr;                          // MEDIA-04
+// MEDIA-06: esp32/sound frames cross from the MQTT event task to the display task through this ring.
+using SoundRing = adapters::FrameRing<8, 32, 256>;
+static SoundRing soundRing;
+// The display task publishes here (a detent, a tap, the screen entry under the LVGL lock), so the
+// message is enqueued for the MQTT task rather than written on the socket inline; the sender=
+// envelope stays what MQTTManager::publish sends, so the PC app sees the same bytes as before.
+static bool pcMediaPublish(const char* topic, const char* body, void*) {
+    if (mqttManager == nullptr || !mqttManager->isConnected()) {
+        return false;
+    }
+    std::string full = "sender=";
+    full += (nvsManager != nullptr) ? nvsManager->deviceName : std::string("QNOB");
+    full += ',';
+    full += body;
+    const bool ok = mqttManager->publishRaw(topic, full.c_str(), full.size(), 0, false) == ESP_OK;
+    ESP_LOGI(TAG, "media publish %s %s%s", topic, body, ok ? "" : " (refused)");
+    return ok;
+}
 static ui::LightView* lightView = nullptr;                          // LED-05
 static controllers::LightScreenController* lightScreen = nullptr;  // LED-05
 static ModeController* modeController = nullptr;
@@ -280,6 +305,14 @@ void displayTask(void* parameter) {
         if (ready && ledBridge != nullptr) {
             ledBridge->pumpInbound(nowMs());  // LED-03: inbound frames into the registry, before the drain (64-bit clock: the LED windows must not wrap)
         }
+        if (ready && pcMedia != nullptr) {
+            // MEDIA-06 / MEDIA-16: the PC replies the MQTT task queued, then the link state, before the drain.
+            SoundRing::Frame frame;
+            while (soundRing.pop(frame)) {
+                pcMedia->onResponse(frame.payload, nowMs());
+            }
+            pcMedia->setLinkUp(mqttManager != nullptr && mqttManager->isConnected(), nowMs());
+        }
         appModel.drainPendingMutations(frameNow);
         if (ready && inputRouter != nullptr) {
             inputRouter->poll(frameNow);
@@ -323,6 +356,9 @@ void displayTask(void* parameter) {
         displayController->update();
         if (ready && ledBridge != nullptr) {
             ledBridge->pumpOutbound(nowMs());  // LED-03: pairing intents, then the publishes
+        }
+        if (ready && mediaTargets != nullptr) {
+            mediaTargets->tickAll(nowMs());  // MEDIA-07: the setpoint window and the settling call
         }
 
         if (ready && inputRouter != nullptr) {
@@ -682,13 +718,17 @@ extern "C" void app_main(void) {
     // to the PC over the existing sound path.
     placeholderPageScreen = new PlaceholderPageScreen();
     placeholderPageScreen->setPlayPauseAction([]() {
-        if (soundController != nullptr) {
-            soundController->togglePlayPause();
+        if (mediaTargets != nullptr) {
+            mediaTargets->target(appModel.media().state().activeTarget).toggle(nowMs());
         }
     });
 
-    soundController = new SoundController(displayPanelBackend.get());
-    soundController->setModelQueue(&modelQueue);                       // CTRL-07
+    mediaTargets = new media::MediaTargetRegistry();                   // MEDIA-03
+    pcMedia = new media::PcMediaAdapter(&appModel.mutations(), &appModel.media(), &pcMediaPublish, nullptr);  // MEDIA-04
+    mediaTargets->registerTarget(pcMedia);
+    mediaView = new ui::MediaView();                                   // MEDIA-16: the MEDIA screen on the target registry
+    mediaScreen = new controllers::MediaScreenController(appModel, *mediaTargets, mediaView, displayPanelBackend->width(),
+                                                         displayPanelBackend->height());
     lightView = new ui::LightView();                                   // LED-05: the LIGHT screen on the registry
     lightScreen = new controllers::LightScreenController(appModel, lightView, displayPanelBackend->width(),
                                                          displayPanelBackend->height());
@@ -696,7 +736,7 @@ extern "C" void app_main(void) {
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
     displayController->registerPlaceholderScreen(placeholderPageScreen);
-    displayController->registerSoundController(soundController);
+    displayController->registerMediaScreen(mediaScreen);
     displayController->registerLightScreen(lightScreen);
     // INPT-12: the router polls both drivers once per frame; the legacy screens still read the
     // latched touch flags in the same frame until WP2.3 cuts them over.
@@ -709,9 +749,14 @@ extern "C" void app_main(void) {
             if (displayController != nullptr) displayController->setBrightnessPercent(percent);
         });
     deviceInfoScreen->setSoundControlCallbacks(
-        []() { return soundController != nullptr ? soundController->getSetpoint() : 50; },
+        []() { return static_cast<int>(appModel.media().state().volume); },
         [](int percent) {
-            if (soundController != nullptr) soundController->updateSetpoint(percent);
+            // MEDIA-16: the row owns the value the way the knob does; the target gets the transport call.
+            appModel.mutations().post(model::MediaModel::make(model::MediaModel::Field::VolumeLocal, percent,
+                                                              static_cast<uint32_t>(nowMs())));
+            if (mediaTargets != nullptr) {
+                mediaTargets->target(appModel.media().state().activeTarget).setVolume(percent, nowMs());
+            }
         });
 
     // Initialize Sleep Handler (power management)
@@ -777,16 +822,6 @@ extern "C" void app_main(void) {
     });
     commandHandler->begin();
 
-    // Set MQTT callbacks for sound controller
-    soundController->setMQTTPublishCallback([&](const std::string& topic, const std::string& message) {
-        mqttManager->publish(topic, message);
-    });
-    soundController->setMQTTConnectedCallback([&]() {
-        return mqttManager->isConnected();
-    });
-
-    // Set MQTT callbacks for light controller
-
     // Set global MQTT message callback (runs on the MQTT task). MDL-31: every value that reaches
     // a screen from here also reaches the model as a record; nothing writes a model directly.
     mqttManager->setMessageCallback([&](const std::string& topic, const std::string& payload) {
@@ -807,8 +842,9 @@ extern "C" void app_main(void) {
             } catch (...) {
                 ESP_LOGW(TAG, "Invalid indoor temperature payload: %s", payload.c_str());
             }
-        } else if (topic.find("sound") != std::string::npos) {
-            soundController->onMQTTMessage(payload);
+        } else if (topic.rfind("esp32/sound/", 0) == 0) {
+            // MEDIA-06: queued for the display task; a full ring drops and counts, never blocks.
+            soundRing.push(topic.c_str(), topic.size(), payload.c_str(), payload.size());
         }
     });
 

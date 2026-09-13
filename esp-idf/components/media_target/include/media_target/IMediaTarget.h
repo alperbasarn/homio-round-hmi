@@ -27,6 +27,7 @@ struct MediaCaps {
     bool volume = false;
     bool playPause = false;
     bool toggle = false;
+    bool skip = false;  // next() / previous()
     bool seekAbsolute = false;
     bool seekRelative = false;
     bool trackInfo = false;
@@ -45,6 +46,8 @@ public:
     virtual MediaError play(model::Millis now) = 0;
     virtual MediaError pause(model::Millis now) = 0;
     virtual MediaError toggle(model::Millis now) = 0;
+    virtual MediaError next(model::Millis now) = 0;
+    virtual MediaError previous(model::Millis now) = 0;
     virtual MediaError seekAbsolute(int percent, model::Millis now) = 0;
     virtual MediaError seekRelative(int32_t deltaMs, model::Millis now) = 0;
     virtual MediaError requestState(model::Millis now) = 0;

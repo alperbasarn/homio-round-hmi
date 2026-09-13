@@ -1,7 +1,7 @@
 #pragma once
 // MediaModel (MDL-14) with the design amendments (UIX-10).
 //
-// Replaces SoundController's state: the real volume (its `setpoint`), play state, the active
+// Replaces the old sound controller state: the real volume (its `setpoint`), play state, the active
 // target and what the knob drives. Two targets sit behind one interface (Spotify, PC); each has
 // its own availability slot so "Spotify has no token" and "PC is offline" can both be true.
 #include <cstdint>
@@ -49,7 +49,7 @@ struct TrackInfo {
 
 struct MediaState {
     MediaTargetId activeTarget = MediaTargetId::Pc;  // the only target that exists today
-    Percent volume = 50;                              // SoundController's default
+    Percent volume = 50;                              // the old sound controller default
     bool isPlaying = false;
     bool stateSynced = false;                         // a state reply arrived for the active target
     KnobBinding knobBinding = KnobBinding::Volume;

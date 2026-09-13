@@ -52,6 +52,7 @@ MediaCaps PcMediaAdapter::caps() const {
     c.volume = true;
     c.playPause = true;
     c.toggle = true;
+    c.skip = true;
     c.seekAbsolute = v2Seen_;
     c.seekRelative = v2Seen_;
     c.position = v2Seen_;
@@ -164,6 +165,16 @@ MediaError PcMediaAdapter::toggle(model::Millis now) {
     return playing_ ? control(pc::Control::Pause, false, now) : control(pc::Control::Play, true, now);
 }
 
+MediaError PcMediaAdapter::next(model::Millis now) {
+    if (!linkUp_) return MediaError::NotAvailable;
+    return control(pc::Control::Forward, playing_, now);
+}
+
+MediaError PcMediaAdapter::previous(model::Millis now) {
+    if (!linkUp_) return MediaError::NotAvailable;
+    return control(pc::Control::Rewind, playing_, now);
+}
+
 MediaError PcMediaAdapter::seekAbsolute(int percent, model::Millis now) {
     (void)now;
     if (!linkUp_) return MediaError::NotAvailable;
@@ -186,7 +197,9 @@ MediaError PcMediaAdapter::requestState(model::Millis now) {
     (void)now;
     if (!linkUp_) return MediaError::NotAvailable;
     char body[pc::kBodyCapacity];
-    pc::encodeStateRequest(body, sizeof(body), true);  // an old PC answers v1 to this too
+    // The v1 word: the current PC app answers nothing else (is_state_request), and a v2 PC answers
+    // it with the full tuple, so v2 is learned from the reply and never negotiated.
+    pc::encodeStateRequest(body, sizeof(body));
     return publish(pc::kTopicGetState, body) ? MediaError::Ok : MediaError::Transport;
 }
 

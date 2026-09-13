@@ -4,7 +4,7 @@
 //
 //   esp32/sound/setpoint   knob -> PC   setpoint:<0-100>
 //   esp32/sound/control    knob -> PC   play | pause | forward | rewind | toggle (v2)
-//   esp32/sound/get_state  knob -> PC   request | request:v2 (an old PC answers v1 to both)
+//   esp32/sound/get_state  knob -> PC   request (a v2 PC answers the same word with the full tuple)
 //   esp32/sound/response   PC -> knob   playing | paused | unpaused | setpoint:<n> |
 //                                       state:<playing|paused>,volume:<n>[,position:<ms>,duration:<ms>,title:<t>,player:<p>]
 //
@@ -27,10 +27,10 @@ constexpr size_t kBodyCapacity = 96;
 enum class Control : uint8_t { Play = 0, Pause, Forward, Rewind, Toggle };
 
 // Encoders return the length written, like snprintf, or -1 when the value is out of range or the
-// buffer is too small. The three v1 bodies are byte-identical to what SoundController published.
+// buffer is too small. The three v1 bodies are byte-identical to what the old sound controller published.
 int encodeSetpoint(char* out, size_t capacity, int percent);
 int encodeControl(char* out, size_t capacity, Control verb);
-int encodeStateRequest(char* out, size_t capacity, bool v2);
+int encodeStateRequest(char* out, size_t capacity);
 int encodeSeekAbsolute(char* out, size_t capacity, int percent);
 int encodeSeekRelative(char* out, size_t capacity, int32_t deltaMs);
 

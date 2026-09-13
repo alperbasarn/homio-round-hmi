@@ -1,5 +1,4 @@
 #include "DisplayController.h"
-#include "SoundController.h"
 #include "ScreenController.h"
 #include "ModeController.h"
 #include "BootScreenController.h"
@@ -116,7 +115,7 @@ const MatrixPageDescriptor* findMatrixPageByName(const std::string& normalized) 
 }  // namespace
 
 DisplayController::DisplayController()
-  : soundController(nullptr),
+  : mediaScreen(nullptr),
     lightScreen(nullptr), modeController(nullptr), bootController(nullptr),
     infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr),
     currentMode(INITIALIZATION), lastActivityTime(0),
@@ -214,11 +213,20 @@ void DisplayController::update() {
             break;
 
         case SOUND:
-            if (soundController) {
-                soundController->updateScreen();
-                if (soundController->isPageBackRequested()) {
-                    soundController->resetPageBackRequest();
-                    navigateToMatrixPage(0, 0);
+            if (mediaScreen) {
+                // MEDIA-16: the controller renders its view under the lock; a back request lands here.
+                const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                if (LvglDisplay::lock(-1)) {
+                    mediaScreen->tick(now);
+                    LvglDisplay::unlock();
+                }
+                LvglDisplay::taskHandler();
+                if (mediaScreen->hasNavigationRequest()) {
+                    const controllers::NavigationRequest request = mediaScreen->takeNavigationRequest();
+                    if (request.valid() && request.screen == model::AppScreen::Info) {
+                        navigateToMatrixPage(0, 0);
+                        return;
+                    }
                 }
             }
             break;
@@ -303,6 +311,10 @@ void DisplayController::setMode(Mode mode) {
         lightScreen->onExit(static_cast<uint32_t>(esp_timer_get_time() / 1000));
         LvglDisplay::unlock();
     }
+    if (currentMode == SOUND && mediaScreen && LvglDisplay::lock(-1)) {
+        mediaScreen->onExit(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
+    }
     if (currentMode == INFO && infoScreen) {
         infoScreen->deactivate();
     }
@@ -330,6 +342,10 @@ void DisplayController::setMode(Mode mode) {
     }
     if (mode == LIGHT && lightScreen && LvglDisplay::lock(-1)) {
         lightScreen->onEnter(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
+    }
+    if (mode == SOUND && mediaScreen && LvglDisplay::lock(-1)) {
+        mediaScreen->onEnter(static_cast<uint32_t>(esp_timer_get_time() / 1000));
         LvglDisplay::unlock();
     }
     if (mode == INFO && infoScreen) {
@@ -404,7 +420,7 @@ std::string DisplayController::getModeName() const {
     }
 }
 
-void DisplayController::registerSoundController(SoundController* s)    { soundController = s; }
+void DisplayController::registerMediaScreen(controllers::ScreenController* m) { mediaScreen = m; }
 void DisplayController::registerLightScreen(controllers::ScreenController* l) { lightScreen = l; }
 void DisplayController::registerModeController(ModeController* m)      { modeController = m; }
 void DisplayController::registerBootController(controllers::BootScreenController* boot) { bootController = boot; }
@@ -477,7 +493,11 @@ void DisplayController::onInput(const input::InputEvent& event) {
         case DEVICE_INFO: if (deviceInfoScreen) deviceInfoScreen->onInput(event); break;
         case MATRIX_PAGE: if (placeholderScreen) placeholderScreen->onInput(event); break;
         case HOME:        if (modeController) modeController->onInput(event); break;
-        case SOUND:       if (soundController) soundController->onInput(event); break;
+        case SOUND:
+            if (mediaScreen && mediaScreen->onInput(event, static_cast<uint32_t>(esp_timer_get_time() / 1000))) {
+                return;  // MEDIA-16: consumed; no matrix navigation, no default knob handling
+            }
+            break;
         case LIGHT:
             if (lightScreen && lightScreen->onInput(event, static_cast<uint32_t>(esp_timer_get_time() / 1000))) {
                 return;  // LED-05: consumed; no matrix navigation, no default knob handling
@@ -508,8 +528,11 @@ void DisplayController::applyKnobDelta(int16_t delta) {
     for (int i = 0; i < steps; ++i) {
         switch (currentMode) {
             case SOUND:
-                if (soundController) {
-                    if (up) soundController->incrementSetpoint(); else soundController->decrementSetpoint();
+                if (mediaScreen) {
+                    input::InputEvent knob;
+                    knob.type = input::InputType::KnobDelta;
+                    knob.knobDelta = static_cast<int16_t>(up ? 1 : -1);
+                    mediaScreen->onInput(knob, static_cast<uint32_t>(esp_timer_get_time() / 1000));
                 }
                 break;
             case LIGHT:

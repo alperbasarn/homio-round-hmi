@@ -10,7 +10,8 @@
 //             while playing would pause: both verbs are gated on the last known state, and
 //             toggle is suppressed for 600 ms after any control until the reply lands.
 //   Seek      default closed: seek_abs / seek_rel publish only after a v2 reply was seen.
-//   State     request:v2 on every request; an old PC answers v1 and position stays unknown.
+//   State     the v1 request word on link-up and on demand; a v2 PC answers it with the full
+//             tuple, an old PC without position, and the duration then stays unknown.
 //
 // Inbound responses are handed in on the display task (MEDIA-06 rings them over from the MQTT
 // task) and land in the MediaModel as records; strings go through the model pointer.
@@ -49,6 +50,8 @@ public:
     MediaError play(model::Millis now) override;
     MediaError pause(model::Millis now) override;
     MediaError toggle(model::Millis now) override;
+    MediaError next(model::Millis now) override;      // forward: the PC presses next-track
+    MediaError previous(model::Millis now) override;  // rewind: previous-track
     MediaError seekAbsolute(int percent, model::Millis now) override;
     MediaError seekRelative(int32_t deltaMs, model::Millis now) override;
     MediaError requestState(model::Millis now) override;

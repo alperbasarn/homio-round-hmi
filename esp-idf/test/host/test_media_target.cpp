@@ -84,7 +84,7 @@ TEST_CASE(the_pc_adapter_publishes_the_v1_bodies_only_while_the_link_is_up) {
     CHECK(r.pc.play(0) == MediaError::NotAvailable);
     CHECK_EQ(r.rec.count, 0);
     r.pc.setLinkUp(true, 50);
-    CHECK(r.rec.lastIs("esp32/sound/get_state", "request:v2"));  // link-up asks for the state
+    CHECK(r.rec.lastIs("esp32/sound/get_state", "request"));  // link-up asks for the state
     CHECK(r.pc.setVolume(30, 100) == MediaError::Ok);
     CHECK(r.rec.lastIs("esp32/sound/setpoint", "setpoint:30"));
     CHECK(r.pc.play(200) == MediaError::Ok);

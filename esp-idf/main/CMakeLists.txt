@@ -22,6 +22,7 @@ idf_component_register(
         sleep_handler
         model
         adapters
+        media_target
         input
         local_audio
         esp_driver_usb_serial_jtag
