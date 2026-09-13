@@ -95,6 +95,14 @@ target_compile_options(controllers_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(controllers_core PUBLIC -fsanitize=address,undefined)
 target_link_libraries(controllers_core PUBLIC model input_core ui_core)
 
+# MEDIA-02..05 / BLD-12: the media target layer is pure and compiles here from the device files.
+include("${CMAKE_CURRENT_LIST_DIR}/../../components/media_target/sources.cmake")
+add_library(media_target STATIC ${MEDIA_TARGET_SOURCES})
+target_include_directories(media_target PUBLIC "${MEDIA_TARGET_INCLUDE_DIR}")
+target_compile_options(media_target PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(media_target PUBLIC -fsanitize=address,undefined)
+target_link_libraries(media_target PUBLIC model)
+
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -105,6 +113,6 @@ file(GLOB QNOB_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_*.
 foreach(test_source IN LISTS QNOB_TEST_SOURCES)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(${test_name} "${test_source}")
-    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core input_core knob_core ui_core controllers_core Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core input_core knob_core ui_core controllers_core media_target Threads::Threads)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

@@ -198,3 +198,42 @@ LVGL, read and classified:
 
 Verification: the 1.75 builds; nothing host-testable changed. Device check: the sound `state:`
 messages still move the SOUND screen, and `IN` on the INFO screen still follows the indoor topic.
+
+## MEDIA cluster, the pure half: MEDIA-02/03/04/05/07/08/09/10 and BLD-12 (2026-09-13, evening)
+
+WP3.2 (the DEVICE_INFO split) is next on paper, but its sound row reads the SoundController
+state, so splitting it now would regress the row until the MEDIA cluster exists. The bench-free
+continuation that degrades nothing is that cluster's pure layer, in a new `media_target`
+component that depends on `model` only.
+
+| Piece | What landed |
+|---|---|
+| `media_target/IMediaTarget.h` | `MediaError` (Ok, NotAvailable, NotSupported, Busy, InvalidArgument, Transport), `MediaCaps` (volume, playPause, toggle, seek absolute/relative, trackInfo, position, `seekStepPercent`) and the virtual target: every call takes the caller clock and answers an error code; `tick()` once per frame. |
+| `MediaTargetRegistry` + `NullMediaTarget` | Two fixed slots; `target(id)` never returns a null pointer: an unregistered slot answers a null target whose every call is NotAvailable. No heap. |
+| `PcProtocol` | Encoders byte-identical to the three literals SoundController publishes (`setpoint:<n>`, `play`/`pause`, `request`), plus `toggle`, `request:v2`, `seek_abs:<pct>`, `seek_rel:<ms>`. `parseResponse` strips the `sender=` envelope (reporting the sender), takes the bare words, `setpoint:<n>` and `state:`/`volume:`/`position:`/`duration:`/`title:`/`player:` pairs in any order; a value out of range never sets its field; a comma inside a title survives; an empty payload sets nothing (it used to mute the device). |
+| `PcMediaAdapter` | The PC app as a target behind an injected publish function. Volume: one publish per 120 ms window with the last value never lost, a settling retry 200 ms after the last detent, a failed publish kept pending and retried. Echo: a generation counter per sent setpoint; the PC reporting the value we last sent acknowledges it and never reaches the model, any other value while a publish is in flight (or the knob still turning) is dropped as stale until the 1.5 s window says the publish was lost. Play/pause gated on the last known state; `toggle` refused as Busy for 600 ms after any control until the reply lands. Seek default-closed until a v2 reply was seen. `request:v2` on link-up and on demand; an old PC answers v1 and the duration stays 0, which hides the position bar. Replies land as `MediaModel` records (IsPlaying, Volume, Position, SeekResolution, StateSynced, Availability, StateSeen); title and player go through the model pointer on the display task. |
+| Build | `components/media_target` registered with `REQUIRES model` only; `controllers` gains the edge (BLD-43's deferred one); the host project compiles the component from the device files. |
+
+A fact found on the way that the WBS rows only hint at: the PC app runs the same
+`VK_MEDIA_PLAY_PAUSE` key for both `play` and `pause` (`PC/src/sound_controller_app.py`,
+`handle_message`), so on the wire both verbs toggle. The old SoundController sent whichever the
+screen thought was right; two quick taps before the reply could double-toggle. The adapter's
+state gate and the 600 ms toggle suppression are the fix (MEDIA-08's row).
+
+Verification: host suites `test_pc_protocol` (4 cases) and `test_media_target` (9 cases), 31
+suites green; the 1.75 builds (0x1cc550, 42 % free); include edges clean (25 components).
+Owed on the device (BLD-12's "a volume round trip works on device"): the composition does not
+bind the adapter yet, so nothing changes on the board with this commit.
+
+Not in this slice, deliberately: MEDIA-06 (the frame ring from the MQTT task) is the device
+half and reuses `adapters/FrameRing`, the same way the LED bridge does; MEDIA-13/14/15/16 (the
+screen controller, the knob binding machine, their tests, the SoundController deletion) come
+with WP3.2/WP3.4. `MediaModel` still carries its own `volumePublish_`/`volumeEcho_` pair from
+MDL-14; this design puts the coalescing and the echo in the adapter (MEDIA-07's row), so
+MEDIA-13 must drive the target directly and MEDIA-16 retires the model pair.
+
+Deviations from the rows: BLD-12 asks for `PRIV_REQUIRES mqtt_manager esp_timer`; neither is
+needed because the publish function and the clock are injected, so the component has no ESP
+include at all. MEDIA-07 says "generation-counter echo suppression"; the counter is per publish
+and the acknowledgement is by value, since the v1 PC echoes no sequence. MEDIA-15's PC protocol
+table exists (`test_pc_protocol.cpp`); its binding-machine half waits on MEDIA-14.

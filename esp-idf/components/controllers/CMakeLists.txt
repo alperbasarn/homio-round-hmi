@@ -5,5 +5,5 @@ idf_component_register(
          "screens/BootScreenController.cpp"
          "screens/LightScreenController.cpp"
     INCLUDE_DIRS "." "screens"
-    REQUIRES display ui board_hal model input
+    REQUIRES display ui board_hal model input media_target
 )
