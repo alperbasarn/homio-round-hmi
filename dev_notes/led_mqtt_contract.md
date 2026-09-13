@@ -6,7 +6,7 @@ the HMI must **pair, unpair, monitor and control** any number of instances.
 
 This document is the single spec both firmwares implement. The HMI side is tracked in the WBS as
 `LED-01`..`LED-08`; the LED side is the task list at the end (its own repository, its own release
-train). Nothing here is implemented yet.
+train). The LED side is implemented on a branch (section 7); the HMI side starts with LED-01.
 
 ## 1. Identity
 
