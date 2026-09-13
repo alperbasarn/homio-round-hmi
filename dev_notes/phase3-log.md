@@ -175,3 +175,26 @@ for every LIGHT frame.
 Verification after the fixes: 29 host suites green with five new cases; the 1.75 builds (the
 Montserrat 28 face now links, +38 KB); include edges clean; the strip's 141 checks and its pinned
 build are green (+16 B).
+
+## Threading audit of the legacy screens (2026-09-13, evening)
+
+Every path from a task other than the display task into a screen, the display controller or
+LVGL, read and classified:
+
+| Path | Task | Verdict |
+|---|---|---|
+| `home` / `info` commands | command, MQTT | fixed in the review round: `requestMode()` |
+| `setpoint` command | command, MQTT | clean: a Burst record through the queue plus the atomic knob delta |
+| `calibrateOrientation` and the named screens | command | clean: `showNamedScreen()` stores atomics |
+| LED console commands | command | clean: registry records through the queue |
+| `soundController->onMQTTMessage()` | MQTT | **fixed**: the message was a `std::string` assigned on the MQTT task and read on the display task (a heap reallocation race). It now crosses through a 160-byte buffer behind a spinlock; the string is touched on the display task only. |
+| `infoScreen->updateIndoorTemperature()` | MQTT | **fixed**: a float and a flag written from the MQTT task. The screen now reads the indoor value from the environment model through a callback, the way it already reads the outdoor one; the two direct setters are gone. The model record was already posted, so nothing else changes. |
+| `wifiManager->getSSID()` / `getIPAddress()` from the DEVICE_INFO callbacks | display (reads) vs network (writes) | clean: the getters copy under `text_lock` |
+| the three pollers | network | clean: records only |
+| `sleepHandler` callbacks (display off, pre-sleep) | display | clean |
+| `placeholderPageScreen` play/pause, DEVICE_INFO brightness and sound rows | display | clean |
+| `KnobController::getReceivedCommand()` | command | clean: spinlock (WP2.4) |
+| `publishResponse()` inside the MQTT event handler | MQTT | acceptable: QoS 0 publish from the event task; QoS 1 there could deadlock the client (the strip avoids it), so it stays QoS 0 |
+
+Verification: the 1.75 builds; nothing host-testable changed. Device check: the sound `state:`
+messages still move the SOUND screen, and `IN` on the INFO screen still follows the indoor topic.

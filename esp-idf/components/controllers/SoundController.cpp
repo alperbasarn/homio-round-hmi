@@ -1,4 +1,6 @@
 #include "SoundController.h"
+
+#include <cstring>
 #include "LvglDisplay.h"
 #include "esp_log.h"
 #include <algorithm>
@@ -35,7 +37,9 @@ SoundController::SoundController(DisplayPanelBackend* displayBackend)
       stateLabel(nullptr),
       hintLabel(nullptr),
       hasPendingMessage(false),
+      messageLock(portMUX_INITIALIZER_UNLOCKED),
       modelQueue(nullptr) {
+    pendingBuffer[0] = 0;
 }
 
 void SoundController::postMedia(model::MediaModel::Field field, int value) {
@@ -193,8 +197,17 @@ void SoundController::drawSetPoint() {
 }
 
 void SoundController::processIncomingMessage() {
-    if (!hasPendingMessage) return;
-    hasPendingMessage = false;
+    char local[sizeof(pendingBuffer)];
+    portENTER_CRITICAL(&messageLock);
+    const bool pending = hasPendingMessage;
+    if (pending) {
+        hasPendingMessage = false;
+        std::memcpy(local, pendingBuffer, sizeof(local));
+    }
+    portEXIT_CRITICAL(&messageLock);
+    if (!pending) return;
+    local[sizeof(local) - 1] = 0;
+    pendingMessage.assign(local);
 
     ESP_LOGI(TAG, "Processing message: %s", pendingMessage.c_str());
 
@@ -333,8 +346,13 @@ void SoundController::resetPageBackRequest() {
 }
 
 void SoundController::onMQTTMessage(const std::string& message) {
-    pendingMessage = message;
+    // MQTT event task: copy into the fixed buffer under the spinlock, never touch the std::string.
+    portENTER_CRITICAL(&messageLock);
+    const size_t n = message.size() < sizeof(pendingBuffer) - 1 ? message.size() : sizeof(pendingBuffer) - 1;
+    std::memcpy(pendingBuffer, message.data(), n);
+    pendingBuffer[n] = 0;
     hasPendingMessage = true;
+    portEXIT_CRITICAL(&messageLock);
 }
 
 void SoundController::togglePlayPause() {

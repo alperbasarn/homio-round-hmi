@@ -3,6 +3,7 @@
 #include "DisplayPanelBackend.h"
 #include "input/InputEvent.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 #include "model/MediaModel.h"
 #include "model/MutationQueue.h"
 #include <cstdint>
@@ -49,8 +50,12 @@ private:
     MQTTPublishCallback mqttPublishCallback;
     MQTTConnectedCallback mqttConnectedCallback;
 
+    // The inbound MQTT message crosses from the MQTT event task to the display task through a
+    // fixed buffer behind a spinlock; pendingMessage is only ever touched on the display task.
     std::string pendingMessage;
+    char pendingBuffer[160];
     bool hasPendingMessage;
+    mutable portMUX_TYPE messageLock;
     model::MutationQueue* modelQueue;   // CTRL-07: volume and play state also go to MediaModel as records
 
     void postMedia(model::MediaModel::Field field, int value);

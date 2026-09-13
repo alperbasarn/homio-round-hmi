@@ -78,6 +78,7 @@ private:
     // Callbacks for external data
     DateTimeCallback dateTimeCallback;
     TemperatureCallback outdoorTempCallback;
+    TemperatureCallback indoorTempCallback;   // read on the display task; nothing pokes indoorTemp from another task
 
     // LVGL rendering
     void ensureUi();
@@ -132,12 +133,11 @@ public:
 
     // Data update methods
     void updateDateTime(const std::string& date, const std::string& time, const std::string& dayOfWeek = "");
-    void updateIndoorTemperature(float temperature);
-    void updateOutdoorTemperature(float temperature);
 
     // Callbacks for external data sources
     void setDateTimeCallback(DateTimeCallback callback) { dateTimeCallback = callback; }
     void setOutdoorTempCallback(TemperatureCallback callback) { outdoorTempCallback = callback; }
+    void setIndoorTempCallback(TemperatureCallback callback) { indoorTempCallback = callback; }
 
     // Activity tracking
     void resetLastActivityTime();

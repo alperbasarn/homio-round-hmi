@@ -103,6 +103,13 @@ void EnvironmentInfoScreen::update() {
     }
 
     // Poll outside temperature periodically.
+    if (indoorTempCallback && (currentMillis - lastUpdateTime >= UPDATE_INTERVAL)) {
+        const float newIndoorTemp = indoorTempCallback();
+        if (std::abs(newIndoorTemp - indoorTemp) > 0.5f) {
+            indoorTemp = newIndoorTemp;
+            indoorTempChanged = true;
+        }
+    }
     if (outdoorTempCallback && (currentMillis - lastUpdateTime >= UPDATE_INTERVAL)) {
         const float newOutdoorTemp = outdoorTempCallback();
         if (std::abs(newOutdoorTemp - outdoorTemp) > 0.5f) {
@@ -768,20 +775,6 @@ void EnvironmentInfoScreen::updateDateTime(const std::string& date, const std::s
         }
         formatDate();
         dateTimeChanged = true;
-    }
-}
-
-void EnvironmentInfoScreen::updateIndoorTemperature(float temperature) {
-    if (std::abs(temperature - indoorTemp) > 0.5f) {
-        indoorTemp = temperature;
-        indoorTempChanged = true;
-    }
-}
-
-void EnvironmentInfoScreen::updateOutdoorTemperature(float temperature) {
-    if (std::abs(temperature - outdoorTemp) > 0.5f) {
-        outdoorTemp = temperature;
-        outdoorTempChanged = true;
     }
 }
 

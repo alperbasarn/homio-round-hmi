@@ -645,6 +645,10 @@ extern "C" void app_main(void) {
         const model::EnvironmentState& e = appModel.environment().state();
         return e.outdoorValid ? e.outdoorTemp : 0.0f;   // the old "no reading" default
     });
+    infoScreen->setIndoorTempCallback([]() {
+        const model::EnvironmentState& e = appModel.environment().state();
+        return e.indoorValid ? e.indoorTemp : 18.0f;   // the old placeholder until the first sample
+    });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
     deviceInfoScreen = new DeviceInfoScreen();
@@ -797,9 +801,6 @@ extern "C" void app_main(void) {
             // Indoor temperature from bridge (e.g., Home Assistant → MQTT)
             try {
                 float indoorTemp = std::stof(payload);
-                if (infoScreen) {
-                    infoScreen->updateIndoorTemperature(indoorTemp);
-                }
                 const uint32_t atMs = static_cast<uint32_t>(nowMs());
                 appModel.mutations().post(model::EnvironmentModel::makeFloat(model::EnvironmentModel::Field::IndoorTemp, indoorTemp, atMs));
                 appModel.mutations().post(model::ClimateModel::make(model::ClimateModel::Field::IndoorSampled, 0, atMs));
