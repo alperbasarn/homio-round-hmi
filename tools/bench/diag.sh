@@ -8,9 +8,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 LOG="${1:-$BENCH_OUT/diag_$(date +%H%M%S).log}"; SECS="${2:-900}"; FLASH=1; [ "${3:-}" = "--no-flash" ] && FLASH=0
 if [ "$FLASH" = 1 ]; then
   bash "$BENCH_ROOT/tools/bench/flash.sh" || exit $?
-  bash "$BENCH_ROOT/tools/bench/capture.sh" "$SECS" "$LOG" --reset --send "sysInfo@40" --send "sysInfo@$((SECS-25))" | head -n 1
+  bash "$BENCH_ROOT/tools/bench/capture.sh" "$SECS" "$LOG" --reset --send "sysInfo@40" --send "sysInfo@$((SECS-25))" || exit $?
 else
-  bash "$BENCH_ROOT/tools/bench/capture.sh" "$SECS" "$LOG" --send "sysInfo@5" --send "sysInfo@$((SECS-25))" | head -n 1
+  bash "$BENCH_ROOT/tools/bench/capture.sh" "$SECS" "$LOG" --send "sysInfo@5" --send "sysInfo@$((SECS-25))" || exit $?
 fi
 echo "=== health ==="; bench_health "$LOG"
 echo "=== boot: reset reason, black box, PMU ==="; grep -n -E 'Reset reason code|Black box|PMU at boot' "$LOG" | cut -c1-230
