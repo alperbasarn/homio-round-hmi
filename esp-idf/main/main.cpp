@@ -43,6 +43,8 @@
 #include "InitializationScreen.h"
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
+#include "PlaceholderPageScreen.h"
+#include "esp_app_desc.h"
 #include "BatteryHandler.h"
 
 // Media
@@ -116,6 +118,7 @@ static ModeController* modeController = nullptr;
 static InitializationScreen* initializationScreen = nullptr;
 static EnvironmentInfoScreen* infoScreen = nullptr;
 static DeviceInfoScreen* deviceInfoScreen = nullptr;
+static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
 static SDCard* sdCard = nullptr;
 static Speaker* speaker = nullptr;
@@ -333,11 +336,12 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "LVGL display initialization failed");
         return;
     }
+    LvglDisplay::setPanelBackend(displayPanelBackend.get());   // the ported screens set brightness through LvglDisplay
     displayPanelBackend->setBrightness(255);
 
     // Render the splash screen before slower peripheral/network setup starts.
     // The DisplayController takes over later, but this makes power-up visibly alive.
-    initializationScreen = new InitializationScreen(displayPanelBackend.get());
+    initializationScreen = new InitializationScreen();
     initializationScreen->reset();
     initializationScreen->updateScreen();
     initializationScreen->setProgress(1);
@@ -453,14 +457,14 @@ extern "C" void app_main(void) {
 
     // Initialize UI controllers
     ESP_LOGI(TAG, "Initializing UI controllers...");
-    modeController = new ModeController(displayPanelBackend.get(), touchPanel);
+    modeController = new ModeController(touchPanel);
     if (initializationScreen == nullptr) {
-        initializationScreen = new InitializationScreen(displayPanelBackend.get());
+        initializationScreen = new InitializationScreen();
     }
 
     // Create EnvironmentInfoScreen (time, weather, temperature). NET-11: the callbacks read the
     // model, which the network-task pollers fill; the screen still owns its own fields.
-    infoScreen = new EnvironmentInfoScreen(displayPanelBackend.get(), touchPanel);
+    infoScreen = new EnvironmentInfoScreen(touchPanel);
     infoScreen->setDateTimeCallback([](std::string& date, std::string& time, std::string& dayOfWeek) {
         const model::EnvironmentState& e = appModel.environment().state();
         date = e.date.c_str();
@@ -473,7 +477,7 @@ extern "C" void app_main(void) {
     });
 
     // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen(displayPanelBackend.get(), touchPanel);
+    deviceInfoScreen = new DeviceInfoScreen(touchPanel);
     deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
         const model::ConnectivityState& c = appModel.connectivity().state();
         wifi = c.wifiConnected;
@@ -485,21 +489,55 @@ extern "C" void app_main(void) {
         const model::PowerState& p = appModel.power().state();
         return {p.presenceKnown, p.connected, p.percentValid, p.percent, p.voltage};
     });
+    // Ported with the main DeviceInfoScreen (2026-09-12): network details, Bluetooth, software
+    // update and the two control rows. Bluetooth and release updates are not in this tree yet.
+    deviceInfoScreen->setNetworkDetailsCallback([](std::string& ssid, std::string& ip) {
+        ssid = wifiManager != nullptr ? wifiManager->getSSID() : "";
+        ip = wifiManager != nullptr ? wifiManager->getIPAddress() : "";
+    });
+    deviceInfoScreen->setBluetoothStatusCallback([]() { return false; });
+    deviceInfoScreen->setSoftwareUpdateStatusCallback([]() -> DeviceSoftwareUpdateState {
+        const esp_app_desc_t* app = esp_app_get_description();
+        return {false, false, false, app != nullptr ? app->version : "unknown", "", "Release updates not wired"};
+    });
+    deviceInfoScreen->setSoftwareUpdateActionCallback([]() {
+        ESP_LOGW(TAG, "Software update requested from the page, but release updates are not wired in this tree");
+    });
+
+    // Matrix placeholder pages (timer, light, sound, temperature, PC); the PC page play/pause goes
+    // to the PC over the existing sound path.
+    placeholderPageScreen = new PlaceholderPageScreen(touchPanel);
+    placeholderPageScreen->setPlayPauseAction([]() {
+        if (soundController != nullptr) {
+            soundController->togglePlayPause();
+        }
+    });
 
     soundController = new SoundController(displayPanelBackend.get(), touchPanel);
     soundController->setModelQueue(&modelQueue);                       // CTRL-07
     lightController = new LightController(displayPanelBackend.get(), touchPanel);
     lightController->setModelQueue(&modelQueue);                       // CTRL-08
-    displayController = new DisplayController(touchPanel, displayPanelBackend.get());
+    displayController = new DisplayController(touchPanel);
     displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
+    displayController->registerPlaceholderScreen(placeholderPageScreen);
     displayController->registerMediaController(mediaController);
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
+    deviceInfoScreen->setBrightnessControlCallbacks(
+        []() { return displayController != nullptr ? displayController->getBrightnessPercent() : 100; },
+        [](int percent) {
+            if (displayController != nullptr) displayController->setBrightnessPercent(percent);
+        });
+    deviceInfoScreen->setSoundControlCallbacks(
+        []() { return soundController != nullptr ? soundController->getSetpoint() : 50; },
+        [](int percent) {
+            if (soundController != nullptr) soundController->updateSetpoint(percent);
+        });
     startupSplashActive = false;
     if (startupSplashTaskHandle != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(30));

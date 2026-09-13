@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DisplayPanelBackend.h"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
 #include <cstdint>
@@ -8,8 +8,10 @@
 #include <string>
 #include <lvgl.h>
 
-// Callback types for external data sources
 using DeviceNetworkStatusCallback = std::function<void(bool& wifi, bool& internet, bool& mqtt, int& strength)>;
+using DeviceNetworkDetailsCallback = std::function<void(std::string& ssid, std::string& ip)>;
+using DeviceBluetoothStatusCallback = std::function<bool()>;
+
 struct DeviceBatteryStatus {
     bool presenceKnown = false;
     bool connected = false;
@@ -19,23 +21,41 @@ struct DeviceBatteryStatus {
 };
 using BatteryCallback = std::function<DeviceBatteryStatus()>;
 
+struct DeviceSoftwareUpdateState {
+    bool configured = false;
+    bool busy = false;
+    bool updateAvailable = false;
+    std::string currentVersion;
+    std::string availableVersion;
+    std::string statusText;
+};
+using SoftwareUpdateStatusCallback = std::function<DeviceSoftwareUpdateState()>;
+using SoftwareUpdateActionCallback = std::function<void()>;
+using DevicePercentGetterCallback = std::function<int()>;
+using DevicePercentSetterCallback = std::function<void(int)>;
+
 class DeviceInfoScreen {
 private:
-    DisplayPanelBackend* display;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
     bool pageBackRequested;
+    bool pageLeftRequested;
+    bool pageRightRequested;
     bool lvglReady;
+    bool ignoreNextRelease;
+    int64_t activatedAtMs;
 
-    // Network status
     bool wifiConnected;
     bool internetConnected;
     bool mqttConnected;
     int wifiStrength;
+    bool bluetoothConnected;
+    std::string connectedSsid;
+    std::string connectedIp;
     bool networkStatusChanged;
+    bool bluetoothChanged;
 
-    // Battery
     bool batteryPresenceKnown;
     bool batteryConnected;
     bool batteryPercentageAvailable;
@@ -43,58 +63,118 @@ private:
     float batteryVoltage;
     bool batteryChanged;
 
-    // Timing for updates
+    bool softwareChanged;
+    bool softwareUpdateConfigured;
+    bool softwareUpdateBusy;
+    bool softwareUpdateAvailable;
+    std::string currentSoftwareVersion;
+    std::string availableSoftwareVersion;
+    std::string softwareStatusText;
+
+    int brightnessPercent;
+    int soundPercent;
+    bool controlsChanged;
+
     int64_t lastActivityTime;
     int64_t lastUpdateTime;
 
     static constexpr int64_t UPDATE_INTERVAL = 2000;
+    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
+    static constexpr int64_t PAGE_FADE_DURATION_MS = 200;
+    static constexpr int64_t PAGE_FADE_STEP_MS = 10;
 
-    // LVGL widgets
     lv_obj_t* root;
-    lv_obj_t* titleLabel;
-    lv_obj_t* wifiIconLabel;
-    lv_obj_t* wifiStatusLabel;
-    lv_obj_t* internetIconLabel;
-    lv_obj_t* internetStatusLabel;
-    lv_obj_t* mqttIconLabel;
-    lv_obj_t* mqttStatusLabel;
-    lv_obj_t* batteryIconLabel;
-    lv_obj_t* batteryStatusLabel;
-    lv_obj_t* batteryPercentIconLabel;
-    lv_obj_t* batteryPercentLabel;
-    lv_obj_t* swipeHintLabel;
+    lv_obj_t* bluetoothContainer;
+    lv_obj_t* bluetoothIcon;
+    lv_obj_t* wifiContainer;
+    lv_obj_t* wifiArcOuter;
+    lv_obj_t* wifiArcMiddle;
+    lv_obj_t* wifiArcInner;
+    lv_obj_t* wifiDot;
+    lv_obj_t* wifiCrossA;
+    lv_obj_t* wifiCrossB;
+    lv_obj_t* batteryContainer;
+    lv_obj_t* batteryOutline;
+    lv_obj_t* batteryFill;
+    lv_obj_t* batteryCap;
+    lv_obj_t* leftButtonLabel;
+    lv_obj_t* rightButtonLabel;
+    lv_obj_t* backChevron;
+    lv_obj_t* brightnessBar;
+    lv_obj_t* brightnessFill;
+    lv_obj_t* soundBar;
+    lv_obj_t* soundFill;
 
-    // Callbacks
+    int brightnessBarX;
+    int brightnessBarY;
+    int brightnessBarW;
+    int brightnessBarH;
+    int soundBarX;
+    int soundBarY;
+    int soundBarW;
+    int soundBarH;
+
     DeviceNetworkStatusCallback networkStatusCallback;
+    DeviceNetworkDetailsCallback networkDetailsCallback;
+    DeviceBluetoothStatusCallback bluetoothStatusCallback;
     BatteryCallback batteryCallback;
+    SoftwareUpdateStatusCallback softwareUpdateStatusCallback;
+    SoftwareUpdateActionCallback softwareUpdateActionCallback;
+    DevicePercentGetterCallback brightnessGetter;
+    DevicePercentSetterCallback brightnessSetter;
+    DevicePercentGetterCallback soundGetter;
+    DevicePercentSetterCallback soundSetter;
 
-    // LVGL rendering
     void ensureUi();
     void buildUi();
     void updateUi(bool forceFullRefresh);
     void updateNetworkStatus();
+    void updateBluetoothStatus();
+    void updateSoftwareUpdateState();
+    void updateControlValues();
+    void handleTouch();
+    void setWifiArcVisible(lv_obj_t* arc, bool visible, lv_color_t color);
+    void setVerticalBar(lv_obj_t* fill, int barY, int barH, int percent);
+    bool pointInRect(int x, int y, int rx, int ry, int rw, int rh) const;
+    int percentFromBarY(int y, int barY, int barH) const;
+    int getTargetDisplayBrightness() const;
+    void fadeDisplayBrightness(int from, int to);
     int scalePx(int referencePx) const;
     lv_color_t getBatteryColor(float percentage) const;
-    std::string getWifiStrengthBars(int strength) const;
+    int getWifiBars(int strength) const;
+    static void updateButtonEventHandler(lv_event_t* event);
 
-    // Helper functions
     int64_t millis() const { return esp_timer_get_time() / 1000; }
 
 public:
-    DeviceInfoScreen(DisplayPanelBackend* displayBackend, TouchPanel* touch);
+    explicit DeviceInfoScreen(TouchPanel* touch);
+    void deactivate();
+    void activate();
 
-    // Main update method
     void update();
 
-    // Callbacks for external data sources
     void setNetworkStatusCallback(DeviceNetworkStatusCallback callback) { networkStatusCallback = callback; }
+    void setNetworkDetailsCallback(DeviceNetworkDetailsCallback callback) { networkDetailsCallback = callback; }
+    void setBluetoothStatusCallback(DeviceBluetoothStatusCallback callback) { bluetoothStatusCallback = callback; }
     void setBatteryCallback(BatteryCallback callback) { batteryCallback = callback; }
+    void setSoftwareUpdateStatusCallback(SoftwareUpdateStatusCallback callback) { softwareUpdateStatusCallback = callback; }
+    void setSoftwareUpdateActionCallback(SoftwareUpdateActionCallback callback) { softwareUpdateActionCallback = callback; }
+    void setBrightnessControlCallbacks(DevicePercentGetterCallback getter, DevicePercentSetterCallback setter) {
+        brightnessGetter = getter;
+        brightnessSetter = setter;
+    }
+    void setSoundControlCallbacks(DevicePercentGetterCallback getter, DevicePercentSetterCallback setter) {
+        soundGetter = getter;
+        soundSetter = setter;
+    }
 
-    // Activity tracking
     void resetLastActivityTime();
 
-    // Page navigation
     bool isPageBackRequested();
     void resetPageBackRequest();
+    bool isPageLeftRequested() const { return pageLeftRequested; }
+    void resetPageLeftRequest() { pageLeftRequested = false; }
+    bool isPageRightRequested() const { return pageRightRequested; }
+    void resetPageRightRequest() { pageRightRequested = false; }
     void resetScreen();
 };

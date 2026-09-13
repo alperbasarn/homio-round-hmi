@@ -21,6 +21,7 @@ lv_disp_t* s_display = nullptr;
 lv_color_t* s_bufferA = nullptr;
 lv_color_t* s_bufferB = nullptr;
 DisplayFlushBackend* s_backend = nullptr;
+DisplayPanelBackend* s_panel = nullptr;
 #if LV_COLOR_DEPTH != 16
 uint16_t* s_colorConvertBuffer = nullptr;
 size_t s_colorConvertBufferPixels = 0;
@@ -279,4 +280,40 @@ void LvglDisplay::rounderCallback(lv_disp_drv_t* disp, lv_area_t* area) {
 void LvglDisplay::tickCallback(void* arg) {
     (void)arg;
     lv_tick_inc(LVGL_TICK_PERIOD_MS);
+}
+
+bool LvglDisplay::init() {
+    if (s_initialized) {
+        return true;
+    }
+    return s_backend != nullptr && init(s_backend);
+}
+
+void LvglDisplay::setPanelBackend(DisplayPanelBackend* panel) {
+    s_panel = panel;
+}
+
+int LvglDisplay::getWidth() {
+    return s_backend != nullptr ? s_backend->width() : 0;
+}
+
+int LvglDisplay::getHeight() {
+    return s_backend != nullptr ? s_backend->height() : 0;
+}
+
+void LvglDisplay::setBrightness(uint8_t brightness) {
+    if (s_panel != nullptr) {
+        s_panel->setBrightness(brightness);
+    }
+}
+
+void LvglDisplay::fillScreen(uint32_t rgb888) {
+    if (!s_initialized || !lock(-1)) {
+        return;
+    }
+    lv_obj_t* screen = lv_scr_act();
+    lv_obj_set_style_bg_color(screen, lv_color_hex(rgb888), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_invalidate(screen);
+    unlock();
 }

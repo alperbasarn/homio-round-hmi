@@ -43,9 +43,22 @@ CONFIG_FATFS_SECTOR_512=y
 
 # LVGL
 CONFIG_LV_BUILD_EXAMPLES=n
-CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# LVGL allocates from the IDF heap (bench finding 2026-09-12, dev_notes/phase1-log.md). The built-in pool was 64 KB of internal RAM and the
+# INFO screen at 466 px asks lv_draw_sw_rect for a 47 KB shadow corner buffer (290 px disc,
+# 9 px shadow: (145+9)^2 x 2 bytes); the failed allocation tripped LV_ASSERT_MALLOC, whose default
+# handler is while(1), so the display task spun with a black screen and IDLE0 starved the task
+# watchdog. With malloc the S3 boards place blocks above 16 KB in PSRAM and the C6 uses its heap.
+CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEM_BUF_MAX_NUM=32
 CONFIG_LV_USE_QRCODE=n
+# Built-in Montserrat sizes the ported main screens use (64/72/96 are custom fonts in ui/fonts).
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+# LVGL errors and failed asserts print before the handler runs (they were silent).
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_ERROR=y
+CONFIG_LV_LOG_PRINTF=y
 
 
 # LVGL theme (UIX-02 / D11): dark default so an un-styled object never paints a light rectangle,

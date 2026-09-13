@@ -1,9 +1,8 @@
 #pragma once
 
-#include "DisplayPanelBackend.h"
+#include "LvglDisplay.h"
 #include "TouchPanel.h"
 #include "esp_timer.h"
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -13,21 +12,16 @@
 using DateTimeCallback = std::function<void(std::string& date, std::string& time, std::string& dayOfWeek)>;
 using TemperatureCallback = std::function<float()>;
 
-enum class ScreenNavTarget {
-    NONE,
-    MODE_CONTROLLER,
-    DEVICE_INFO
-};
-
 class EnvironmentInfoScreen {
 private:
-    DisplayPanelBackend* display;
     TouchPanel* touchPanel;
 
     bool screenInitialized;
     bool pageBackRequested;
     bool deviceInfoRequested;
     bool lvglReady;
+    bool ignoreNextRelease;
+    int64_t activatedAtMs;
 
     // Date and time
     std::string currentDate;
@@ -36,9 +30,6 @@ private:
     std::string currentDayOfWeek;
     std::string lastFormattedDate;
     std::string lastFormattedTime;
-    bool colonVisible;
-    int64_t lastColonToggleTime;
-    static constexpr int64_t COLON_BLINK_INTERVAL = 1000;
 
     // Temperature data
     float indoorTemp;
@@ -49,10 +40,6 @@ private:
     bool outdoorTempChanged;
     bool dateTimeChanged;
 
-    // Leave animation state
-    ScreenNavTarget pendingNavTarget;
-    int shrinkAnimationsRemaining;
-
     // Timing for updates
     int64_t lastActivityTime;
     int64_t lastUpdateTime;
@@ -61,32 +48,36 @@ private:
     // Arc configuration
     static constexpr float ARC_START_ANGLE = 120.0f;
     static constexpr float ARC_LENGTH = 300.0f;
-    static constexpr size_t OUTDOOR_SEGMENT_COUNT = 4;
     static constexpr int ARC_RANGE_MAX = 1000;
-    static constexpr int64_t ANIMATION_DURATION = 700;
+    static constexpr int64_t ANIMATION_DURATION = 500;
+    static constexpr int64_t TEXT_INTRO_FADE_DURATION = 500;
+    static constexpr int64_t COLON_FADE_DURATION = 1000;
+    static constexpr int64_t ANIMATION_FRAME_INTERVAL_MS = 20;
     static constexpr int64_t UPDATE_INTERVAL = 5000;
     static constexpr int64_t INACTIVITY_TIMEOUT = 60000;
+    static constexpr int64_t STALE_RELEASE_GUARD_MS = 300;
 
-
-    // LVGL widgets (text + center disc + tracks only during animation)
+    // LVGL widgets
     lv_obj_t* root;
-    lv_obj_t* outdoorTrackArc;
+    lv_obj_t* outdoorArc;
     lv_obj_t* indoorArc;
-    std::array<lv_obj_t*, OUTDOOR_SEGMENT_COUNT> outdoorSegmentArcs;
     lv_obj_t* centerDisc;
     lv_obj_t* timeLabel;
+    lv_obj_t* hourLabel;
+    lv_obj_t* colonLabel;
+    lv_obj_t* minuteLabel;
     lv_obj_t* dayLabel;
     lv_obj_t* dateLabel;
     lv_obj_t* indoorTempLabel;
     lv_obj_t* outdoorTempLabel;
-    std::array<float, OUTDOOR_SEGMENT_COUNT + 1> outdoorSegmentStops;
-    std::array<int16_t, OUTDOOR_SEGMENT_COUNT> outdoorSegmentStartAngles;
-    std::array<int16_t, OUTDOOR_SEGMENT_COUNT> outdoorSegmentEndAngles;
 
     int currentIndoorArcValue;
     int currentOutdoorArcValue;
     int targetIndoorArcValue;
     int targetOutdoorArcValue;
+    bool animationPending;
+    bool introAnimationActive;
+    int64_t introAnimationStartedAt;
 
     // Callbacks for external data
     DateTimeCallback dateTimeCallback;
@@ -98,23 +89,30 @@ private:
     void updateUi(bool forceFullRefresh);
     void positionTemperatureLabels();
     void applyIndoorArcFromValue(int value);
-    void updateOutdoorSegmentsFromValue(int value);
+    void applyOutdoorArcFromValue(int value);
+    void updateTimeLabels();
+    void positionTimeLabels();
+    void setIntroTextFade(int32_t value);
+    void setColonFade(int32_t value);
+    void setArcGlowEnabled(bool enabled);
+    float easeInOut(float progress) const;
+    void runIntroAnimation(int indoorValue, int outdoorValue);
+    void runOutroAnimation();
+    void startTextIntroFadeAnimation();
+    void startColonFadeAnimation(uint32_t delayMs);
 
     // Arc animations
-    void startIndoorArcAnimation(int targetValue, bool immediate = false);
-    void startOutdoorArcAnimation(int targetValue, bool immediate = false);
+    void startAnimations();
+    void startIndoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
+    void startOutdoorArcAnimation(int targetValue, bool immediate = false, uint32_t delayMs = 0);
     static void indoorArcAnimExec(void* var, int32_t value);
     static void outdoorArcAnimExec(void* var, int32_t value);
-
-    // Leave (shrink) animations
-    void startLeaveAnimation(ScreenNavTarget target);
-    void finishLeave();
-    static void shrinkAnimReady(lv_anim_t* anim);
+    static void textIntroFadeAnimExec(void* var, int32_t value);
+    static void colonFadeAnimExec(void* var, int32_t value);
 
     // Data helpers
     void formatDate();
     lv_color_t getTemperatureColor(float temperature, bool isIndoor);
-    std::string getTimeStringForDisplay() const;
     int scalePx(int referencePx) const;
 
     // Helper functions
@@ -126,7 +124,9 @@ private:
     }
 
 public:
-    EnvironmentInfoScreen(DisplayPanelBackend* displayBackend, TouchPanel* touch);
+    explicit EnvironmentInfoScreen(TouchPanel* touch);
+    void deactivate();
+    void activate();
 
     // Main update method
     void update();

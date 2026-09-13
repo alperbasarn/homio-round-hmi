@@ -28,7 +28,6 @@ menu "QNOB Hardware Configuration"
 
     choice QNOB_DISPLAY_ROTATION
         prompt "Display Rotation (clockwise)"
-        default QNOB_DISPLAY_ROTATION_270 if QNOB_HW_ESP32S3_AMOLED_175
         default QNOB_DISPLAY_ROTATION_0
         help
             Logical display rotation applied by the firmware. Use this to correct
@@ -72,6 +71,7 @@ menu "QNOB Hardware Configuration"
 
     config QNOB_TOUCH_MIRROR_X
         bool "Mirror Touch X Axis"
+        default y if QNOB_HW_ESP32S3_AMOLED_175
         default n
         help
             Mirror the transformed touch X coordinate across the visible screen.
@@ -80,6 +80,7 @@ menu "QNOB Hardware Configuration"
 
     config QNOB_TOUCH_MIRROR_Y
         bool "Mirror Touch Y Axis"
+        default y if QNOB_HW_ESP32S3_AMOLED_175
         default n
         help
             Mirror the transformed touch Y coordinate across the visible screen.

@@ -1,8 +1,12 @@
 # Waveshare ESP32-S3-Touch-AMOLED-1.75 board overlay
 
 CONFIG_QNOB_HW_ESP32S3_AMOLED_175=y
-CONFIG_QNOB_DISPLAY_ROTATION_270=y
+# Panel-native orientation (MADCTL 0, the same frame LovyanGFX drew at rotation 0 on main);
+# the CST9217 reports mirrored in both axes relative to that frame (bench, 2026-09-12).
+CONFIG_QNOB_DISPLAY_ROTATION_0=y
 CONFIG_QNOB_TOUCH_ROTATION_0=y
+CONFIG_QNOB_TOUCH_MIRROR_X=y
+CONFIG_QNOB_TOUCH_MIRROR_Y=y
 
 # The QSPI AMOLED backend expects swapped RGB565 LVGL pixel data.
 CONFIG_LV_COLOR_16_SWAP=y

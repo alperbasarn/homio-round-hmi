@@ -1,13 +1,13 @@
 #ifndef DISPLAY_CONTROLLER_H
 #define DISPLAY_CONTROLLER_H
 
-#include "DisplayPanelBackend.h"
 #include "TouchPanel.h"
 #include "model/MutationQueue.h"
-#include <cstdint>
 #include <string>
+#include <atomic>
+#include <cstdint>
 
-// Forward declarations to avoid circular dependencies
+// Forward declarations
 class KnobController;
 class SoundController;
 class LightController;
@@ -15,11 +15,14 @@ class ModeController;
 class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
+class PlaceholderPageScreen;
 class MediaController;
+
 enum Mode {
   INITIALIZATION,
-  INFO,           // EnvironmentInfoScreen (time, weather, temperature)
-  DEVICE_INFO,    // DeviceInfoScreen (WiFi, internet, MQTT, battery)
+  INFO,
+  DEVICE_INFO,
+  MATRIX_PAGE,
   CALIBRATE_ORIENTATION,
   SOUND,
   LIGHT,
@@ -37,51 +40,66 @@ private:
   InitializationScreen* initializationScreen;
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
+  PlaceholderPageScreen* placeholderScreen;
   MediaController* mediaController;
-  DisplayPanelBackend* panelBackend;
 
   Mode currentMode;
   int64_t lastActivityTime;
-  bool displayIsOn;
-  int initializationProgress;
   int64_t initializationStartTime;
+  bool displayIsOn;
+  int brightnessPercent;
+  int initializationProgress;
   int64_t initializationCompleteTime;
-  // WP1.4 shadow phase: every knob token and navigation change is also posted here as a record
+  int64_t touchSoundCandidateSinceMs;
+  int currentPageX;
+  int currentPageY;
+  bool touchSoundPressedState;
+  bool touchSoundCandidateState;
+  std::atomic<int> pendingModeRequest;
+  std::atomic<int> pendingPageRequest;
+  // WP1.4 shadow phase: every knob token and navigation change is also posted as a record
   // (INPT-05, MDL-31). Nothing in this class calls a model setter.
   model::MutationQueue* modelQueue;
 
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
+  bool handleMatrixNavigationGesture(touch_gesture_t gesture);
+  bool navigateToMatrixPage(int x, int y);
+  void resetActiveScreen();
   void postKnobToken(const std::string& token);
   void postNavigationScreen(Mode mode);
   void postNavigation(int field, int32_t value);
-  
 
 public:
-  DisplayController(TouchPanel* touch, DisplayPanelBackend* displayPanelBackend);
+  DisplayController(TouchPanel* touch);
   void init();
   void update();
-  
+
   void setMode(Mode mode);
   Mode getMode() const;
+  bool showNamedScreen(const std::string& screenName);
+  std::string getModeName() const;
 
   void registerKnobController(KnobController* knob);
-  void registerModelQueue(model::MutationQueue* queue);
   void registerSoundController(SoundController* sound);
   void registerLightController(LightController* light);
   void registerModeController(ModeController* mode);
   void registerInitializationScreen(InitializationScreen* init);
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
+  void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
   void registerMediaController(MediaController* media);
-  
+  void registerModelQueue(model::MutationQueue* queue);
+
   void incrementSetpoint();
   void decrementSetpoint();
   void setSetpoint(int setpoint);
 
   void turnDisplayOff();
   void turnDisplayOn();
+  void setBrightnessPercent(int percent);
+  int getBrightnessPercent() const;
 
   ~DisplayController();
 };

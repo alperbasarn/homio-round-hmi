@@ -79,6 +79,7 @@ public:
     void incrementSetpoint();
     void decrementSetpoint();
     void togglePlayPause();
+    int getSetpoint() const { return setpoint; }
 
     bool isPageBackRequested() const { return pageBackRequested; }
     void resetPageBackRequest();

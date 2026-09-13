@@ -1,164 +1,222 @@
 #include "InitializationScreen.h"
-#include "LvglDisplay.h"
 #include "esp_log.h"
-#include <cstdio>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <cmath>
+#include <algorithm>
 
-namespace {
+static const char* TAG = "InitScreen";
 
-constexpr const char* TAG = "InitScreen";
+InitializationScreen::InitializationScreen()
+    : lvglReady(false), screenInitialized(false),
+      root(nullptr), progressArc(nullptr), qLabel(nullptr), nobLabel(nullptr),
+      currentArcValue(0), targetArcValue(0) {
+}
 
-}  // namespace
+int16_t InitializationScreen::normalizeAngle(float degrees) {
+    float n = std::fmod(degrees, 360.0f);
+    if (n < 0.0f) n += 360.0f;
+    return static_cast<int16_t>(std::round(n));
+}
 
-InitializationScreen::InitializationScreen(DisplayPanelBackend* displayBackend)
-    : display(displayBackend),
-      progressValue(0),
-      previousProgress(0),
-      screenInitialized(false),
-      wifiConnected(false),
-      wifiStrength(0),
-      mqttConnected(false),
-      root(nullptr),
-      progressArc(nullptr),
-      logoLabel(nullptr),
-      progressLabel(nullptr),
-      statusLabel(nullptr) {
+int InitializationScreen::scalePx(int referencePx) const {
+    return std::max(1, (referencePx * LvglDisplay::getWidth()) / 240);
 }
 
 void InitializationScreen::ensureUi() {
-    if (screenInitialized || display == nullptr || !LvglDisplay::isInitialized()) {
+    if (lvglReady) return;
+    if (!LvglDisplay::isInitialized() && !LvglDisplay::init()) {
+        ESP_LOGE(TAG, "LVGL init failed");
         return;
     }
+    lvglReady = true;
+    buildUi();
+}
 
-    if (!LvglDisplay::lock(-1)) {
-        ESP_LOGW(TAG, "LVGL lock unavailable while creating initialization screen");
-        return;
-    }
+void InitializationScreen::buildUi() {
+    if (root != nullptr) return;
 
-    const int displayW = display->width();
-    const int displayH = display->height();
-    const int displaySize = std::min(displayW, displayH);
-    const int arcDiameter = displaySize - std::max(scalePx(28), displaySize / 8);
-    const int arcWidth = std::max(scalePx(14), displaySize / 24);
+    const int w          = LvglDisplay::getWidth();
+    const int h          = LvglDisplay::getHeight();
+    const int padding    = std::max(2, w / 32);
+    const int arcDiam    = std::min(w, h) - 2 * padding;
+    const int arcWidth   = std::max(12, (14 * w) / 240);
+    const int discDiam   = static_cast<int>(arcDiam * 0.6f);
 
+    // Full-screen black root
     root = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(root);
-    lv_obj_set_size(root, displayW, displayH);
+    lv_obj_set_size(root, w, h);
     lv_obj_set_pos(root, 0, 0);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Progress arc: dark-blue track, red indicator
     progressArc = lv_arc_create(root);
-    lv_obj_remove_style_all(progressArc);
-    lv_obj_set_size(progressArc, arcDiameter, arcDiameter);
+    lv_obj_set_size(progressArc, arcDiam, arcDiam);
     lv_obj_center(progressArc);
+    lv_obj_clear_flag(progressArc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(progressArc, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_arc_width(progressArc, arcWidth, LV_PART_MAIN);
     lv_obj_set_style_arc_width(progressArc, arcWidth, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0x121A2A), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0xFF4858), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(progressArc, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(progressArc, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(progressArc, true, LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(progressArc, true, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(progressArc, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_clear_flag(progressArc, LV_OBJ_FLAG_CLICKABLE);
-    lv_arc_set_rotation(progressArc, 120);
-    lv_arc_set_bg_angles(progressArc, 0, 300);
-    lv_arc_set_range(progressArc, 0, 100);
-    lv_arc_set_value(progressArc, progressValue);
+    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0x121A2A), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(progressArc, lv_color_hex(0xFF4858), LV_PART_INDICATOR);
+    lv_arc_set_mode(progressArc, LV_ARC_MODE_NORMAL);
+    lv_arc_set_rotation(progressArc, 0);
+    const int16_t bgStart = normalizeAngle(ARC_START_ANGLE);
+    const int16_t bgEnd   = normalizeAngle(ARC_START_ANGLE + ARC_SPAN);
+    lv_arc_set_bg_angles(progressArc, bgStart, bgEnd);
+    lv_arc_set_angles(progressArc, bgStart, bgStart);  // empty indicator
 
-    logoLabel = lv_label_create(root);
-    lv_obj_set_style_text_color(logoLabel, lv_color_white(), 0);
-    lv_label_set_text(logoLabel, "QNOB");
-    lv_obj_align(logoLabel, LV_ALIGN_CENTER, 0, -scalePx(12));
+    // Black center disc masks arc interior
+    lv_obj_t* disc = lv_obj_create(root);
+    lv_obj_remove_style_all(disc);
+    lv_obj_set_size(disc, discDiam, discDiam);
+    lv_obj_center(disc);
+    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(disc, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
 
-    progressLabel = lv_label_create(root);
-    lv_obj_set_style_text_color(progressLabel, lv_color_hex(0xAEB8C6), 0);
-    lv_obj_align(progressLabel, LV_ALIGN_CENTER, 0, scalePx(24));
+    // Font: Montserrat 32 for AMOLED (≥400 px), 14 for smaller displays
+#if defined(CONFIG_LV_FONT_MONTSERRAT_32)
+    const lv_font_t* font = (w >= 400) ? &lv_font_montserrat_32 : LV_FONT_DEFAULT;
+#else
+    const lv_font_t* font = LV_FONT_DEFAULT;
+#endif
 
-    statusLabel = lv_label_create(root);
-    lv_obj_set_style_text_color(statusLabel, lv_color_hex(0x647086), 0);
-    lv_obj_align(statusLabel, LV_ALIGN_CENTER, 0, scalePx(48));
+    // "Q" label (red)
+    qLabel = lv_label_create(disc);
+    lv_obj_set_style_text_font(qLabel, font, 0);
+    lv_obj_set_style_text_color(qLabel, lv_color_hex(0xFF0000), 0);
+    lv_label_set_text(qLabel, "Q");
 
-    screenInitialized = true;
-    updateWidgets();
-    lv_obj_move_foreground(root);
+    // "NOB" label (white)
+    nobLabel = lv_label_create(disc);
+    lv_obj_set_style_text_font(nobLabel, font, 0);
+    lv_obj_set_style_text_color(nobLabel, lv_color_white(), 0);
+    lv_label_set_text(nobLabel, "NOB");
+
+    // Position the two labels side-by-side in the disc center
+    lv_obj_update_layout(disc);
+    const int qW       = lv_obj_get_width(qLabel);
+    const int nobW     = lv_obj_get_width(nobLabel);
+    const int textH    = lv_obj_get_height(qLabel);
+    const int totalW   = qW + nobW;
+    const int discW    = lv_obj_get_width(disc);
+    const int discH    = lv_obj_get_height(disc);
+    lv_obj_set_pos(qLabel,   (discW - totalW) / 2,        (discH - textH) / 2);
+    lv_obj_set_pos(nobLabel, (discW - totalW) / 2 + qW,   (discH - textH) / 2);
+
     LvglDisplay::invalidateScreen();
-    LvglDisplay::unlock();
 }
 
-void InitializationScreen::updateWidgets() {
-    if (progressArc == nullptr || progressLabel == nullptr || statusLabel == nullptr) {
-        return;
-    }
+void InitializationScreen::applyArcValue(int value) {
+    if (progressArc == nullptr) return;
+    const int   clamped  = value < 0 ? 0 : (value > 100 ? 100 : value);
+    const float endAngle = ARC_START_ANGLE + ARC_SPAN * (clamped / 100.0f);
+    lv_arc_set_angles(progressArc,
+                      normalizeAngle(ARC_START_ANGLE),
+                      normalizeAngle(endAngle));
+}
 
-    lv_arc_set_value(progressArc, progressValue);
-
-    char progressText[16];
-    std::snprintf(progressText, sizeof(progressText), "%d%%", progressValue);
-    lv_label_set_text(progressLabel, progressText);
-
-    const char* wifiText = wifiConnected ? "WiFi ready" : "Starting";
-    const char* mqttText = mqttConnected ? "MQTT ready" : "MQTT pending";
-    char statusText[48];
-    std::snprintf(statusText, sizeof(statusText), "%s | %s", wifiText, mqttText);
-    lv_label_set_text(statusLabel, statusText);
+void InitializationScreen::arcAnimExec(void* var, int32_t value) {
+    auto* self = static_cast<InitializationScreen*>(var);
+    if (self == nullptr) return;
+    self->currentArcValue = static_cast<int>(value);
+    self->applyArcValue(static_cast<int>(value));
 }
 
 void InitializationScreen::setProgress(int progress) {
-    previousProgress = progressValue;
-    progressValue = constrain(progress, 0, 100);
-    ESP_LOGI(TAG, "Progress updated: %d", progressValue);
-    updateScreen();
-}
+    const int clamped = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
 
-void InitializationScreen::setMQTTStatus(bool isConnected) {
-    mqttConnected = isConnected;
-    updateScreen();
+    if (clamped == targetArcValue) return;
+    targetArcValue = clamped;
+
+    if (!lvglReady || progressArc == nullptr) return;
+
+    lv_anim_del(this, arcAnimExec);
+    if (currentArcValue == targetArcValue) return;
+
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, this);
+    lv_anim_set_values(&anim, currentArcValue, targetArcValue);
+    lv_anim_set_time(&anim, ANIMATION_DURATION);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&anim, arcAnimExec);
+    lv_anim_start(&anim);
 }
 
 void InitializationScreen::updateScreen() {
     ensureUi();
+    if (!lvglReady) return;
+
     if (!screenInitialized) {
-        return;
+        // Render while dark only on backlight-driven panels.
+        // AMOLED panels without BL pin should not be dimmed to 0.
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
+        LvglDisplay::setBrightness(0);
+#endif
+        lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+        LvglDisplay::invalidateScreen();
+        LvglDisplay::taskHandler();
+#if defined(LCD_BL_PIN) && (LCD_BL_PIN >= 0)
+        for (int b = 0; b <= 255; b += 15) {
+            LvglDisplay::setBrightness(static_cast<uint8_t>(b));
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+#endif
+        LvglDisplay::setBrightness(255);
+        screenInitialized = true;
+
+        // Start the progress animation now that LVGL is live
+        if (targetArcValue > 0) {
+            setProgress(targetArcValue);
+        }
     }
 
-    if (!LvglDisplay::lock(-1)) {
-        return;
-    }
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(root);
-    updateWidgets();
-    LvglDisplay::invalidateScreen();
-    LvglDisplay::unlock();
     LvglDisplay::taskHandler();
 }
 
-void InitializationScreen::setWiFiStatus(bool connected, int strength) {
-    wifiConnected = connected;
-    wifiStrength = constrain(strength, 0, 3);
-    updateScreen();
+void InitializationScreen::setWiFiStatus(bool /*connected*/, int /*strength*/) {
+    // Reserved for future WiFi indicator
+}
+
+void InitializationScreen::setMQTTStatus(bool /*isConnected*/) {
+    // Reserved for future MQTT indicator
 }
 
 void InitializationScreen::reset() {
-    progressValue = 0;
-    previousProgress = 0;
-    wifiConnected = false;
-    wifiStrength = 0;
-    mqttConnected = false;
+    screenInitialized = false;
+    currentArcValue   = 0;
+    targetArcValue    = 0;
 
-    if (screenInitialized && LvglDisplay::lock(-1)) {
+    if (!lvglReady) return;
+
+    if (progressArc != nullptr) {
+        lv_anim_del(this, arcAnimExec);
+        applyArcValue(0);
+    }
+    // If hideScreen() already deleted the root, nothing to un-hide.
+    if (root != nullptr) {
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(root);
-        updateWidgets();
-        LvglDisplay::invalidateScreen();
-        LvglDisplay::unlock();
     }
 }
 
-int InitializationScreen::scalePx(int referencePx) const {
-    if (display == nullptr) {
-        return referencePx;
+void InitializationScreen::hideScreen() {
+    if (!lvglReady) return;
+    lv_anim_del(this, arcAnimExec);
+    if (root != nullptr) {
+        lv_obj_del(root);
+        root = nullptr;
+        progressArc = nullptr;
+        qLabel = nullptr;
+        nobLabel = nullptr;
     }
-    return std::max(1, (referencePx * display->width()) / 240);
+    lvglReady = false;
+    screenInitialized = false;
 }

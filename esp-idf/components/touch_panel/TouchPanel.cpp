@@ -502,12 +502,9 @@ bool TouchPanel::readTouchData(touch_data_t* data)
 
 void TouchPanel::prepareCst9217ForSleep()
 {
-    esp_err_t err = i2c_write_cmd16(CST9217_REG_SLEEP_MODE);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "CST9217 sleep command failed: %s", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "CST9217 placed into low-power sleep mode");
+    // On the S3 AMOLED 1.75 the CST9217 INT pin is the wake source. Its deep-sleep command
+    // suppresses that IRQ, so the controller stays awake and asserts INT on the next tap (main).
+    ESP_LOGI(TAG, "CST9217 left in wake-capable mode for deep sleep resume");
 }
 
 void TouchPanel::prepareForSleep()

@@ -245,3 +245,44 @@ warning beyond the pre-existing missing-field-initializer on the scan config. Be
 on the 1.75: the trace walk (knob + INFO) with `CONFIG_QNOB_MODEL_TRACE=y` and the off-task
 counter reading 0, MQTT up within 10 s of IP, recovery after an AP power cycle, the weather 200
 over TLS with a rotated key, and the P1b comparison against `p0-fixed` once that tag exists.
+
+
+## Bench 1 on the ESP32-S3-Touch-AMOLED-1.75 (2026-09-12/13)
+
+Setup: usbipd bind (owner, administrator shell) and attach of bus 4-4 into WSL as `/dev/ttyACM0`;
+flashing through `idf.py -p /dev/ttyACM0 flash`; console captured with `tools/bench_serial.py`,
+which holds the USB-Serial/JTAG port across the RTS reset. A `cat` started after an esptool reset
+captured nothing: that console drops output while no host holds the port. Logs live under the
+session scratchpad (`bench/boot_fix1.log`, `bench/boot_port1.log`).
+
+| # | Finding | State |
+|---|---------|-------|
+| 1 | **INFO screen halt.** At 466 px the centre disc (290 px, 9 px shadow) makes `lv_draw_sw_rect` ask `lv_mem_buf_get` for a 47 KB corner buffer ((145+9)^2 x 2). The 64 KB LVGL pool cannot supply it, `LV_ASSERT_MALLOC` fails into the default `while(1)` handler, the display task spins with the panel still at brightness 0 and IDLE0 starves the task watchdog every 5 s (backtrace `draw_shadow -> lv_mem_buf_get`, identical on every report). | fixed: `CONFIG_LV_MEM_CUSTOM=y` (IDF heap, PSRAM for blocks over 16 KB on the S3, the general heap on the C6) plus `LV_USE_LOG` at error level so a failed assert prints first. +9.8 KB flash. |
+| 2 | **First clean pass** (`boot_fix1.log`, 90 s): no watchdog, no panic, INFO at 5.9 s, WiFi associated 4.8 s, IP 6.9 s, internet probe 7.0 s, NTP 11.2 s with the date label filled (`env 2026/09/12 23:45 SAT (12 SEP)`), 73 drains all `offtask=0` (first MDL-32 reading), `help` and `info` typed over USB work, AXP2101 reports presence known and no cell. | recorded |
+| 3 | `SleepHandler` retries 240 -> 120 MHz every frame after 30 s idle and warns each time; 120 MHz is not an S3 CPU frequency (80/160/240). ~7,000 log lines per 90 s. | open |
+| 4 | WiFi bars flap 1 <-> 2 at RSSI -70/-71 with no hysteresis: a `net` commit almost every second. | open (adapter, ConnectivityPollerCore) |
+| 5 | Two mutation records counted as rejected in the first network-task batch (`rejected=2`, cumulative, at 2.87 s with n=11). `AppModel::apply` increments the counter whenever a setter returns false, and the setters return false for a no-change write as well as for an invalid value; the first battery batch carries the -1 sentinels for percent and voltage (`PowerModel::setPercent`/`setVoltage` refuse them) and default-equal flags. Not a routing error. | open: split the counter into `unchanged` and `invalid` (MDL-32 trace) |
+| 6 | After 3 min idle the old build deep-sleeps with the CST9217 put into its sleep mode, so no tap can wake it and the USB port disappears until a power cycle. | fixed by porting the main change: the controller stays awake and asserts INT on the next tap |
+
+**Base decision (owner, 2026-09-13).** This branch stays the base. `main` of homio-round-hmi
+(123 commits past the 2026-04-21 fork; the owner confirmed its May build is clean on this board)
+is the reference for the screens, touch and navigation, and its screen layer was ported file by
+file: the custom Montserrat 64/72/96 fonts plus the built-in 28/32/48, `EnvironmentInfoScreen`
+(intro/outro animations, hour/colon/minute labels, arc glow), `DeviceInfoScreen` (page left/right/
+back, brightness and sound rows; the Bluetooth and software-update rows are stubbed because those
+components are not in this tree), `PlaceholderPageScreen` (the matrix pages timer/light/sound/
+temperature/PC), `InitializationScreen`, `ModeController`, and `DisplayController` (MATRIX_PAGE
+navigation, debounced touch sound, brightness percent) with the WP1.4 posts re-applied on top.
+`LvglDisplay` gained the `getWidth`/`getHeight`/`setBrightness`/`fillScreen`/`init()` statics the
+ported screens call; the model lifts (MDL-07 bands, MDL-10 date format) were re-applied on the
+ported screens; `MATRIX_PAGE` posts no `ActiveScreen` yet (the pages become real screens in Phase 3).
+
+**Orientation.** LovyanGFX writes MADCTL 0 at rotation 0 and our esp_lcd CO5300 driver sends the
+same value, so the two stacks draw the same frame. The 270 degree software rotation the Phase 0
+migration configured for the 1.75 was a transcription error and the likely source of the drawing
+artefacts (each partial strip rotated into a tall narrow window). The 1.75 now uses display
+rotation 0 with touch mirror X and Y (the values the LovyanGFX line carried in `hal_config.h`).
+
+Binary after the port: 1,829,504 B (+210 KB, the fonts), 44 % of the app slot free. Only the 1.75
+was built; the owner dropped the C6 and 1.28 from this pass. Visual check of orientation, touch,
+the home view and the page navigation: pending the owner.
