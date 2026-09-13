@@ -43,3 +43,4 @@ official examples-*/**/dependencies.lock
 esp-idf/PC/src/qnob_config.json
 Hardware Ref/build_host_tests/
 esp-idf/ota/
+Hardware Ref/bench_logs/
