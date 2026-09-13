@@ -20,86 +20,6 @@ namespace {
 constexpr const char* TAG = "SDCard";
 constexpr size_t DEFAULT_CHUNK_SIZE = 1024;
 constexpr size_t MAX_LOG_ENTRIES_PER_DIR = 64;
-
-void logDirectoryTree(const std::string& rootPath, int maxDepth) {
-    if (rootPath.empty()) {
-        ESP_LOGW(TAG, "logDirectoryTree called with empty root path");
-        return;
-    }
-
-    ESP_LOGI(TAG, "Directory tree (%s), maxDepth=%d", rootPath.c_str(), maxDepth);
-
-    const auto walk = [&](const auto& self, const std::string& path, int depth) -> void {
-        DIR* dir = opendir(path.c_str());
-        if (dir == nullptr) {
-            ESP_LOGW(TAG, "%s[!] %s (errno=%d: %s)", std::string(depth * 2, ' ').c_str(),
-                     path.c_str(), errno, strerror(errno));
-            return;
-        }
-
-        std::vector<std::string> dirs;
-        std::vector<std::string> files;
-        size_t entryCount = 0;
-        size_t rawEntryCount = 0;
-        bool truncated = false;
-
-        struct dirent* entry = nullptr;
-        while ((entry = readdir(dir)) != nullptr) {
-            rawEntryCount++;
-            const std::string name = entry->d_name;
-
-            // Debug: Log ALL raw entries including . and ..
-            if (depth == 0 || path.find("/effects") != std::string::npos) {
-                ESP_LOGI(TAG, "  RAW entry #%u: '%s' (d_type=%d)",
-                         (unsigned)rawEntryCount, name.c_str(), entry->d_type);
-            }
-
-            if (name == "." || name == "..") {
-                continue;
-            }
-            entryCount++;
-            if (entryCount > MAX_LOG_ENTRIES_PER_DIR) {
-                truncated = true;
-                break;
-            }
-
-            const std::string fullPath = path + "/" + name;
-            struct stat st = {};
-            if (stat(fullPath.c_str(), &st) != 0) {
-                files.push_back(name + " [stat errno=" + std::to_string(errno) + "]");
-                continue;
-            }
-
-            if (S_ISDIR(st.st_mode)) {
-                dirs.push_back(name);
-            } else {
-                files.push_back(name + " (" + std::to_string(static_cast<long long>(st.st_size)) + "B)");
-            }
-        }
-        ESP_LOGI(TAG, "  Total raw entries in %s: %u", path.c_str(), (unsigned)rawEntryCount);
-        closedir(dir);
-
-        std::sort(dirs.begin(), dirs.end());
-        std::sort(files.begin(), files.end());
-
-        const std::string indent(depth * 2, ' ');
-        for (const std::string& dirName : dirs) {
-            ESP_LOGI(TAG, "%s[D] %s", indent.c_str(), dirName.c_str());
-            if (depth < maxDepth) {
-                self(self, path + "/" + dirName, depth + 1);
-            }
-        }
-        for (const std::string& fileName : files) {
-            ESP_LOGI(TAG, "%s[F] %s", indent.c_str(), fileName.c_str());
-        }
-        if (truncated) {
-            ESP_LOGW(TAG, "%s... truncated after %u entries", indent.c_str(),
-                     static_cast<unsigned>(MAX_LOG_ENTRIES_PER_DIR));
-        }
-    };
-
-    walk(walk, rootPath, 0);
-}
 }  // namespace
 
 SDCard::SDCard(const std::string& mountPointValue)
@@ -217,8 +137,6 @@ esp_err_t SDCard::initialize() {
     ESP_LOGI(TAG, "SD card mounted at %s", mountPoint.c_str());
     // Debug inventory to verify discovered files/directories on target.
     // Disabled to prevent stack overflow during initialization
-    // logDirectoryTree(mountPoint, 2);
-    // logDirectoryTree(getRootDir(), 4);
     return ESP_OK;
 }
 
@@ -308,76 +226,6 @@ esp_err_t SDCard::ensureFolderStructure() const {
 bool SDCard::pathExists(const std::string& path) const {
     struct stat st = {};
     return stat(normalizePath(path).c_str(), &st) == 0;
-}
-
-esp_err_t SDCard::readFile(const std::string& path, std::vector<uint8_t>& outData) const {
-    if (!mounted || card == nullptr) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const std::string fullPath = normalizePath(path);
-    FILE* file = fopen(fullPath.c_str(), "rb");
-    if (file == nullptr) {
-        ESP_LOGE(TAG, "Failed to open file for read: %s", fullPath.c_str());
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        return ESP_FAIL;
-    }
-    const long size = ftell(file);
-    if (size < 0) {
-        fclose(file);
-        return ESP_FAIL;
-    }
-    rewind(file);
-
-    outData.resize(static_cast<size_t>(size));
-    const size_t readBytes = fread(outData.data(), 1, outData.size(), file);
-    fclose(file);
-
-    if (readBytes != outData.size()) {
-        outData.clear();
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t SDCard::writeFile(const std::string& path, const uint8_t* data, size_t len, bool append) const {
-    if (!mounted || card == nullptr) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (data == nullptr && len > 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const std::string fullPath = normalizePath(path);
-    const char* mode = append ? "ab" : "wb";
-    FILE* file = fopen(fullPath.c_str(), mode);
-    if (file == nullptr) {
-        ESP_LOGE(TAG, "Failed to open file for write: %s", fullPath.c_str());
-        return ESP_FAIL;
-    }
-
-    size_t written = 0;
-    while (written < len) {
-        const size_t chunk = (len - written > DEFAULT_CHUNK_SIZE) ? DEFAULT_CHUNK_SIZE : (len - written);
-        const size_t chunkWritten = fwrite(data + written, 1, chunk, file);
-        if (chunkWritten != chunk) {
-            fclose(file);
-            return ESP_FAIL;
-        }
-        written += chunkWritten;
-    }
-
-    fclose(file);
-    return ESP_OK;
-}
-
-esp_err_t SDCard::writeTextFile(const std::string& path, const std::string& text, bool append) const {
-    return writeFile(path, reinterpret_cast<const uint8_t*>(text.data()), text.size(), append);
 }
 
 std::string SDCard::normalizePath(const std::string& path) const {

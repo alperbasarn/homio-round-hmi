@@ -22,4 +22,6 @@ idf_component_register(
         sleep_handler
         model
         adapters
+        input
+        local_audio
 )

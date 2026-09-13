@@ -316,17 +316,9 @@ esp_err_t SoundPlayer::playEffectSound(const std::string& fileName) {
         return playSwipeSound(SwipeDirection::Down);
     }
 
-    // Check if SD card is available
+    // Anything else needs the SD card (PERI-12: the embedded click/release fallbacks that used to
+    // sit here were unreachable, both names return above).
     if (sdCard == nullptr || !sdCard->isMounted()) {
-        // Fall back to embedded sounds based on filename
-        if (isPressEffect) {
-            ESP_LOGI(TAG, "SD card not available, using embedded click sound");
-            return playClickSound();
-        }
-        if (isReleaseEffect) {
-            ESP_LOGI(TAG, "SD card not available, using embedded release sound");
-            return playReleaseSound();
-        }
         ESP_LOGW(TAG, "SD card not available and no embedded sound for: %s", fileName.c_str());
         return ESP_ERR_NOT_FOUND;
     }
@@ -427,13 +419,6 @@ esp_err_t SoundPlayer::playEffectSound(const std::string& fileName) {
              fallbackPath1.empty() ? "" : ")",
              listDirectoryEntries(sdCard->getSoundEffectsDir()).c_str());
     return ESP_ERR_NOT_FOUND;
-}
-
-esp_err_t SoundPlayer::playReactionSound(const std::string& fileName) {
-    if (!ready) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return playFile(sdCard->getReactionSoundsDir() + "/" + fileName);
 }
 
 esp_err_t SoundPlayer::playFile(const std::string& path) {

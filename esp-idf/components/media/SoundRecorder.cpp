@@ -164,37 +164,6 @@ esp_err_t SoundRecorder::stopRecording() {
     return result;
 }
 
-esp_err_t SoundRecorder::recordToFile(const std::string& fileName,
-                                      uint32_t durationMs,
-                                      uint32_t sampleRate,
-                                      uint8_t channels,
-                                      uint8_t bitsPerSample) {
-    if (!ready) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (durationMs == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    esp_err_t err = startRecordingToFile(fileName, sampleRate, channels, bitsPerSample);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    const int64_t startMs = esp_timer_get_time() / 1000;
-    const int64_t deadlineMs = startMs + durationMs;
-
-    while ((esp_timer_get_time() / 1000) < deadlineMs) {
-        err = processRecordingChunk(200);
-        if (err != ESP_OK) {
-            stopRecording();
-            return err;
-        }
-    }
-
-    return stopRecording();
-}
-
 std::string SoundRecorder::resolveRecordingPath(const std::string& fileName) const {
     if (!fileName.empty() && fileName[0] == '/') {
         return fileName;

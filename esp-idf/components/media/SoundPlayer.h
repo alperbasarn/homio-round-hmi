@@ -16,7 +16,6 @@ public:
     void setVolume(float volume);
 
     esp_err_t playEffectSound(const std::string& fileName);
-    esp_err_t playReactionSound(const std::string& fileName);
     esp_err_t playFile(const std::string& path);
 
     // Embedded sound playback (works without SD card)

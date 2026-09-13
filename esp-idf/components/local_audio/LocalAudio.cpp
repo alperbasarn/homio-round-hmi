@@ -1,4 +1,4 @@
-#include "MediaController.h"
+#include "LocalAudio.h"
 
 #include <cstring>
 
@@ -9,7 +9,13 @@
 #include "freertos/task.h"
 
 namespace {
-constexpr const char* TAG = "MediaController";
+// PERI-12: the effect file names are an implementation detail of this unit.
+const char* touchPressEffectFileName();
+const char* touchReleaseEffectFileName();
+}  // namespace
+
+namespace {
+constexpr const char* TAG = "LocalAudio";
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 16000;
 constexpr uint8_t DEFAULT_CHANNELS = 1;
 constexpr uint8_t DEFAULT_BITS_PER_SAMPLE = 16;
@@ -22,7 +28,7 @@ constexpr const char* TOUCH_PRESS_EFFECT_FILE = "touch_press.mp3";
 constexpr const char* TOUCH_RELEASE_EFFECT_FILE = "touch_release.mp3";
 }  // namespace
 
-MediaController::MediaController(SoundRecorder* recorder, SoundPlayer* player)
+LocalAudio::LocalAudio(SoundRecorder* recorder, SoundPlayer* player)
     : soundRecorder(recorder),
       soundPlayer(player),
       initialized(false),
@@ -38,7 +44,7 @@ MediaController::MediaController(SoundRecorder* recorder, SoundPlayer* player)
       lastRecordingPath("") {
 }
 
-MediaController::~MediaController() {
+LocalAudio::~LocalAudio() {
     if (recordingTaskRunning) {
         stopSoundRecord(2000);
     }
@@ -61,7 +67,7 @@ MediaController::~MediaController() {
     }
 }
 
-esp_err_t MediaController::initialize() {
+esp_err_t LocalAudio::initialize() {
     if (initialized) {
         return ESP_OK;
     }
@@ -93,7 +99,7 @@ esp_err_t MediaController::initialize() {
     }
 
     soundEffectTaskRunning = true;
-    BaseType_t taskCreated = xTaskCreate(&MediaController::soundEffectTaskEntry,
+    BaseType_t taskCreated = xTaskCreate(&LocalAudio::soundEffectTaskEntry,
                                          "MediaSfxTask",
                                          SFX_TASK_STACK_SIZE,
                                          this,
@@ -109,7 +115,7 @@ esp_err_t MediaController::initialize() {
     return ESP_OK;
 }
 
-esp_err_t MediaController::startSoundRecord(const std::string& fileName) {
+esp_err_t LocalAudio::startSoundRecord(const std::string& fileName) {
     if (!initialized) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -148,7 +154,7 @@ esp_err_t MediaController::startSoundRecord(const std::string& fileName) {
         xQueueReset(soundEffectQueue);
     }
 
-    BaseType_t taskCreated = xTaskCreate(&MediaController::recordingTaskEntry,
+    BaseType_t taskCreated = xTaskCreate(&LocalAudio::recordingTaskEntry,
                                          "MediaRecTask",
                                          RECORD_TASK_STACK_SIZE,
                                          this,
@@ -166,7 +172,7 @@ esp_err_t MediaController::startSoundRecord(const std::string& fileName) {
     return ESP_OK;
 }
 
-esp_err_t MediaController::stopSoundRecord(uint32_t timeoutMs) {
+esp_err_t LocalAudio::stopSoundRecord(uint32_t timeoutMs) {
     if (!recorderReady) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -187,7 +193,7 @@ esp_err_t MediaController::stopSoundRecord(uint32_t timeoutMs) {
     return lastRecordingError;
 }
 
-esp_err_t MediaController::playLastSoundRecord() {
+esp_err_t LocalAudio::playLastSoundRecord() {
     if (!initialized) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -209,7 +215,7 @@ esp_err_t MediaController::playLastSoundRecord() {
     return soundPlayer->playFile(lastRecordingPath);
 }
 
-esp_err_t MediaController::requestSoundEffect(const std::string& fileName) {
+esp_err_t LocalAudio::requestSoundEffect(const std::string& fileName) {
     if (!initialized) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -238,31 +244,35 @@ esp_err_t MediaController::requestSoundEffect(const std::string& fileName) {
     return ESP_OK;
 }
 
-esp_err_t MediaController::requestTouchPressEffect() {
+esp_err_t LocalAudio::requestTouchPressEffect() {
     return requestSoundEffect(touchPressEffectFileName());
 }
 
-esp_err_t MediaController::requestTouchReleaseEffect() {
+esp_err_t LocalAudio::requestTouchReleaseEffect() {
     return requestSoundEffect(touchReleaseEffectFileName());
 }
 
-const char* MediaController::touchPressEffectFileName() {
+namespace {
+
+const char* touchPressEffectFileName() {
     return TOUCH_PRESS_EFFECT_FILE;
 }
 
-const char* MediaController::touchReleaseEffectFileName() {
+const char* touchReleaseEffectFileName() {
     return TOUCH_RELEASE_EFFECT_FILE;
 }
 
-void MediaController::recordingTaskEntry(void* arg) {
-    auto* self = static_cast<MediaController*>(arg);
+}  // namespace
+
+void LocalAudio::recordingTaskEntry(void* arg) {
+    auto* self = static_cast<LocalAudio*>(arg);
     if (self != nullptr) {
         self->recordingTaskLoop();
     }
     vTaskDelete(nullptr);
 }
 
-void MediaController::recordingTaskLoop() {
+void LocalAudio::recordingTaskLoop() {
     while (!stopRecordingRequested) {
         esp_err_t err = soundRecorder->processRecordingChunk(200);
         if (err != ESP_OK) {
@@ -287,15 +297,15 @@ void MediaController::recordingTaskLoop() {
     recordingTaskRunning = false;
 }
 
-void MediaController::soundEffectTaskEntry(void* arg) {
-    auto* self = static_cast<MediaController*>(arg);
+void LocalAudio::soundEffectTaskEntry(void* arg) {
+    auto* self = static_cast<LocalAudio*>(arg);
     if (self != nullptr) {
         self->soundEffectTaskLoop();
     }
     vTaskDelete(nullptr);
 }
 
-void MediaController::soundEffectTaskLoop() {
+void LocalAudio::soundEffectTaskLoop() {
     SoundEffectRequest request = {};
     while (soundEffectTaskRunning) {
         if (xQueueReceive(soundEffectQueue, &request, portMAX_DELAY) != pdTRUE) {
@@ -323,7 +333,7 @@ void MediaController::soundEffectTaskLoop() {
     soundEffectTaskHandle = nullptr;
 }
 
-std::string MediaController::generateRecordingFileName() const {
+std::string LocalAudio::generateRecordingFileName() const {
     const int64_t ms = esp_timer_get_time() / 1000;
     return "recording_" + std::to_string(ms) + ".wav";
 }

@@ -54,6 +54,12 @@ target_compile_options(adapters_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(adapters_core PUBLIC -fsanitize=address,undefined)
 target_link_libraries(adapters_core PUBLIC model)
 
+# INPT-06: the input event record compiles on the host from the device file.
+add_library(input_core STATIC "${CMAKE_CURRENT_LIST_DIR}/../../components/input/src/InputEvent.cpp")
+target_include_directories(input_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../../components/input/include")
+target_compile_options(input_core PUBLIC ${QNOB_HOST_FLAGS})
+target_link_options(input_core PUBLIC -fsanitize=address,undefined)
+
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -64,6 +70,6 @@ file(GLOB QNOB_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test_*.
 foreach(test_source IN LISTS QNOB_TEST_SOURCES)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(${test_name} "${test_source}")
-    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE test_support model command_parsers adapters_core input_core Threads::Threads)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

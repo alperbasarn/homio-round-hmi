@@ -10,10 +10,12 @@
 #include "SoundRecorder.h"
 #include "esp_err.h"
 
-class MediaController {
+// PERI-11: the on-board audio (touch and swipe effects, the recorder) behind one small surface;
+// the transports and screens never touch SoundPlayer or SoundRecorder directly.
+class LocalAudio {
 public:
-    MediaController(SoundRecorder* recorder, SoundPlayer* player);
-    ~MediaController();
+    LocalAudio(SoundRecorder* recorder, SoundPlayer* player);
+    ~LocalAudio();
 
     esp_err_t initialize();
     esp_err_t startSoundRecord(const std::string& fileName = "");
@@ -23,11 +25,7 @@ public:
     esp_err_t requestTouchPressEffect();
     esp_err_t requestTouchReleaseEffect();
 
-    static const char* touchPressEffectFileName();
-    static const char* touchReleaseEffectFileName();
 
-    bool isRecording() const { return recordingTaskRunning; }
-    const std::string& getLastRecordingPath() const { return lastRecordingPath; }
 
 private:
     struct SoundEffectRequest {

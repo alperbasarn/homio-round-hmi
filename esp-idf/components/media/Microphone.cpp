@@ -10,8 +10,6 @@
 
 namespace {
 constexpr const char* TAG = "Microphone";
-constexpr float MIN_GAIN = 0.0f;
-constexpr float MAX_GAIN = 8.0f;
 }  // namespace
 
 Microphone::Microphone()
@@ -19,8 +17,7 @@ Microphone::Microphone()
       initialized(false),
       currentSampleRate(0),
       currentChannels(0),
-      currentBitsPerSample(0),
-      softwareGain(1.0f) {
+      currentBitsPerSample(0) {
 }
 
 Microphone::~Microphone() {
@@ -90,21 +87,7 @@ esp_err_t Microphone::read(uint8_t* data, size_t len, size_t* bytesRead, uint32_
         return err;
     }
 
-    if (softwareGain > 1.001f && currentBitsPerSample == 16 && readLen >= sizeof(int16_t)) {
-        const size_t sampleCount = readLen / sizeof(int16_t);
-        auto* samples = reinterpret_cast<int16_t*>(data);
-        for (size_t i = 0; i < sampleCount; ++i) {
-            const float amplified = static_cast<float>(samples[i]) * softwareGain;
-            const float clamped = std::max(-32768.0f, std::min(32767.0f, amplified));
-            samples[i] = static_cast<int16_t>(std::lround(clamped));
-        }
-    }
-
     return ESP_OK;
-}
-
-void Microphone::setSoftwareGain(float gain) {
-    softwareGain = std::max(MIN_GAIN, std::min(MAX_GAIN, gain));
 }
 
 esp_err_t Microphone::configure(uint32_t sampleRate, uint8_t channels, uint8_t bitsPerSample) {

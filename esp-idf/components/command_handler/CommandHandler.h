@@ -12,7 +12,7 @@ class NVSManager;
 class KnobController;
 class WiFiManager;
 class MQTTManager;
-class MediaController;
+class LocalAudio;
 class OTAManager;
 
 // Where a command line came from. Serial and the knob link are physical and trusted;
@@ -26,7 +26,7 @@ public:
     void update();
     void handleExternalCommand(const std::string& commandLine);
     void registerKnobController(KnobController* kc);
-    void registerMediaController(MediaController* mc);
+    void registerLocalAudio(LocalAudio* mc);
     void registerOTAManager(OTAManager* ota);
 
 private:
@@ -44,7 +44,7 @@ private:
     KnobController* knobController;
     WiFiManager* wifiManager;
     MQTTManager* mqttManager;
-    MediaController* mediaController;
+    LocalAudio* localAudio;
     OTAManager* otaManager;
 
     std::map<std::string, Command> commands;

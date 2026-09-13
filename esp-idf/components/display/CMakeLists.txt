@@ -7,6 +7,6 @@ idf_component_register(
          "EspLcdGc9a01DisplayFlushBackend.cpp"
          "EspLcdGc9a01DisplayPanelBackend.cpp"
     INCLUDE_DIRS "."
-    REQUIRES driver board_hal touch_panel knob_controller esp_lcd_sh8601 esp_lcd_co5300 model
-    PRIV_REQUIRES esp_timer controllers ui sleep_handler
+    REQUIRES driver board_hal touch_panel knob_controller esp_lcd_sh8601 esp_lcd_co5300 model input
+    PRIV_REQUIRES esp_timer controllers ui sleep_handler local_audio
 )

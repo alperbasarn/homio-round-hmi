@@ -34,9 +34,6 @@ public:
     esp_err_t ensureFolderStructure() const;
 
     bool pathExists(const std::string& path) const;
-    esp_err_t readFile(const std::string& path, std::vector<uint8_t>& outData) const;
-    esp_err_t writeFile(const std::string& path, const uint8_t* data, size_t len, bool append = false) const;
-    esp_err_t writeTextFile(const std::string& path, const std::string& text, bool append = false) const;
 
 private:
     std::string mountPoint;

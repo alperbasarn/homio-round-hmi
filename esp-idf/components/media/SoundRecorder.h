@@ -21,11 +21,6 @@ public:
     esp_err_t processRecordingChunk(uint32_t timeoutMs = 200);
     esp_err_t stopRecording();
 
-    esp_err_t recordToFile(const std::string& fileName,
-                           uint32_t durationMs = 3000,
-                           uint32_t sampleRate = 16000,
-                           uint8_t channels = 1,
-                           uint8_t bitsPerSample = 16);
 
     bool isRecording() const { return recording; }
     const std::string& getCurrentRecordingPath() const { return currentRecordingPath; }

@@ -7,7 +7,7 @@
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
 #include "PlaceholderPageScreen.h"
-#include "MediaController.h"
+#include "LocalAudio.h"
 #include "SleepHandler.h"
 #include "LvglDisplay.h"
 #include "model/AppScreen.h"
@@ -128,7 +128,7 @@ const MatrixPageDescriptor* findMatrixPageByName(const std::string& normalized) 
 DisplayController::DisplayController(TouchPanel* touch)
   : touchPanel(touch), knobController(nullptr), soundController(nullptr),
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
-    infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr), mediaController(nullptr),
+    infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr), localAudio(nullptr),
     currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
     displayIsOn(true), brightnessPercent(100), initializationProgress(0), initializationCompleteTime(0),
     touchSoundCandidateSinceMs(0), currentPageX(0), currentPageY(0),
@@ -179,11 +179,11 @@ void DisplayController::update() {
             touchSoundPressedState = pressedNow;
             hasActivityEvent = true;
             resetActivityTime();
-            if (mediaController) {
+            if (localAudio) {
                 if (touchSoundPressedState) {
-                    mediaController->requestTouchPressEffect();
+                    localAudio->requestTouchPressEffect();
                 } else {
-                    mediaController->requestTouchReleaseEffect();
+                    localAudio->requestTouchReleaseEffect();
                 }
             }
         }
@@ -194,12 +194,12 @@ void DisplayController::update() {
             hasActivityEvent = true;
             resetActivityTime();
         }
-        if (touchPanel->getHasNewGesture() && mediaController) {
+        if (touchPanel->getHasNewGesture() && localAudio) {
             switch (touchPanel->getLastGesture()) {
-                case GESTURE_SWIPE_LEFT:  mediaController->requestSoundEffect(SWIPE_LEFT_EFFECT_FILE);  break;
-                case GESTURE_SWIPE_RIGHT: mediaController->requestSoundEffect(SWIPE_RIGHT_EFFECT_FILE); break;
-                case GESTURE_SWIPE_UP:    mediaController->requestSoundEffect(SWIPE_UP_EFFECT_FILE);    break;
-                case GESTURE_SWIPE_DOWN:  mediaController->requestSoundEffect(SWIPE_DOWN_EFFECT_FILE);  break;
+                case GESTURE_SWIPE_LEFT:  localAudio->requestSoundEffect(SWIPE_LEFT_EFFECT_FILE);  break;
+                case GESTURE_SWIPE_RIGHT: localAudio->requestSoundEffect(SWIPE_RIGHT_EFFECT_FILE); break;
+                case GESTURE_SWIPE_UP:    localAudio->requestSoundEffect(SWIPE_UP_EFFECT_FILE);    break;
+                case GESTURE_SWIPE_DOWN:  localAudio->requestSoundEffect(SWIPE_DOWN_EFFECT_FILE);  break;
                 default: break;
             }
         }
@@ -507,7 +507,7 @@ void DisplayController::registerInitializationScreen(InitializationScreen* i) { 
 void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { infoScreen = info; }
 void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
 void DisplayController::registerPlaceholderScreen(PlaceholderPageScreen* p)   { placeholderScreen = p; }
-void DisplayController::registerMediaController(MediaController* m)    { mediaController = m; }
+void DisplayController::registerLocalAudio(LocalAudio* m)    { localAudio = m; }
 
 void DisplayController::incrementSetpoint() {
     if (currentMode == SOUND && soundController) soundController->incrementSetpoint();

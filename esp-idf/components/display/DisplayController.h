@@ -16,7 +16,7 @@ class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
 class PlaceholderPageScreen;
-class MediaController;
+class LocalAudio;
 
 enum Mode {
   INITIALIZATION,
@@ -41,7 +41,7 @@ private:
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
   PlaceholderPageScreen* placeholderScreen;
-  MediaController* mediaController;
+  LocalAudio* localAudio;
 
   Mode currentMode;
   int64_t lastActivityTime;
@@ -89,7 +89,7 @@ public:
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
   void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
-  void registerMediaController(MediaController* media);
+  void registerLocalAudio(LocalAudio* media);
   void registerModelQueue(model::MutationQueue* queue);
 
   void incrementSetpoint();

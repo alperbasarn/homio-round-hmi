@@ -5,7 +5,7 @@
 #include "KnobController.h"
 #include "WiFiManager.h"
 #include "MQTTManager.h"
-#include "MediaController.h"
+#include "LocalAudio.h"
 #include "OTAManager.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -28,7 +28,7 @@ CommandHandler::CommandHandler(DisplayController* dc, NVSManager* nvs, WiFiManag
       knobController(nullptr),
       wifiManager(wifi),
       mqttManager(mqtt),
-      mediaController(nullptr),
+      localAudio(nullptr),
       otaManager(nullptr) {
 }
 
@@ -56,8 +56,8 @@ void CommandHandler::registerKnobController(KnobController* kc) {
     knobController = kc;
 }
 
-void CommandHandler::registerMediaController(MediaController* mc) {
-    mediaController = mc;
+void CommandHandler::registerLocalAudio(LocalAudio* mc) {
+    localAudio = mc;
 }
 
 void CommandHandler::registerOTAManager(OTAManager* ota) {
@@ -435,12 +435,12 @@ void CommandHandler::cmdListNVSValues(const std::string& params) {
 }
 
 void CommandHandler::cmdStartSoundRecord(const std::string& params) {
-    if (mediaController == nullptr) {
-        ESP_LOGE(TAG, "MediaController not registered.");
+    if (localAudio == nullptr) {
+        ESP_LOGE(TAG, "LocalAudio not registered.");
         return;
     }
 
-    esp_err_t err = mediaController->startSoundRecord(params);
+    esp_err_t err = localAudio->startSoundRecord(params);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start sound recording: %s", esp_err_to_name(err));
         return;
@@ -451,12 +451,12 @@ void CommandHandler::cmdStartSoundRecord(const std::string& params) {
 
 void CommandHandler::cmdStopSoundRecord(const std::string& params) {
     (void)params;
-    if (mediaController == nullptr) {
-        ESP_LOGE(TAG, "MediaController not registered.");
+    if (localAudio == nullptr) {
+        ESP_LOGE(TAG, "LocalAudio not registered.");
         return;
     }
 
-    esp_err_t err = mediaController->stopSoundRecord();
+    esp_err_t err = localAudio->stopSoundRecord();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to stop sound recording: %s", esp_err_to_name(err));
         return;
@@ -467,12 +467,12 @@ void CommandHandler::cmdStopSoundRecord(const std::string& params) {
 
 void CommandHandler::cmdPlayLastSoundRecord(const std::string& params) {
     (void)params;
-    if (mediaController == nullptr) {
-        ESP_LOGE(TAG, "MediaController not registered.");
+    if (localAudio == nullptr) {
+        ESP_LOGE(TAG, "LocalAudio not registered.");
         return;
     }
 
-    esp_err_t err = mediaController->playLastSoundRecord();
+    esp_err_t err = localAudio->playLastSoundRecord();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to play last recording: %s", esp_err_to_name(err));
         return;

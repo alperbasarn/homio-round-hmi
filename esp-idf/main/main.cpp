@@ -37,7 +37,7 @@
 #include "CommandHandler.h"
 #include "SoundController.h"
 #include "LightController.h"
-#include "MediaController.h"
+#include "LocalAudio.h"
 #include "OTAManager.h"
 #include "ModeController.h"
 #include "InitializationScreen.h"
@@ -125,7 +125,7 @@ static Speaker* speaker = nullptr;
 static Microphone* microphone = nullptr;
 static SoundPlayer* soundPlayer = nullptr;
 static SoundRecorder* soundRecorder = nullptr;
-static MediaController* mediaController = nullptr;
+static LocalAudio* localAudio = nullptr;
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
 
@@ -413,9 +413,9 @@ extern "C" void app_main(void) {
         }
 
         if (soundPlayer != nullptr) {
-            mediaController = new MediaController(soundRecorder, soundPlayer);
-            if (mediaController->initialize() != ESP_OK) {
-                ESP_LOGW(TAG, "MediaController initialization failed");
+            localAudio = new LocalAudio(soundRecorder, soundPlayer);
+            if (localAudio->initialize() != ESP_OK) {
+                ESP_LOGW(TAG, "LocalAudio initialization failed");
             }
         } else if (soundRecorder != nullptr) {
             ESP_LOGW(TAG, "Audio input is present but no playback path is configured; media controller disabled");
@@ -524,7 +524,7 @@ extern "C" void app_main(void) {
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
     displayController->registerPlaceholderScreen(placeholderPageScreen);
-    displayController->registerMediaController(mediaController);
+    displayController->registerLocalAudio(localAudio);
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
     displayController->registerKnobController(knobController);
@@ -586,7 +586,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Initializing command handler...");
     commandHandler = new CommandHandler(displayController, nvsManager, wifiManager, mqttManager);
     commandHandler->registerKnobController(knobController);
-    commandHandler->registerMediaController(mediaController);
+    commandHandler->registerLocalAudio(localAudio);
     commandHandler->registerOTAManager(otaManager);
     commandHandler->begin();
 
