@@ -17,12 +17,12 @@ Task IDs are the reader IDs from the 11-cluster sweep (`DISP- SCRN- CTRL- INPT- 
 | 0 | Rotate secrets, blank the WiFi defaults, freeze the tree, measure, archive the graph, tag `p0-baseline`. **No behaviour change after the capture.** | 17 | 29.5 |
 | 1 | WP1.0 floor (crashes, secrets, the four never-worked paths, tag `p0-fixed`); then `model`, `Observable`, D1/D18 queue, host harness, shadow population | 79 | 230.5 |
 | 2 | `InputRouter` + `InputEvent`; all 21 polling sites; knob framing; knob ownership; `LocalAudio` move | 33 | 103.0 |
-| 3 | Screen splits, the Instrument shell, MEDIA/CLIMATE, adapters, PC protocol v2, Spotify | 117 | 383.5 |
+| 3 | Screen splits, the Instrument shell, MEDIA/CLIMATE, adapters, PC protocol v2, Spotify | 120 | 399.5 |
 | 4 | `ScreenRouter` replaces `DisplayController`; power/sleep split; panel-backend purge | 29 | 76.5 |
-| 5 | Transport out of views; `MqttModelBridge` owns every topic | 15 | 52.0 |
-| 6 | `AppComposition`; ownership; task topology | 15 | 44.0 |
+| 5 | Transport out of views; `MqttModelBridge` owns every topic | 19 | 69.0 |
+| 6 | `AppComposition`; ownership; task topology | 23 | 70.0 |
 | 7 | CMake tightening, cycle proof, dead-code purge | 15 | 41.0 |
-| **Total** | | **320** | **960.0** |
+| **Total** | | **335** | **1019.0** |
 
 Per-phase figures are the row counts and hour sums of the tables in §3 and §4, stated per work package so the roll-up is checkable by hand; `BLD-39` scripts the check and `BLD-36` runs it in CI.
 
@@ -51,6 +51,8 @@ Per-phase figures are the row counts and hour sums of the tables in §3 and §4,
 | D16 | Canonical PC tree | **`esp-idf/PC` canonical; delete `QNOB/PC`** (`PCKNOB-01`) | The stale fork has no `send_command` definition — every serial/TCP send raises `AttributeError` — and it sends commands the firmware never registers. |
 | D17 | View lifecycle | **Decided by measurement, not by assertion.** `SCRN-28` instruments free heap and largest-free-block per navigation and runs the 50-cycle soak under both candidate policies; `SCRN-24` implements the winner. Default hypothesis: trees resident + `setVisible()`, with state-specific objects (PC ten-pip ring, seek ghost, overlay wedges, spinner) created on enter and destroyed on exit, and a recorded peak against the 64KB LVGL heap. | Build-on-enter fragments the single heap that also holds the DMA draw buffers. The decision must be made on largest-free-block after a soak, not on first-boot free bytes — so it cannot be an up-front decision with a 3h implementation task hanging off it. |
 | D19 | LIGHT and the Instrument shell | **LIGHT is exempt from `UIX-04`/`UIX-05`.** `LightView` reproduces the `p0-fixed` layout on the new view/controller split; it does not adopt the ring shell. Recorded by `UIX-29`. | The winning design's `screens` array covers ModeWheel, MediaSpotify, MediaPC, MediaTargetSelect, Climate and MediaSeek — there is no Light screen, so "matches baseline" and "uses the ring shell" cannot both be acceptance criteria for `CTRL-21`. A LIGHT redesign is a new design task plus a rewrite of `CTRL-21`/`CTRL-22` (§9 Q39). |
+| D20 | LED instances | **MQTT through the existing broker, contract v1 in `dev_notes/led_mqtt_contract.md`; pairing is ownership (which strips are mine, which controllers a strip obeys), not security; broker ACLs come later.** Owner decision 2026-09-13 over HTTP+mDNS and over a Matter controller. | HTTP needs discovery the strip lacks and leaves two transports in the HMI; a Matter controller does not fit next to LVGL and WiFi; MQTT reuses the bridge every other topic already goes through and gives presence for free (LWT). Costs: flash and heap on the C6 strip (measured first), and a broker in the loop. |
+| D21 | OTA | **Port the `esp32c6-led-web` release flow (signed manifest, GitHub release poll, probation with strikes, revert) into `ota_manager`, keeping its manifest format so `esp-autota` can replace it when that library exists.** Owner request 2026-09-13. | The LED implementation is proven on hardware and already CI-signed; the current `OTAManager` is a URL fetch with no verification or rollback policy. |
 
 ### 2.1 Merge register (survivor ← folded)
 
@@ -311,7 +313,7 @@ Every task here that writes a model depends on `MDL-03`, so no writer can satisf
 | INPT-23 | Free the knob UART pins on C6, or gate PWR_KEY/wake so they never own them | hal_config.h, main.cpp, SleepHandler.{h,cpp} | 4 | PCKNOB-03 | The knob answers a scoped TX query with no reboot; PWR_KEY and touch wake both still work |
 | INPT-27 | Delete the unused `knob_controller_*` C wrapper and its file-static string | KnobController.{h,cpp} | 1 | PCKNOB-09 | `grep knob_controller_` hits only CMake targets |
 
-### Phase 3 — Split screens (117 tasks, 383.5h; §4 carries 33 of them)
+### Phase 3 — Split screens (120 tasks, 399.5h; §4 carries 33 of them)
 
 Screen deletions that need the router (`SCRN-16`, `SCRN-23`) are in Phase 4. Deletions that only need `DisplayController` rewired to hold the new controller (`MEDIA-16`, `CTRL-24`, `SCRN-21`, `SCRN-09`, `SCRN-12`) stay here and **keep the existing MQTT publish/subscribe path** until Phase 5 removes it, so no Phase-3 task depends on Phase 5.
 
@@ -456,6 +458,9 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | PERI-18 | Arbitrate SD against panel flushes on SPI2 (or adopt a no-SD-while-active policy); stop swallowing `INVALID_STATE`; stop `spi_bus_free` on a bus it may not own (§9 Q2) | SDCard.{h,cpp} | 3 | PERI-17 | An SD WAV during the INFO animation ×20: no corruption and the mount survives |
 | PERI-19 | Make SoundPlayer's optional-SD contract explicit (one guarded accessor); add the missing `displayController->update()` null guard | SoundPlayer.{h,cpp}, main.cpp | 2 | PERI-12 | A no-SD boot still plays effects and the chime, with no null dereference |
 | BLD-21 | Wire `QNOB_ENABLE_KNOB_UART` / `QNOB_KNOB_BAUD_RATE`; default off where pins are −1; record the IMU/LCD pin clash | board_hal/Kconfig, hal_config.h, sdkconfig.defaults.esp32s3_amoled175, main.cpp | 3 | PCKNOB-03 | `[S3-1.75]` logs no UART failure (constructed with −1 pins today); the C6 baud rate comes from menuconfig |
+| LED-01 | `LedRegistryModel` (`dev_notes/led_mqtt_contract.md`): 8 fixed slots {id[16], name[24], paired, online, lastSeenMs, state{power, brightness, rgb, effect, params[5], effectRgb, count}}, the selected slot, records Announce / Status / State / Controllers / Select, presence timeout 120 s; no heap on any path | model/LedRegistryModel.{h,cpp}, test/host/test_led_registry_model.cpp | 6 | MDL-03, MDL-16 | Eight instances announce and the ninth is refused with one log line; an LWT `offline` flips `online` on the next tick; selecting an id that is not present fails; `NO_HEAP_SCOPE` holds |
+| LED-02 | `LightModel` becomes the control state of the selected instance: power, brightness 0–100, colour, effect index over the eight names, five params, effect colour; `LedMode` and `modeControl` deleted (this settles `CTRL-23`); echo suppression on `src`/`seq` and a 100 ms limiter (the `MDL-12` light window moves from 10 ms) | model/LightModel.{h,cpp}, model/RateLimit.{h,cpp}, test/host/test_light_model.cpp | 4 | LED-01, MDL-16, MDL-17, CTRL-23 | A 200-detent drag yields at most 10 publishes/s with a trailing flush; a `state` echo with the sent `seq` never re-publishes; a web-page change with `src=web` wins |
+| LED-05 | LIGHT screen on the registry: instance chooser on the rim when more than one strip is paired, power on tap, brightness on the knob, effect cycle on swipe, colour on the ring drag, an online badge; unpaired-but-available strips shown greyed with a pair affordance | ui/views/LightView.{h,cpp}, controllers/screens/LightScreenController.{h,cpp} | 6 | CTRL-21, CTRL-22, LED-02 | Every control reaches the model only; two paired strips switch on the rim; an offline strip greys its badge within 45 s; screenshot against the `p0-fixed` LIGHT layout with the chooser as the only addition |
 
 ### Phase 4 — Router replaces DisplayController (29 tasks, 76.5h)
 
@@ -491,7 +496,7 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | BLD-22 | Strip `display` back to the panel layer — **drops the cycle edge** `PRIV_REQUIRES controllers ui sleep_handler`, plus `touch_panel` and `knob_controller` | display/CMakeLists.txt, DisplayController.{h,cpp} | 2 | DISP-19, BLD-11 | The `BLD-45` dump shows `display` with no project-local component beyond `board_hal` and the two `esp_lcd_*` drivers, and no cycle |
 | BLD-23 | Split `display` into public abstract headers and private backend headers | display/CMakeLists.txt, 8 headers | 3 | BLD-22 | Including a concrete backend header from `ui` now fails to compile |
 
-### Phase 5 — Transport out of views (15 tasks, 52.0h)
+### Phase 5 — Transport out of views (19 tasks, 69.0h)
 
 | ID | Task | Files | Est h | Depends on | Verification |
 |---|---|---|---|---|---|
@@ -510,8 +515,12 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | APP-15 | Delete the `main.cpp` MQTT lambda and the five screen MQTT callbacks; keep exactly one declared command edge | main.cpp, controllers/screens/*.cpp | 3 | NET-17, NET-18, APP-03, SCRN-21, CTRL-24 | No topic literal anywhere in `main.cpp`; `setMQTTPublishCallback` and friends gone |
 | APP-25 | Decide and implement the light MQTT profile: add `configureLightMQTTServer`, or delete the profile and its gate (§9 Q7) | CommandHandler.{h,cpp}, NVSManager.{h,cpp}, main.cpp | 3 | NET-20 | A LIGHT knob turn produces a broker message on the configured broker, provisioned by a real command |
 | BLD-25 | Put `skip_cert_common_name_check` behind a dev-only Kconfig (default n) | MQTTManager.cpp, Kconfig.projbuild, sdkconfig.defaults | 2 | BLD-16 | Off: the production broker handshake succeeds and a CN mismatch now fails |
+| LED-03 | Topic contract v1 in `MqttTopics.h` (`homio/led/+/info|status|state|set|pair|unpair|controllers`) with a fixed-buffer cJSON codec; `MqttModelBridge` routes inbound `info`/`status`/`state`/`controllers` into `LedRegistryModel` records and publishes `set` from a `LightModel` observer with `from`/`seq`; the `ledRing/*` and `esp32/light/*` topics retire (§9 Q7/Q8 answered) | adapters/MqttModelBridge.{h,cpp}, adapters/MqttTopics.h, adapters/LedJson.{h,cpp} | 6 | NET-15, NET-16, NET-18, LED-01, LED-02 | Retained `info`+`status` on subscribe populate the registry before the first frame; a `set` carries only the changed fields plus `from`/`seq`; `grep ledRing` finds only the contract doc |
+| LED-04 | Pairing flow through the bridge: publish `pair`, show the blink prompt, dial the blink count on the knob, publish the confirm, consume `controllers`; unpair; a factory-fresh strip pairs on the first tap | adapters/MqttModelBridge.cpp, model/LedRegistryModel.cpp, controllers/screens/LightScreenController.cpp | 5 | LED-03, INPT-12 | Pair completes in under 90 s with a correct code and fails cleanly on a wrong one; the strip appears under mine only after `controllers` lists this HMI; unpair removes it on both sides |
+| LED-07 | Host tests over a fake broker: announce -> available, pair -> mine, set -> state echo suppressed, remote `src` applied, LWT -> offline, retained replay on reconnect, the 8-slot cap, no allocation on the notify path | test/host/test_led_bridge.cpp, test/host/FakeBroker.h | 4 | LED-03, LED-04 | Every row above is a case; ASan/UBSan clean; the suite runs under one second |
+| LED-08 | Bench gate for the LED path: two strips on the bench, both paired by blink code, each controlled from LIGHT, one power-cycled (grey within 45 s), a web-page change followed on the HMI; heap logged against `BLD-38` | dev_notes | 2 | LED-04, LED-07, BLD-38 | The traversal log shows one `set` per 100 ms during a drag and zero echo publishes; the numbers land inside the `BLD-38` thresholds |
 
-### Phase 6 — Composition root (15 tasks, 44.0h)
+### Phase 6 — Composition root (23 tasks, 70.0h)
 
 `APP-16` is split so neither half sits at the 8h cap and each is independently boot-log-verifiable.
 
@@ -532,6 +541,14 @@ Model bindings: `LightModel::{brightness, hue, saturation, ledMode}`; `KnobModel
 | PERI-27 | Make `OTAManager::lastError` atomic; refuse destruction while busy; delete `setServerCert`/`setAllowInsecure` | OTAManager.{h,cpp} | 1.5 | PERI-26 | `otaStatus` reports the same error the OTA task logged; OTA end-to-end |
 | BLD-26 | Reduce `main` to `SRCS main.cpp REQUIRES app_composition`; tighten `app_composition`'s own reqs | main/CMakeLists.txt, app_composition/CMakeLists.txt | 2.5 | APP-17, BLD-24 | `main` has exactly one req; boot log matches `p0-fixed` on all three variants |
 | BLD-27 | Drop the redundant lvgl pin from main's manifest; pin an exact version in `ui` | main/idf_component.yml, ui/idf_component.yml | .5 | BLD-26 | The lock still resolves 8.4.0, listed once; three variants build |
+| LED-06 | Paired strips persisted (id, name) through the single settings writer and re-posted as the registry's first records at boot; write-if-changed | adapters/SettingsPersister.cpp, NVSManager.{h,cpp}, app_composition/AppComposition.cpp | 3 | LED-04, APP-29 | A power cycle brings every paired strip back as mine before the broker answers; pairing twice writes NVS once |
+| OTA-01 | `ReleaseManifest`: parse the release manifest and verify its detached ECDSA P-256 signature against the public key embedded per repository, plus the SHA-256 and size claims — the format and the verifier of `esp32c6-led-web` (`verify_manifest_signature`), pure on the host | ota_manager/ReleaseManifest.{h,cpp}, ota_manager/release_pubkey.h, test/host/test_release_manifest.cpp | 4 | PERI-27 | A manifest signed by the LED tooling verifies; a flipped byte, a wrong key and a truncated file each fail closed; no heap on the verify path |
+| OTA-02 | Release poll: the GitHub latest-release URL pattern with up to five redirects followed by hand, the 6 h interval with the first-poll jitter, HTTPS through the certificate bundle, run on the network task without blocking it | ota_manager/ReleasePoller.{h,cpp}, Kconfig.projbuild | 3 | OTA-01, NET-24 | A poll never stalls a `WiFiManager::update()` iteration by more than 20 ms; the interval and jitter come from Kconfig; a 404 is one log line |
+| OTA-03 | Install: stream the image into the inactive slot in 4 KB chunks, check size and SHA-256 against the manifest before `esp_ota_set_boot_partition`, hold the sleep-inhibit lease for the whole transfer, refuse when the battery is critical | ota_manager/OTAManager.{h,cpp} | 4 | OTA-01, PERI-24 | A corrupt download never becomes bootable; pulling power mid-transfer leaves the running slot untouched; the lease is released on every exit path |
+| OTA-04 | `UpdateModel`: configured, busy, available, current and latest version, status text, strike count — fed by records from the poller and the installer; the DeviceInfo software-update row and the `otaStatus` command read it | model/UpdateModel.{h,cpp}, test/host/test_update_model.cpp, ui/views/DeviceInfoView.cpp | 3 | OTA-02, OTA-03, MDL-03 | The row shows the same version and status the console prints; every field change is one commit; `NO_HEAP_SCOPE` holds |
+| OTA-05 | Probation: an OTA marker written before the reboot, a health predicate (WiFi up, broker or internet reachable, display task alive for 15 s) that promotes the slot with `esp_ota_mark_app_valid_cancel_rollback`, a three-strike counter through the single settings writer, rollback on strike-out, and `revert` that boots the other slot on request | ota_manager/OtaProbation.{h,cpp}, app_composition/AppComposition.cpp | 4 | OTA-03, OTA-04, APP-29 | A build that never reaches WiFi rolls back after three boots; a healthy one promotes within 20 s; `revert` after a good update boots the previous version once |
+| OTA-06 | Console and page actions: `otaCheck`, `otaInstall`, `otaRevert`, `otaStatus`; the DeviceInfo install button posts the same request; the URL-form `otaUpdate` stays TLS-only under `NET-23` | CommandHandler.{h,cpp}, ui/views/DeviceInfoView.cpp | 2 | OTA-04, OTA-05, NET-23 | Each command is one record into the composition; the page button and the console produce identical logs |
+| OTA-07 | Release pipeline: the workflow signs the manifest (the LED signing script or `esp-autota-sign`), publishes bootloader, partition table, ota_data and the app per variant, the 1.75 first; bench: install a release, cut power mid-download, confirm the rollback and the promotion | .github/workflows, tools, dev_notes | 3 | OTA-05, OTA-06 | A tagged release installs from the DeviceInfo row on the bench board; the power-cut case ends on the previous version with one strike logged |
 
 ### Phase 7 — CMake tightening and cleanup (15 tasks, 41.0h)
 
@@ -816,9 +833,9 @@ Derived edge by edge from the `Depends on` columns as the longest path over (id,
 
 | # | Task | h | Cumulative | Edge taken from |
 |---|---|---|---|---|
-| 1 | PCKNOB-02b | 1.0 | 1.0 | — |
+| 1 | PCKNOB-02b | 1.0 | 1.0 | PCKNOB-02b has no predecessor |
 | 2 | BLD-20 | 1.0 | 2.0 | BLD-20 deps `PCKNOB-02b` |
-| 3 | BLD-03 | 3.5 | 5.5 | BLD-03 deps `BLD-02, BLD-20` — the BLD-20 chain (2.0h) is the longer predecessor |
+| 3 | BLD-03 | 3.5 | 5.5 | BLD-03 deps `BLD-02, BLD-20` |
 | 4 | MDL-01 | 2.0 | 7.5 | MDL-01 deps `BLD-03` |
 | 5 | BLD-05 | 2.0 | 9.5 | BLD-05 deps `MDL-01` |
 | 6 | BLD-24 | 2.0 | 11.5 | BLD-24 deps `BLD-05` |
@@ -834,14 +851,16 @@ Derived edge by edge from the `Depends on` columns as the longest path over (id,
 | 16 | DISP-11 | 7.0 | 53.0 | DISP-11 deps `SCRN-04, SCRN-08, SCRN-03, DISP-08` |
 | 17 | APP-14 | 4.0 | 57.0 | APP-14 deps `DISP-11, MDL-03` |
 | 18 | APP-16 | 5.0 | 62.0 | APP-16 deps `APP-06, APP-14, APP-15` |
-| 19 | APP-27 | 4.0 | 66.0 | APP-27 deps `APP-16` |
-| 20 | APP-17 | 6.0 | 72.0 | APP-17 deps `APP-27` |
-| 21 | BLD-26 | 2.5 | 74.5 | BLD-26 deps `APP-17, BLD-24` |
-| 22 | BLD-28 | 6.0 | 80.5 | BLD-28 deps `BLD-22, BLD-24, BLD-26, BLD-44, INPT-21, PERI-11` |
-| 23 | BLD-30 | 3.0 | 83.5 | BLD-30 deps `BLD-28, BLD-45, BLD-03` |
-| 24 | BLD-36 | 3.0 | **86.5** | BLD-36 deps `BLD-09, BLD-30, BLD-39` |
+| 19 | PERI-26 | 4.0 | 66.0 | PERI-26 deps `PERI-06, PERI-11, DISP-14, APP-16` |
+| 20 | PERI-27 | 1.5 | 67.5 | PERI-27 deps `PERI-26` |
+| 21 | OTA-01 | 4.0 | 71.5 | OTA-01 deps `PERI-27` |
+| 22 | OTA-03 | 4.0 | 75.5 | OTA-03 deps `OTA-01, PERI-24` |
+| 23 | OTA-04 | 3.0 | 78.5 | OTA-04 deps `OTA-02, OTA-03, MDL-03` |
+| 24 | OTA-05 | 4.0 | 82.5 | OTA-05 deps `OTA-03, OTA-04, APP-29` |
+| 25 | OTA-06 | 2.0 | 84.5 | OTA-06 deps `OTA-04, OTA-05, NET-23` |
+| 26 | OTA-07 | 3.0 | **87.5** | OTA-07 deps `OTA-05, OTA-06` |
 
-**Total on the path: 86.5h of 960.0h — 9.0%, over 24 of 320 tasks.** The work is wide, not deep: 91% of it sits off the path and parallelises once the model, the queue and the Phase-1 component edges exist. The path is made of the measurement root, the CMake edge declarations, the input router, the boot controller, the router, the command router, the composition split and the CMake tail — not of any screen. `DISP-11` (7h) and `BLD-28`/`INPT-07`/`INPT-08`/`APP-17` (6h each) are the longest single tasks on it.
+**Total on the path: 87.5h of 1019.0h — 8.6%, over 26 of 335 tasks.** The work is wide, not deep: 91% of it sits off the path and parallelises once the model, the queue and the Phase-1 component edges exist. The path is made of the measurement root, the CMake edge declarations, the input router, the boot controller, the router, the command router, the composition split and, since D21, the OTA port (`PERI-26` through `OTA-07`) — not of any screen; the CMake tail (`BLD-26`..`BLD-36`, 86.5h) runs one hour shorter beside it. `DISP-11` (7h) and `INPT-07`/`INPT-08` (6h each) are the longest single tasks on it.
 
 Note what is **not** on the path and why the previous draft thought it was: `MEDIA-16` depends on `DISP-11`-free predecessors only, so the old `MEDIA-16 → DISP-11` edge was reversed; `INPT-06` has no predecessor, so `MDL-31 → INPT-06` never existed; `MDL-30` waits on every struct including `MDL-28` (6h) and `UIX-10` (5h), which the old path skipped.
 
@@ -1010,3 +1029,4 @@ Added after the check: `BLD-20` moved into Phase 0 ahead of `BLD-03`, which now 
 - WP1.4 done (2026-09-12, owner go-ahead, before `p0-fixed`): `AppModel` live in `main.cpp` with `adapters/ModelHost` hooks (APP-06); shadow records from the MQTT lambda, `DisplayController` (knob tokens incl. the dropped `setpoint=N` burst, navigation, activity, boot progress), `SoundController` and `LightController` (MDL-31, INPT-05, CTRL-07, CTRL-08); `ModelTrace` compile-gated by the new `CONFIG_QNOB_MODEL_TRACE` with the off-task write counter (MDL-32); one internet owner with an injected MQTT predicate (NET-09); fixed-array strings in `TimeHandler`/`WiFiManager` (NET-10); `ConnectivityPoller`, `EnvironmentPoller`, `BatteryPoller` on the network task with pure cores and `test_pollers` (NET-06/07/31, PERI-06); real AXP2101 presence and the dead telemetry gone, `isCharging()` kept because the PMU path populates it (PERI-05/08); battery acquisition on the network task (PERI-07); screen callbacks on the model (NET-11); weather key/city/country and the clock offset + NTP servers in Kconfig, HTTPS via the cert bundle, instance-owned buffer with chunked handling and truncation detection (NET-28/29); no blocking call left on the network task: non-blocking WiFi connect sequence, NTP, async HTTPS, non-blocking internet probe (NET-30); `knob_link_protocol.md` (PCKNOB-04); `last_setPoint` deleted in the sketch, uncommitted in QNOB (PCKNOB-05). DST decision (section 9 Q28): fixed offset, no DST. Host suite 19 executables / 128 cases green. Details: `dev_notes/phase1-log.md`.
 - Added on owner request 2026-09-12: `APP-28` (persisted runtime fields through a model subscriber, Phase 5, 5h) and `APP-29` (one writer for the settings store, Phase 6, 3h); section 1 totals are now 320 tasks / 960.0h. Both came out of the WP1.4 persistence review: runtime state that should survive a reboot stays model-owned and NVS subscribes; configuration stays a store with a single writer.
 - Bench 1 on the 1.75 (2026-09-12/13, `dev_notes/phase1-log.md`): the INFO screen halted in an LVGL out-of-memory assert at 466 px (fixed with `CONFIG_LV_MEM_CUSTOM=y`, LVGL error logging on); first clean pass with every drain `offtask=0`; three open findings (SleepHandler 120 MHz retry flood, bars hysteresis, two early rejected records). Owner decision 2026-09-13: this branch stays the base and the screen layer of `main` (homio-round-hmi, 123 commits past the 2026-04-21 fork, clean on the board) was ported file by file with the WP1.4 posts and the WP1.2 lifts re-applied; the 1.75 runs the panel at rotation 0 with touch mirror X/Y (the Phase 0 270-degree software rotation was a transcription error). **The visual reference for every later `p0-fixed` comparison is the ported main screen set**, not the pre-port screens; `MATRIX_PAGE` placeholders post no `ActiveScreen` until Phase 3. The C6 and 1.28 were dropped from this pass on the owner request.
+- Added on owner decision 2026-09-13 (D20, D21): the `LED-01`..`LED-08` cluster (LED strips over MQTT: registry model, LightModel reshape, LIGHT screen on the registry, topic contract and bridge routes, blink-code pairing, fake-broker tests, bench gate, persistence; 36h across Phases 3/5/6) and the `OTA-01`..`OTA-07` cluster (the esp32c6-led-web release flow ported: signed manifest, release poll, verified install, `UpdateModel`, probation with strikes and revert, commands, pipeline; 23h in Phase 6). Section 1 totals are now 335 tasks / 1019.0h. The LED-side task list lives in `dev_notes/led_mqtt_contract.md`. Open questions Q7, Q8 and Q17 are answered by D20.

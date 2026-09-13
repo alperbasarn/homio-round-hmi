@@ -3,7 +3,7 @@
 // unknown dependency ids, backward cross-phase edges, cycles, a section-1 roll-up that does
 // not match the rows, or a section-7 critical-path total that does not match the longest path.
 //
-//   node tools/wbs-lint.mjs [path/to/wbs.md]
+//   node tools/wbs-lint.mjs [path/to/wbs.md] [--path]   (--path prints the longest chain as section-7 rows)
 //
 // Exit 0: clean. Exit 1: at least one finding (all findings are printed).
 
@@ -12,12 +12,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const file = process.argv[2] ?? path.join(here, '..', 'dev_notes', 'mvc_refactor_wbs.md');
+const args = process.argv.slice(2);
+const wantPath = args.includes('--path');
+const file = args.find((a) => !a.startsWith('--')) ?? path.join(here, '..', 'dev_notes', 'mvc_refactor_wbs.md');
 const text = fs.readFileSync(file, 'utf8');
 const lines = text.split('\n');
 
-const ID_RE = /\b(?:DISP|SCRN|CTRL|INPT|NET|APP|PERI|BLD|MDL|MEDIA|PCKNOB|UIX)-\d{2,3}[a-z]?\b/g;
-const ROW_RE = /^\| ((?:DISP|SCRN|CTRL|INPT|NET|APP|PERI|BLD|MDL|MEDIA|PCKNOB|UIX)-\d{2,3}[a-z]?) \|/;
+const ID_RE = /\b(?:DISP|SCRN|CTRL|INPT|NET|APP|PERI|BLD|MDL|MEDIA|PCKNOB|UIX|LED|OTA)-\d{2,3}[a-z]?\b/g;
+const ROW_RE = /^\| ((?:DISP|SCRN|CTRL|INPT|NET|APP|PERI|BLD|MDL|MEDIA|PCKNOB|UIX|LED|OTA)-\d{2,3}[a-z]?) \|/;
 const NUM_RE = /^\d*\.?\d+$/;
 
 const findings = [];
@@ -93,20 +95,33 @@ if (s1rows !== 8) findings.push(`section 1 has ${s1rows} phase rows, expected 8`
 // 5. longest path vs section 7 total (only meaningful on an acyclic graph)
 const hasCycle = findings.some((f) => f.startsWith('cycle:'));
 const memo = new Map();
+const prev = new Map();
 const inProgress = new Set();
 const longest = (id) => {
   if (memo.has(id)) return memo.get(id);
   if (inProgress.has(id)) return 0; // cycle already reported above; break the recursion
   inProgress.add(id);
   const t = tasks.get(id);
-  let best = 0;
-  for (const d of t.deps) if (tasks.has(d)) best = Math.max(best, longest(d));
+  let best = 0, bestDep = null;
+  for (const d of t.deps) if (tasks.has(d)) { const ld = longest(d); if (ld > best) { best = ld; bestDep = d; } }
   inProgress.delete(id);
+  prev.set(id, bestDep);
   const v = best + t.hours; memo.set(id, v); return v;
 };
 let crit = 0, critEnd = null;
 if (!hasCycle) {
   for (const id of tasks.keys()) { const v = longest(id); if (v > crit) { crit = v; critEnd = id; } }
+  if (wantPath && critEnd) {
+    const chain = [];
+    for (let id = critEnd; id; id = prev.get(id)) chain.unshift(id);
+    let cum = 0;
+    chain.forEach((id, i) => {
+      const t = tasks.get(id); cum += t.hours;
+      const deps = t.deps.length ? `${id} deps \`${t.deps.join(', ')}\`` : `${id} has no predecessor`;
+      const last = i === chain.length - 1;
+      console.log(`| ${i + 1} | ${id} | ${t.hours.toFixed(1)} | ${last ? `**${cum.toFixed(1)}**` : cum.toFixed(1)} | ${deps} |`);
+    });
+  }
   const totalMatch = text.match(/Total on the path: ([\d.]+)h/);
   if (!totalMatch) findings.push('section 7 has no "Total on the path: Xh" sentence');
   else if (Math.abs(parseFloat(totalMatch[1]) - crit) > 0.001)
