@@ -250,3 +250,53 @@ TEST_CASE(a_lift_the_driver_did_not_classify_is_still_a_release) {
     t.onTouch(lift, 200);
     CHECK_EQ(drain(t, ev, 8), static_cast<size_t>(0));
 }
+
+TEST_CASE(a_swipe_lift_is_the_gesture_and_not_also_a_release) {
+    InputTranslator t;
+    InputEvent ev[8];
+    t.onTouch(pressAt(113, 233), 0);
+    t.onTouch(holdAt(300, 260), 200);
+    TouchSample lift = swipe(kGestureSwipeRight, 398, 299);  // pressed false, gesture flagged
+    t.onTouch(lift, 380);
+    const size_t n = drain(t, ev, 8);
+    CHECK_EQ(n, static_cast<size_t>(3));
+    CHECK(ev[2].type == InputType::Gesture && ev[2].gesture == Gesture::SwipeRight);
+    TouchSample idle;                                          // the next poll: finger up, no flags
+    t.onTouch(idle, 400);
+    CHECK_EQ(drain(t, ev, 8), static_cast<size_t>(0));       // no trailing release after a swipe
+}
+
+TEST_CASE(a_wake_touch_that_ends_in_a_swipe_is_consumed_whole) {
+    InputTranslator t;
+    InputEvent ev[8];
+    t.armWakeConsumption();
+    t.onTouch(pressAt(113, 233), 0);
+    t.onTouch(holdAt(300, 260), 200);
+    t.onTouch(swipe(kGestureSwipeRight, 398, 299), 380);  // the lift poll carries only the swipe
+    CHECK_EQ(drain(t, ev, 8), static_cast<size_t>(0));
+    CHECK_EQ(t.lastActivityMs(), 380u);
+    CHECK(!t.wakeArmed());
+    // The next touch is delivered in full: the wake state ended with the swipe lift.
+    t.onTouch(pressAt(233, 233), 900);
+    t.onTouch(holdAt(234, 233), 916);
+    t.onTouch(tapRelease(234, 233, 60), 960);
+    const size_t n = drain(t, ev, 8);
+    CHECK_EQ(n, static_cast<size_t>(3));
+    CHECK(ev[0].type == InputType::TouchPress && ev[1].type == InputType::TouchMove);
+    CHECK(ev[2].type == InputType::TouchRelease);
+}
+
+TEST_CASE(a_swipe_lift_inside_the_stale_window_leaves_no_trailing_release) {
+    InputTranslator t;
+    InputEvent ev[8];
+    t.onTouch(pressAt(113, 233), 0);
+    t.beginStaleWindow(100);  // the screen changed under the finger
+    t.onTouch(swipe(kGestureSwipeLeft, 40, 233), 150);
+    TouchSample idle;
+    t.onTouch(idle, 170);
+    t.onTouch(idle, 400);  // after the window, still nothing: the finger is known to be up
+    const size_t n = drain(t, ev, 8);
+    CHECK_EQ(n, static_cast<size_t>(1));
+    CHECK(ev[0].type == InputType::TouchPress);
+    CHECK(!t.touchDown());
+}

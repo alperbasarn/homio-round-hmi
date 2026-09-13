@@ -7,6 +7,11 @@ namespace input {
 
 namespace {
 
+bool isSwipe(uint8_t code) {
+    return code == kGestureSwipeUp || code == kGestureSwipeDown || code == kGestureSwipeLeft ||
+           code == kGestureSwipeRight;
+}
+
 Gesture mapSwipe(uint8_t code) {
     switch (code) {
         case kGestureSwipeUp: return Gesture::SwipeUp;
@@ -106,16 +111,24 @@ void InputTranslator::onTouch(const TouchSample& s, uint32_t nowMs) {
     }
 
     // A lift the driver did not classify (a tap that drifted 25..40 px: past its tap radius, short
-    // of a swipe) is still a release; without this the finger simply vanished (bench walk 1).
-    const bool unclassifiedLift = touchDown_ && !s.pressed && !s.newPress && !s.newRelease && !s.newHoldRelease;
+    // of a swipe) is still a release; without this the finger simply vanished (bench walk 1). A
+    // swipe lift is the swipe and nothing else: the driver clears its release flags on a swipe, so
+    // the lift bookkeeping happens here and no later poll turns the raised finger into a trailing
+    // release (bench walk 2). A wake touch or a stale touch that ends in a swipe is consumed whole.
+    const bool liftNow = touchDown_ && !s.pressed && !s.newPress;
+    const bool swipeLift = liftNow && s.newGesture && isSwipe(s.gestureCode) && !s.newRelease && !s.newHoldRelease;
+    const bool unclassifiedLift = liftNow && !swipeLift && !s.newRelease && !s.newHoldRelease;
     const bool releasing = s.newRelease || s.newHoldRelease || unclassifiedLift;
-    if (releasing) {
+    bool gestureConsumed = false;
+    if (releasing || swipeLift) {
         touchDown_ = false;
         const bool consumed = wakeConsuming_;
         wakeConsuming_ = false;
         const bool stale = insideStaleWindow(nowMs) || !pressSeen_;
         pressSeen_ = false;
-        if (!consumed && !stale) {
+        if (swipeLift) {
+            gestureConsumed = consumed || stale;
+        } else if (!consumed && !stale) {
             if (s.newHoldRelease) {
                 if (s.pressDurationMs >= kBackGateMs) {
                     InputEvent e;
@@ -158,7 +171,7 @@ void InputTranslator::onTouch(const TouchSample& s, uint32_t nowMs) {
     if (s.newGesture) {
         const Gesture g = mapSwipe(s.gestureCode);
         // Tap and hold releases already arrived through the release flags above.
-        if (g != Gesture::None && !wakeConsuming_ && !insideStaleWindow(nowMs)) {
+        if (g != Gesture::None && !gestureConsumed && !wakeConsuming_ && !insideStaleWindow(nowMs)) {
             InputEvent e;
             e.type = InputType::Gesture;
             e.gesture = g;

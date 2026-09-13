@@ -152,12 +152,14 @@ USB-hold build, 75 s capture, `home` sent at 3 s, owner at the panel.
 | Idle | stage 0 at 20 s once, SLEEP at 30 s, board stayed on the bus |
 | Ring / watchdog | 0 overflow, 0 watchdog |
 
-**Finding W3 (open, paused by the owner):** with W1's synthesized release a swipe lift produced a
-`release` as well as the gesture (the driver flags the gesture on the lift poll). A first attempt
-(exclude polls that carry a gesture) leaves a trailing release one poll later, so its host case
-`a_swipe_lift_is_the_gesture_and_not_also_a_release` fails at its last check; it sits in
-`git stash` ("touch-lift half-step"). The proper fix treats a gesture lift as the lift itself
-(clear `touchDown_`/`pressSeen_` on it) and waits for the go-ahead.
+**Finding W3 (fixed on the owner go, same day):** with W1's synthesized release a swipe lift
+produced a `release` as well as the gesture (the driver flags the gesture on the lift poll and
+clears its release flags). A swipe lift now does the lift bookkeeping itself and is the swipe and
+nothing else; a wake touch or a stale touch that ends in a swipe is consumed whole (the wake state
+used to survive a wake swipe). Host cases `a_swipe_lift_is_the_gesture_and_not_also_a_release`,
+`a_wake_touch_that_ends_in_a_swipe_is_consumed_whole` and
+`a_swipe_lift_inside_the_stale_window_leaves_no_trailing_release`; the build boots clean on the
+1.75. Device check still owed: one `input` line per swipe on the next owner walk.
 
 Phase 2 device acceptance on the 1.75 is met on every item that does not need the C6 or the knob
 link: one `input` line per gesture, the D13 gate both ways, the double-tap, the wake tap, the
