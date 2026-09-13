@@ -55,7 +55,11 @@ target_link_options(adapters_core PUBLIC -fsanitize=address,undefined)
 target_link_libraries(adapters_core PUBLIC model)
 
 # INPT-06: the input event record compiles on the host from the device file.
-add_library(input_core STATIC "${CMAKE_CURRENT_LIST_DIR}/../../components/input/src/InputEvent.cpp")
+add_library(input_core STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/input/src/InputEvent.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/input/src/InputTranslator.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/input/src/InputSfxListener.cpp"
+)
 target_include_directories(input_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../../components/input/include")
 target_compile_options(input_core PUBLIC ${QNOB_HOST_FLAGS})
 target_link_options(input_core PUBLIC -fsanitize=address,undefined)

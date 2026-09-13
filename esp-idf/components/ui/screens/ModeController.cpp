@@ -79,7 +79,7 @@ void ModeController::buildUi() {
     // Swipe hint
     hintLabel = lv_label_create(root);
     lv_obj_set_style_text_color(hintLabel, lv_color_hex(0x606060), 0);
-    lv_label_set_text(hintLabel, "\xe2\x86\x90 swipe \xe2\x86\x92");
+    lv_label_set_text(hintLabel, "\xe2\x86\x90 swipe \xe2\x86\x92  \xe2\x80\xa2  double-tap selects  \xe2\x80\xa2  hold 3 s: back");
     lv_obj_align(hintLabel, LV_ALIGN_BOTTOM_MID, 0, -16);
 
     LvglDisplay::invalidateScreen();

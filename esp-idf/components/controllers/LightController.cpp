@@ -99,7 +99,7 @@ void LightController::ensureUi() {
 
     hintLabel = lv_label_create(root);
     lv_obj_set_style_text_color(hintLabel, lv_color_hex(0x6B778A), 0);
-    lv_label_set_text(hintLabel, "Drag up/down brightness, left/right hue");
+    lv_label_set_text(hintLabel, "Drag up/down brightness, left/right hue  •  Hold 3 s: back");
     lv_obj_align(hintLabel, LV_ALIGN_BOTTOM_MID, 0, -scalePx(18));
 
     LvglDisplay::unlock();
@@ -230,7 +230,8 @@ void LightController::checkTouchInput() {
         firstTouchX = -1;
         firstTouchY = -1;
 
-        if (touchPanel->getHasNewHoldRelease()) {
+        // D13 (SCRN-25): back is a hold of at least 3 s; shorter hold-releases do nothing here.
+        if (touchPanel->getHasNewHoldRelease() && touchPanel->getLastPressDurationMs() >= 3000) {
             if (!pageBackRequested && !colorChange && !waterLevelChange) {
                 pageBackRequested = true;
                 initialized = false;

@@ -37,6 +37,13 @@ menu "QNOB Application Configuration"
         help
             Set the logging verbosity level.
 
+    config QNOB_DEEP_SLEEP
+        bool "Enter deep sleep after the inactivity timeout"
+        default y
+        help
+            Stage 3 of the sleep handler. Off on the bench: deep sleep drops the USB-Serial/JTAG
+            console and the board disappears from the host until a tap or a power cycle.
+
     config QNOB_MODEL_TRACE
         bool "Model trace: log every drain and each changed model (MDL-32)"
         default n

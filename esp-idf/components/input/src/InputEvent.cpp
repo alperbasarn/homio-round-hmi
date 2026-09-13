@@ -11,6 +11,7 @@ const char* toString(InputType type) {
         case InputType::TouchHoldRelease: return "hold-release";
         case InputType::Gesture: return "gesture";
         case InputType::KnobDelta: return "knob-delta";
+        case InputType::KnobBurst: return "knob-burst";
         case InputType::KnobLink: return "knob-link";
     }
     return "?";
@@ -26,6 +27,16 @@ const char* toString(Gesture gesture) {
         case Gesture::SingleTap: return "tap";
         case Gesture::DoubleTap: return "double-tap";
         case Gesture::LongPress: return "long-press";
+    }
+    return "?";
+}
+
+const char* toString(HitZone zone) {
+    switch (zone) {
+        case HitZone::None: return "-";
+        case HitZone::Disc: return "disc";
+        case HitZone::Rim: return "rim";
+        case HitZone::Dead: return "dead";
     }
     return "?";
 }

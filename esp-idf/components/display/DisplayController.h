@@ -1,14 +1,13 @@
 #ifndef DISPLAY_CONTROLLER_H
 #define DISPLAY_CONTROLLER_H
 
-#include "TouchPanel.h"
+#include "input/InputEvent.h"
 #include "model/MutationQueue.h"
 #include <string>
 #include <atomic>
 #include <cstdint>
 
 // Forward declarations
-class KnobController;
 class SoundController;
 class LightController;
 class ModeController;
@@ -16,7 +15,6 @@ class InitializationScreen;
 class EnvironmentInfoScreen;
 class DeviceInfoScreen;
 class PlaceholderPageScreen;
-class LocalAudio;
 
 enum Mode {
   INITIALIZATION,
@@ -32,8 +30,6 @@ enum Mode {
 
 class DisplayController {
 private:
-  TouchPanel* touchPanel;
-  KnobController* knobController;
   SoundController* soundController;
   LightController* lightController;
   ModeController* modeController;
@@ -41,7 +37,6 @@ private:
   EnvironmentInfoScreen* infoScreen;
   DeviceInfoScreen* deviceInfoScreen;
   PlaceholderPageScreen* placeholderScreen;
-  LocalAudio* localAudio;
 
   Mode currentMode;
   int64_t lastActivityTime;
@@ -50,11 +45,9 @@ private:
   int brightnessPercent;
   int initializationProgress;
   int64_t initializationCompleteTime;
-  int64_t touchSoundCandidateSinceMs;
   int currentPageX;
   int currentPageY;
-  bool touchSoundPressedState;
-  bool touchSoundCandidateState;
+  uint32_t lastActivityPostMs;
   std::atomic<int> pendingModeRequest;
   std::atomic<int> pendingPageRequest;
   // WP1.4 shadow phase: every knob token and navigation change is also posted as a record
@@ -64,15 +57,20 @@ private:
   void transitionToMode(Mode newMode, int transitionType = 0);
   void checkActivityAndAutoSwitch();
   void resetActivityTime();
-  bool handleMatrixNavigationGesture(touch_gesture_t gesture);
+  bool handleMatrixNavigationGesture(input::Gesture gesture);
+  void applyKnobDelta(int16_t delta);
   bool navigateToMatrixPage(int x, int y);
   void resetActiveScreen();
-  void postKnobToken(const std::string& token);
   void postNavigationScreen(Mode mode);
   void postNavigation(int field, int32_t value);
 
 public:
-  DisplayController(TouchPanel* touch);
+  DisplayController();
+  // INPT-14: the router delivers every touch and knob event here; nothing in this class polls.
+  void onInput(const input::InputEvent& event);
+  // Any router activity, delivered or consumed (a wake tap): resets the inactivity clock and
+  // leaves SLEEP.
+  void noteActivity();
   void init();
   void update();
 
@@ -81,7 +79,6 @@ public:
   bool showNamedScreen(const std::string& screenName);
   std::string getModeName() const;
 
-  void registerKnobController(KnobController* knob);
   void registerSoundController(SoundController* sound);
   void registerLightController(LightController* light);
   void registerModeController(ModeController* mode);
@@ -89,7 +86,6 @@ public:
   void registerInfoScreen(EnvironmentInfoScreen* info);
   void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
   void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
-  void registerLocalAudio(LocalAudio* media);
   void registerModelQueue(model::MutationQueue* queue);
 
   void incrementSetpoint();

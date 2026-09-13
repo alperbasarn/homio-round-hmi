@@ -38,6 +38,8 @@
 #include "SoundController.h"
 #include "LightController.h"
 #include "LocalAudio.h"
+#include "input/InputRouter.h"
+#include "input/InputSfxListener.h"
 #include "OTAManager.h"
 #include "ModeController.h"
 #include "InitializationScreen.h"
@@ -126,6 +128,8 @@ static Microphone* microphone = nullptr;
 static SoundPlayer* soundPlayer = nullptr;
 static SoundRecorder* soundRecorder = nullptr;
 static LocalAudio* localAudio = nullptr;
+static input::InputRouter* inputRouter = nullptr;      // INPT-07: sole owner of the touch panel and the knob link
+static input::InputSfxListener* inputSfx = nullptr;    // INPT-13
 static OTAManager* otaManager = nullptr;
 static SleepHandler* sleepHandler = nullptr;
 
@@ -173,6 +177,9 @@ static void startupSplashTask(void* parameter) {
 // of the models (D1).
 void displayTask(void* parameter) {
     adapters::model_host::adoptCurrentTaskAsConsumer();
+    Mode lastModeSeen = INITIALIZATION;
+    uint32_t lastRouterActivityMs = 0;
+    uint32_t lastRouterOverflow = 0;
     ESP_LOGI(TAG, "Display task started on core %d", xPortGetCoreID());
 
 #if defined(PWR_KEY_PIN) && (PWR_KEY_PIN >= 0)
@@ -197,7 +204,53 @@ void displayTask(void* parameter) {
 #endif
 
         // D1: drain once at the top of the frame, before anything reads the models.
-        appModel.drainPendingMutations(nowMs());
+        const uint32_t frameNow = nowMs();
+        appModel.drainPendingMutations(frameNow);
+
+        if (inputRouter != nullptr) {
+            inputRouter->poll(frameNow);
+            // INPT-11: the first press after entering SLEEP wakes the device and is consumed.
+            const Mode modeNow = displayController->getMode();
+            if (modeNow == SLEEP && lastModeSeen != SLEEP) {
+                inputRouter->armWakeConsumption();
+            }
+            lastModeSeen = modeNow;
+            if (inputRouter->lastActivityMs() != lastRouterActivityMs) {
+                lastRouterActivityMs = inputRouter->lastActivityMs();
+                displayController->noteActivity();
+                if (sleepHandler) {
+                    sleepHandler->registerActivity();   // PERI-09: activity reaches the sleep handler from here
+                }
+            }
+            input::InputEvent ev;
+            while (inputRouter->next(ev)) {
+                ESP_LOGI(TAG, "input %s %s x=%d y=%d zone=%s d=%u k=%d", input::toString(ev.type),
+                         input::toString(ev.gesture), ev.x, ev.y, input::toString(ev.zone),
+                         static_cast<unsigned>(ev.durationMs), ev.knobDelta);
+                if (inputSfx != nullptr) {
+                    inputSfx->onEvent(ev);
+                }
+                switch (ev.type) {   // INPT-05 moved here: the model sees every knob token once
+                    case input::InputType::KnobDelta:
+                        appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::Delta, ev.knobDelta, frameNow));
+                        break;
+                    case input::InputType::KnobBurst:
+                        appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::Burst, ev.knobDelta, frameNow));
+                        break;
+                    case input::InputType::KnobLink:
+                        appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::LinkActivity, 0, frameNow));
+                        break;
+                    default:
+                        break;
+                }
+                displayController->onInput(ev);
+            }
+            if (inputRouter->overflow() != lastRouterOverflow) {
+                lastRouterOverflow = inputRouter->overflow();
+                ESP_LOGW(TAG, "input ring overflow=%lu high-water=%u", static_cast<unsigned long>(lastRouterOverflow),
+                         static_cast<unsigned>(inputRouter->highWater()));
+            }
+        }
 
         displayController->update();
 
@@ -517,17 +570,20 @@ extern "C" void app_main(void) {
     soundController->setModelQueue(&modelQueue);                       // CTRL-07
     lightController = new LightController(displayPanelBackend.get(), touchPanel);
     lightController->setModelQueue(&modelQueue);                       // CTRL-08
-    displayController = new DisplayController(touchPanel);
+    displayController = new DisplayController();
     displayController->registerModelQueue(&modelQueue);                // INPT-05 + navigation shadow
     displayController->registerModeController(modeController);
     displayController->registerInitializationScreen(initializationScreen);
     displayController->registerInfoScreen(infoScreen);
     displayController->registerDeviceInfoScreen(deviceInfoScreen);
     displayController->registerPlaceholderScreen(placeholderPageScreen);
-    displayController->registerLocalAudio(localAudio);
     displayController->registerSoundController(soundController);
     displayController->registerLightController(lightController);
-    displayController->registerKnobController(knobController);
+    // INPT-12: the router polls both drivers once per frame; the legacy screens still read the
+    // latched touch flags in the same frame until WP2.3 cuts them over.
+    inputRouter = new input::InputRouter(touchPanel, knobController);
+    inputRouter->configure({displayPanelBackend->width(), displayPanelBackend->height(), false});
+    inputSfx = new input::InputSfxListener(localAudio);
     deviceInfoScreen->setBrightnessControlCallbacks(
         []() { return displayController != nullptr ? displayController->getBrightnessPercent() : 100; },
         [](int percent) {

@@ -2,6 +2,6 @@
 idf_component_register(
     SRCS "LocalAudio.cpp"
     INCLUDE_DIRS "."
-    REQUIRES media
+    REQUIRES media input
     PRIV_REQUIRES esp_timer
 )

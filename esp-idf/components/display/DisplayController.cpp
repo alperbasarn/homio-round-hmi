@@ -1,5 +1,4 @@
 #include "DisplayController.h"
-#include "KnobController.h"
 #include "SoundController.h"
 #include "LightController.h"
 #include "ModeController.h"
@@ -7,8 +6,6 @@
 #include "EnvironmentInfoScreen.h"
 #include "DeviceInfoScreen.h"
 #include "PlaceholderPageScreen.h"
-#include "LocalAudio.h"
-#include "SleepHandler.h"
 #include "LvglDisplay.h"
 #include "model/AppScreen.h"
 #include "model/KnobModel.h"
@@ -26,14 +23,9 @@
 static const char *TAG = "DisplayController";
 static constexpr int64_t INIT_SEQUENCE_DURATION_MS = 2500;
 static constexpr int64_t INIT_COMPLETE_HOLD_MS = 400;
-static constexpr int64_t TOUCH_SOUND_DEBOUNCE_MS = 80;
 
 namespace {
 
-constexpr const char* SWIPE_LEFT_EFFECT_FILE  = "swipe_left";
-constexpr const char* SWIPE_RIGHT_EFFECT_FILE = "swipe_right";
-constexpr const char* SWIPE_UP_EFFECT_FILE    = "swipe_up";
-constexpr const char* SWIPE_DOWN_EFFECT_FILE  = "swipe_down";
 constexpr int kNoPageRequest = std::numeric_limits<int>::max();
 
 struct MatrixPageDescriptor {
@@ -125,14 +117,13 @@ const MatrixPageDescriptor* findMatrixPageByName(const std::string& normalized) 
 
 }  // namespace
 
-DisplayController::DisplayController(TouchPanel* touch)
-  : touchPanel(touch), knobController(nullptr), soundController(nullptr),
+DisplayController::DisplayController()
+  : soundController(nullptr),
     lightController(nullptr), modeController(nullptr), initializationScreen(nullptr),
-    infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr), localAudio(nullptr),
+    infoScreen(nullptr), deviceInfoScreen(nullptr), placeholderScreen(nullptr),
     currentMode(INITIALIZATION), lastActivityTime(0), initializationStartTime(0),
     displayIsOn(true), brightnessPercent(100), initializationProgress(0), initializationCompleteTime(0),
-    touchSoundCandidateSinceMs(0), currentPageX(0), currentPageY(0),
-    touchSoundPressedState(false), touchSoundCandidateState(false),
+    currentPageX(0), currentPageY(0), lastActivityPostMs(0),
     pendingModeRequest(-1), pendingPageRequest(kNoPageRequest), modelQueue(nullptr) {
 }
 
@@ -163,70 +154,7 @@ void DisplayController::update() {
         setMode(static_cast<Mode>(pendingMode));
     }
 
-    bool hasActivityEvent = false;
-
-    if (touchPanel) {
-        touchPanel->handleTouchPanel();
-
-        const bool pressedNow = touchPanel->isPressed();
-        const int64_t nowMs = esp_timer_get_time() / 1000;
-        if (pressedNow != touchSoundCandidateState) {
-            touchSoundCandidateState = pressedNow;
-            touchSoundCandidateSinceMs = nowMs;
-        }
-        if (pressedNow != touchSoundPressedState &&
-            (nowMs - touchSoundCandidateSinceMs) >= TOUCH_SOUND_DEBOUNCE_MS) {
-            touchSoundPressedState = pressedNow;
-            hasActivityEvent = true;
-            resetActivityTime();
-            if (localAudio) {
-                if (touchSoundPressedState) {
-                    localAudio->requestTouchPressEffect();
-                } else {
-                    localAudio->requestTouchReleaseEffect();
-                }
-            }
-        }
-
-        if (touchPanel->getHasNewPress() ||
-            touchPanel->getHasNewRelease() ||
-            touchPanel->getHasNewHoldRelease()) {
-            hasActivityEvent = true;
-            resetActivityTime();
-        }
-        if (touchPanel->getHasNewGesture() && localAudio) {
-            switch (touchPanel->getLastGesture()) {
-                case GESTURE_SWIPE_LEFT:  localAudio->requestSoundEffect(SWIPE_LEFT_EFFECT_FILE);  break;
-                case GESTURE_SWIPE_RIGHT: localAudio->requestSoundEffect(SWIPE_RIGHT_EFFECT_FILE); break;
-                case GESTURE_SWIPE_UP:    localAudio->requestSoundEffect(SWIPE_UP_EFFECT_FILE);    break;
-                case GESTURE_SWIPE_DOWN:  localAudio->requestSoundEffect(SWIPE_DOWN_EFFECT_FILE);  break;
-                default: break;
-            }
-        }
-    }
-
-    if (knobController) {
-        knobController->update();
-        if (knobController->getHasNewMessage()) {
-            hasActivityEvent = true;
-            resetActivityTime();
-            // CTRL-01: CommandHandler consumes the same token from its own task; two consumers per
-            // detent until InputRouter owns the link (Phase 2).
-            ESP_LOGI(TAG, "Knob token %s consumed by DisplayController", knobController->getReceivedCommand().c_str());
-            postKnobToken(knobController->getReceivedCommand());   // INPT-05: the model sees every token
-        }
-    }
-
-    if (currentMode == SLEEP && hasActivityEvent) {
-        const MatrixPageDescriptor* page = findMatrixPage(currentPageX, currentPageY);
-        setMode(page ? page->mode : INFO);
-        return;
-    }
-
-    if (touchPanel && touchPanel->getHasNewGesture() && currentMode != DEVICE_INFO) {
-        handleMatrixNavigationGesture(touchPanel->getLastGesture());
-    }
-
+    // INPT-14: touch and knob arrive through onInput(); the SLEEP exit lives in noteActivity().
     switch (currentMode) {
         case INITIALIZATION:
             if (initializationScreen) {
@@ -303,11 +231,6 @@ void DisplayController::update() {
 
         case SOUND:
             if (soundController) {
-                if (knobController && knobController->getHasNewMessage()) {
-                    const std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") soundController->incrementSetpoint();
-                    else if (cmd == "-") soundController->decrementSetpoint();
-                }
                 soundController->updateScreen();
                 if (soundController->isPageBackRequested()) {
                     soundController->resetPageBackRequest();
@@ -318,11 +241,6 @@ void DisplayController::update() {
 
         case LIGHT:
             if (lightController) {
-                if (knobController && knobController->getHasNewMessage()) {
-                    const std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") lightController->incrementSetpoint();
-                    else if (cmd == "-") lightController->decrementSetpoint();
-                }
                 lightController->updateScreen();
                 if (lightController->isPageBackRequested()) {
                     lightController->resetPageBackRequest();
@@ -333,16 +251,6 @@ void DisplayController::update() {
 
         case HOME:
             if (modeController) {
-                if (knobController && knobController->getHasNewMessage()) {
-                    const std::string cmd = knobController->getReceivedCommand();
-                    if (cmd == "+") {
-                        modeController->nextMode();
-                        postNavigation(static_cast<int>(model::NavigationModel::Field::ModeStep), 1);
-                    } else if (cmd == "-") {
-                        modeController->previousMode();
-                        postNavigation(static_cast<int>(model::NavigationModel::Field::ModeStep), -1);
-                    }
-                }
                 modeController->updateScreen();
 
                 if (modeController->isModeSelected()) {
@@ -499,7 +407,6 @@ std::string DisplayController::getModeName() const {
     }
 }
 
-void DisplayController::registerKnobController(KnobController* k)      { knobController = k; }
 void DisplayController::registerSoundController(SoundController* s)    { soundController = s; }
 void DisplayController::registerLightController(LightController* l)    { lightController = l; }
 void DisplayController::registerModeController(ModeController* m)      { modeController = m; }
@@ -507,7 +414,6 @@ void DisplayController::registerInitializationScreen(InitializationScreen* i) { 
 void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { infoScreen = info; }
 void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
 void DisplayController::registerPlaceholderScreen(PlaceholderPageScreen* p)   { placeholderScreen = p; }
-void DisplayController::registerLocalAudio(LocalAudio* m)    { localAudio = m; }
 
 void DisplayController::incrementSetpoint() {
     if (currentMode == SOUND && soundController) soundController->incrementSetpoint();
@@ -559,11 +465,70 @@ void DisplayController::checkActivityAndAutoSwitch() {
 
 void DisplayController::resetActivityTime() {
     lastActivityTime = esp_timer_get_time() / 1000;
-    postNavigation(static_cast<int>(model::NavigationModel::Field::Activity), 0);
+    // One Activity record per 250 ms is enough for the model; a drag would otherwise post one
+    // per frame. PERI-09: the SleepHandler hears about activity from main, not from here.
+    const uint32_t nowMs32 = static_cast<uint32_t>(lastActivityTime);
+    if (lastActivityPostMs == 0 || static_cast<uint32_t>(nowMs32 - lastActivityPostMs) >= 250) {
+        lastActivityPostMs = nowMs32;
+        postNavigation(static_cast<int>(model::NavigationModel::Field::Activity), 0);
+    }
     if (!displayIsOn) turnDisplayOn();
-    SleepHandler* sh = SleepHandler::getInstance();
-    if (sh) {
-        sh->registerActivity();
+}
+
+void DisplayController::noteActivity() {
+    resetActivityTime();
+    if (currentMode == SLEEP) {
+        const MatrixPageDescriptor* page = findMatrixPage(currentPageX, currentPageY);
+        setMode(page ? page->mode : INFO);
+    }
+}
+
+void DisplayController::onInput(const input::InputEvent& event) {
+    noteActivity();
+    if (currentMode == SLEEP || currentMode == INITIALIZATION) {
+        return;
+    }
+    switch (event.type) {
+        case input::InputType::Gesture:
+            if (currentMode != DEVICE_INFO) {
+                handleMatrixNavigationGesture(event.gesture);
+            }
+            break;
+        case input::InputType::KnobDelta:
+            applyKnobDelta(event.knobDelta);
+            break;
+        default:
+            break;
+    }
+}
+
+void DisplayController::applyKnobDelta(int16_t delta) {
+    if (delta == 0) {
+        return;
+    }
+    const bool up = delta > 0;
+    const int steps = up ? delta : -delta;
+    for (int i = 0; i < steps; ++i) {
+        switch (currentMode) {
+            case SOUND:
+                if (soundController) {
+                    if (up) soundController->incrementSetpoint(); else soundController->decrementSetpoint();
+                }
+                break;
+            case LIGHT:
+                if (lightController) {
+                    if (up) lightController->incrementSetpoint(); else lightController->decrementSetpoint();
+                }
+                break;
+            case HOME:
+                if (modeController) {
+                    if (up) modeController->nextMode(); else modeController->previousMode();
+                    postNavigation(static_cast<int>(model::NavigationModel::Field::ModeStep), up ? 1 : -1);
+                }
+                break;
+            default:
+                break;
+        }
     }
 }
 
@@ -613,7 +578,7 @@ int DisplayController::getBrightnessPercent() const {
     return brightnessPercent;
 }
 
-bool DisplayController::handleMatrixNavigationGesture(touch_gesture_t gesture) {
+bool DisplayController::handleMatrixNavigationGesture(input::Gesture gesture) {
     if (currentMode != INFO && currentMode != DEVICE_INFO && currentMode != MATRIX_PAGE) {
         return false;
     }
@@ -622,16 +587,16 @@ bool DisplayController::handleMatrixNavigationGesture(touch_gesture_t gesture) {
     int targetY = currentPageY;
 
     switch (gesture) {
-        case GESTURE_SWIPE_LEFT:
+        case input::Gesture::SwipeLeft:
             targetX -= 1;
             break;
-        case GESTURE_SWIPE_RIGHT:
+        case input::Gesture::SwipeRight:
             targetX += 1;
             break;
-        case GESTURE_SWIPE_UP:
+        case input::Gesture::SwipeUp:
             targetY += 1;
             break;
-        case GESTURE_SWIPE_DOWN:
+        case input::Gesture::SwipeDown:
             targetY -= 1;
             break;
         default:
@@ -698,28 +663,6 @@ void DisplayController::resetActiveScreen() {
 
 void DisplayController::registerModelQueue(model::MutationQueue* queue) {
     modelQueue = queue;
-}
-
-void DisplayController::postKnobToken(const std::string& token) {
-    if (modelQueue == nullptr) return;
-    const uint32_t atMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    using KnobField = model::KnobModel::Field;
-    if (token == "+") {
-        modelQueue->post(model::KnobModel::make(KnobField::Delta, 1, atMs));
-    } else if (token == "-") {
-        modelQueue->post(model::KnobModel::make(KnobField::Delta, -1, atMs));
-    } else if (token.rfind("setpoint=", 0) == 0) {
-        // The burst form (FOC.ino handleIncrementDecrement) is dropped by the command grammar
-        // today; the model turns it into a clamped delta (D5, KnobModel::burstToDelta).
-        const char* digits = token.c_str() + 9;
-        char* end = nullptr;
-        const long value = std::strtol(digits, &end, 10);
-        if (end != digits && *end == 0) {
-            modelQueue->post(model::KnobModel::make(KnobField::Burst, static_cast<int32_t>(value), atMs));
-        }
-    } else {
-        modelQueue->post(model::KnobModel::make(KnobField::LinkActivity, 0, atMs));
-    }
 }
 
 void DisplayController::postNavigation(int field, int32_t value) {

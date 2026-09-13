@@ -9,10 +9,11 @@
 #include "SoundPlayer.h"
 #include "SoundRecorder.h"
 #include "esp_err.h"
+#include "input/ITouchFeedback.h"
 
 // PERI-11: the on-board audio (touch and swipe effects, the recorder) behind one small surface;
 // the transports and screens never touch SoundPlayer or SoundRecorder directly.
-class LocalAudio {
+class LocalAudio : public input::ITouchFeedback {
 public:
     LocalAudio(SoundRecorder* recorder, SoundPlayer* player);
     ~LocalAudio();
@@ -24,6 +25,11 @@ public:
     esp_err_t requestSoundEffect(const std::string& fileName);
     esp_err_t requestTouchPressEffect();
     esp_err_t requestTouchReleaseEffect();
+
+    // PERI-10: the InputSfxListener drives these from InputEvents.
+    void onTouchPress() override;
+    void onTouchRelease() override;
+    void onSwipe(input::Gesture direction) override;
 
 
 

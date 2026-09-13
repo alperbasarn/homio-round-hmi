@@ -4,3 +4,6 @@ CONFIG_QNOB_WIFI_SSID="your-ssid"
 CONFIG_QNOB_WIFI_PASSWORD="your-password"
 # NET-28: the weather key lives here too (rotate the leaked one first, see dev_notes/credential-rotation.md)
 CONFIG_QNOB_WEATHER_API_KEY="your-openweathermap-key"
+
+# Bench boards: disable the stage-3 deep sleep so the USB-Serial/JTAG console never disappears.
+# CONFIG_QNOB_DEEP_SLEEP=n

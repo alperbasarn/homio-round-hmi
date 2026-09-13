@@ -25,3 +25,26 @@ Graph after WP2.0 (`tools/check-component-graph.py` on the 1.75 build): `input -
 `local_audio` private; `local_audio -> media` public; `main -> media` kept. The two first-party
 cycles of the Phase 0 baseline (`controllers <-> display`, `display <-> ui`) are unchanged; Phase 7
 removes them.
+
+## WP2.1 InputRouter (2026-09-13)
+
+| Task | State | What changed | Evidence |
+|---|---|---|---|
+| INPT-07 `InputRouter` | done | `components/input`: `InputTranslator` is the pure core (8-entry fixed ring, overflow and high-water counters, activity clock); `InputRouter` is the device wrapper that polls `TouchPanel` and `KnobController` once per frame on the display task and feeds the core. The driver headers stay out of the public headers (forward declarations; `input` publicly requires only `model`). | `test_input_translator`: 12 tokens into an 8-slot ring give `pending 8`, `overflow 4`, order kept; the 60 s stress walk on the device is the owner's (board off the bus, see below) |
+| INPT-08 translation | done | The seven latched flags become `press` (with hit zone), `move` every poll while down, `release` with `durationMs`, `hold-release` only at 3000 ms or more (D13; shorter ones are consumed), the four swipes plus the hardware taps; software double-tap counter (1000 ms) and a 250 ms stale window (`beginStaleWindow`) that drops the release or gesture belonging to the press that changed the screen. `durationMs` is a saturating `uint16_t` so the record stays 12 bytes. | host cases: tap sequence, 1 s hold discarded / 3.5 s passed, double-tap, stale window |
+| INPT-11 activity + wake | done | `armWakeConsumption()` drops the next press and its release; `lastActivityMs()` still moves for consumed events so the display wakes. `main.cpp` arms it on the frame the mode becomes SLEEP and forwards every activity tick to `DisplayController::noteActivity()` and `SleepHandler::registerActivity()`. | host case: the armed press and release yield no event, the next tap yields two |
+| INPT-12 dual-path wiring | done | `main.cpp` owns `InputRouter` and `InputSfxListener`; the frame is drain -> `poll` -> events (one `input ...` log line each, SFX, knob records into the model, `DisplayController::onInput`) -> `update()`. The legacy screens still read the latched flags in the same frame (WP2.3). The INPT-05 knob posting moved here from `DisplayController` (`Delta`, `Burst`, `LinkActivity`), so the model sees each token once. | build; the checklist walk on the device is pending |
+| UIX-06 hit zones | done | `input/HitZones.h`: `classifyHit()` with the D12 radii (disc r < 132, or 145 on climate; rim 140..190; the rest dead) in 466-px design space, scaled by the shorter side; every touch event carries its zone and the log prints it. | host case incl. the 240 px scaling; `LV_OBJ_FLAG_CLICKABLE` appears only in `clear_flag` calls on arcs and on root containers |
+| PERI-10 touch feedback | done | `input/ITouchFeedback.h` (press, release, swipe); `LocalAudio` implements it (`local_audio` requires `input`, no edge out of `input`). | `check-include-edges.py` clean; graph dump shows `local_audio -> input` only |
+| INPT-13 SFX listener | done | `InputSfxListener`: click at finger-down, release sound at finger-up, one swipe effect per swipe; `DisplayController` lost its debounced sound block. | host case: press 1 / release 1 / swipe 1, move and double-tap silent |
+| INPT-14 DisplayController input block | done | The polling block, the touch-sound members, `touchPanel`, `knobController`, `localAudio`, `registerKnobController`, `registerLocalAudio` and `postKnobToken` are gone; `DisplayController()` takes no driver; `onInput()` routes swipes to the matrix (not on Device Info) and knob deltas to the mode (SOUND/LIGHT setpoints, HOME wheel with the `ModeStep` record); `noteActivity()` leaves SLEEP. | `grep -E "touchPanel\|knobController\|localAudio" DisplayController.*` is empty; build clean |
+| PERI-09 activity to the sleep handler | done | `display` no longer includes or requires `sleep_handler`; the Activity record is rate-limited to one per 250 ms so a drag no longer posts one per frame. | include-edge check clean; Stage 0 timing on the device pending |
+| MDL-33 knob boundary | done (verified) | The router posts `Delta` / `Burst` / `LinkActivity` records; `detentCount` is written only inside `KnobModel` (`applyDelta`, `burstToDelta`, the write ack path). | `grep detentCount` outside `components/model`: none |
+| SCRN-25 gesture semantics | done | `dev_notes/gesture_table.md`; SOUND and LIGHT now require the 3 s hold for back (they exited on any hold-release); the three hints say what the screens do (bullet U+2022, in the built-in font range). | table + build; the on-screen check is pending |
+
+Host suite after WP2.1: 21 executables, 139 cases, all green under ASan/UBSan. 1.75 binary
+1,831,712 B (+2,576 B against WP2.0 for the router, the translator and the listener), 44 % free,
+no first-party warnings. Bench: the board went into its 3-minute deep sleep before the WP2.0
+flash and is off the USB bus; the new `CONFIG_QNOB_DEEP_SLEEP` gate (off in the bench overlay)
+stops that from the next flash on. Pending on the device: the checklist walk with one `input`
+line per gesture, the 60 s ring stress, the wake tap, Stage 0 at 20 s, the hint strings.

@@ -337,3 +337,23 @@ std::string LocalAudio::generateRecordingFileName() const {
     const int64_t ms = esp_timer_get_time() / 1000;
     return "recording_" + std::to_string(ms) + ".wav";
 }
+
+// ---- PERI-10: ITouchFeedback ----------------------------------------------------------------
+
+void LocalAudio::onTouchPress() {
+    requestTouchPressEffect();
+}
+
+void LocalAudio::onTouchRelease() {
+    requestTouchReleaseEffect();
+}
+
+void LocalAudio::onSwipe(input::Gesture direction) {
+    switch (direction) {
+        case input::Gesture::SwipeLeft: requestSoundEffect("swipe_left"); break;
+        case input::Gesture::SwipeRight: requestSoundEffect("swipe_right"); break;
+        case input::Gesture::SwipeUp: requestSoundEffect("swipe_up"); break;
+        case input::Gesture::SwipeDown: requestSoundEffect("swipe_down"); break;
+        default: break;
+    }
+}

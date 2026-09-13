@@ -91,7 +91,7 @@ void SoundController::ensureUi() {
 
     hintLabel = lv_label_create(root);
     lv_obj_set_style_text_color(hintLabel, lv_color_hex(0x6B778A), 0);
-    lv_label_set_text(hintLabel, "Tap play/pause | Long release back");
+    lv_label_set_text(hintLabel, "Tap play/pause  •  Hold 3 s: back");
     lv_obj_align(hintLabel, LV_ALIGN_BOTTOM_MID, 0, -scalePx(18));
 
     LvglDisplay::unlock();
@@ -120,7 +120,8 @@ void SoundController::updateScreen() {
             break;
     }
 
-    if (touchPanel && touchPanel->getHasNewHoldRelease()) {
+    // D13 (SCRN-25): back is a hold of at least 3 s; shorter hold-releases do nothing here.
+    if (touchPanel && touchPanel->getHasNewHoldRelease() && touchPanel->getLastPressDurationMs() >= 3000) {
         leaving = true;
     }
 
