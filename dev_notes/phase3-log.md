@@ -280,3 +280,80 @@ UIX-28's gesture table is still unpublished; the double tap for SEEK and the res
 this cut's choices, written into `gesture_table.md`. CTRL-31 (navigation flags) is already met
 by the outbox. The `MediaModel` volume limiter and echo suppressor from MDL-14 are unused now
 that the adapter owns both; they go with the Phase 5 model clean-up.
+
+## WP3.2 DeviceInfoScreen: SCRN-10, SCRN-11, SCRN-12 (2026-09-15)
+
+The 859-line screen class is gone. DEVICE_INFO is now a view, a controller and one pure header
+they share, hosted by `DisplayController` the way LIGHT and MEDIA are.
+
+| Piece | What landed |
+|---|---|
+| `ui/views/DeviceInfoScreenState.h` | The view state (pointers to the connectivity and power state, the two percents, the Bluetooth flag) and the geometry both sides need: `layoutFor(panelW, panelH)` returns the bar rects, their widened touch rects, the bottom band and the two edge columns from the ported layout's own expressions, so a drag lands on the bar the user sees. Plus the two classifications the view used to hide: `signalLevels()` (0..4 over the dot and three arcs) and `batteryVisualFor()` (Unknown, Absent, NoReading, Critical, Ok, Charging). Pure and header-only; the host suite drives it directly. |
+| `ui/views/DeviceInfoView` | The same layout as the ported page: the icon column (Bluetooth glyph, signal glyph, battery), the brightness and sound bars, the back chevron. Change-driven render against a snapshot. It owns LVGL handles only: the panel size is injected (the old `scalePx` read the display singleton, and `lvglReady` was latched before `buildUi` had run), it never drives the backlight and never pumps the LVGL timer. |
+| `controllers/screens/DeviceInfoScreenController` | Reads the connectivity and power models every frame instead of polling four callbacks every 2 s; resolves the two drags with the shared geometry; the left bar moves the display brightness through an injected accessor pair, the right bar posts a `VolumeLocal` record and calls the active target's `setVolume`; a release on the bottom band requests INFO through the navigation outbox; a release on an edge leaves a page step the router applies; a swipe is consumed and a knob detent is not. |
+| `DisplayController` | Hosts the controller: `tick` under the LVGL lock, the navigation request and the page step polled once per frame. New `enterDeviceInfo` / `exitDeviceInfo` / `applyBrightnessToPanel` put the first-paint dim where SCRN-23 wants it (the router dims, builds under the lock, pumps one frame, restores) instead of the 200 ms `vTaskDelay` fade the view used to run twice per navigation, which also desynced `displayIsOn`. |
+| `main.cpp` | Builds the view and the controller, injects the brightness getter and setter, and drops the five callbacks of the old screen. The media registry now constructs before the page that uses it. |
+| Retired | `ui/screens/DeviceInfoScreen.{h,cpp}`, `DeviceBatteryStatus`, `DeviceSoftwareUpdateState`, the network-details, Bluetooth and software-update callbacks, `lastActivityTime`, `resetScreen`, the never-attached `updateButtonEventHandler`, the two empty edge labels and the always-hidden "X" cross. `grep DeviceInfoScreen` over components, main and the tests is clean. |
+
+Two defects the rows name are fixed. The signal glyph mapped the model's 0..4 bars onto three
+arcs clamped at 3, so the top bar was unreachable and a weak-but-connected AP looked like a lost
+one; the dot is now level 1 (always painted in the link colour, dimmed at zero bars so a far AP still shows the link) and the arcs are 2, 3 and 4. The battery icon painted one grey look
+for "presence unknown", "no cell fitted" and "no percent yet", and ignored `charging` entirely;
+the classification now has six values and the view paints five looks (Unknown and NoReading share
+the grey outline, since the ported design has no glyph that tells them apart), and a reading is
+believed whenever the cell is connected and the percent is valid, which is what the ADC boards
+report with presence unknown.
+
+What the old page tracked and never drew, now gone: the SSID and IP strings (read from the WiFi
+manager every 2 s, compared, and never put on a label), the whole software-update state (six
+fields, three of them `std::string`, polled every 2 s; release updates are not wired in this
+tree), and `mqttConnected` (still carried in the view state for the row that will draw it, so
+the model field has one consumer ready).
+
+Verification: host suite `test_device_info_screen_controller` (14 cases: the shared geometry, all
+five signal levels, every battery classification, both drags, the band and the two edges, the
+consumed swipe, a model change with no touch, a drag leaving its bar, a null view and a null
+accessor, an ADC-style reading with presence unknown, a resting finger doing no work, the hit-rect
+overlaps and their precedence, an unpolled back request not outliving the screen, and
+`NO_HEAP_SCOPE` over 400 frames), 34 suites green; the 1.75 builds (0x1cce70, 42 % free, 5 KB
+smaller than the MEDIA commit); include edges clean (25 components). Owed on the
+device: the page against its `p0-fixed` look, the four signal levels, a battery state, both
+drags, the bottom band and the right edge, and that the entry no longer flashes.
+
+Deviations from the rows: SCRN-10 describes "5 rows, 13 handles", which is the pre-port page; this
+tree's ported page has the icon column and the two bars, and the port keeps that layout (the owner
+decision that the ported screens are the base). SCRN-11's "one transition per swipe" is met by the
+page consuming swipes, as it already did. The matrix page step is not a `NavigationRequest`,
+which carries an `AppScreen`, but a small destructive intent beside it; DISP-11 retires the matrix
+and with it this intent. Brightness has no model, so the composition injects a getter and a setter
+pair; APP-28's persistence row will need a model to subscribe to.
+
+### Review of the split, before it was committed (2026-09-15)
+
+Four reader agents mapped the old screen, its wiring, the models and the battery side, a critic
+checked them against the source, and five reviewers then went at the new code by dimension
+(fidelity against the deleted screen, LVGL lifecycle and threading, model discipline, host test
+quality, composition and build) with every finding handed to a second agent to refute. Eight
+findings survived; all eight are fixed in this commit.
+
+| What the review found | Fix |
+|---|---|
+| The battery classification tested presence before the reading, so a board that estimates the percent from the voltage and never learns presence (the ADC boards, and every board until the poller landed: `PERI-05`) would have greyed out a real reading. | The reading comes first, exactly as the old page gated it (connected and a valid percent), and the three unknowns only matter when there is no reading. Host case added. |
+| A connected link at zero bars lit nothing: the dot was the first level and went to the trough colour, so a far AP looked like no glyph at all. The old page always painted the dot in the link colour. | The dot is the link mark again, always in the link colour, dimmed to half opacity at zero bars so zero and one bar stay apart. |
+| The navigation outbox was never cleared on enter or exit. `update()` consumes a pending mode change (a `home` or `info` command over serial or MQTT) before it reaches this screen's case, so a tap on the bottom band in that frame left an intent nobody read, and the next entry to the page would bounce straight back to INFO with no touch. The old screen cleared its three request flags on every entry. | `cancelNavigationRequest()` in `onEnter` and `onExit`, with a host case. The same omission was in `LightScreenController` and `MediaScreenController`, reachable the same way; both fixed here too. |
+| The view compared the whole `PowerState`, so the IIR-filtered voltage the battery poller posts on every sample repainted the glyph, and an LVGL style write invalidates its object whether or not the value changed. The old page carried 0.5 % and 20 mV deadbands for exactly this. | The snapshot holds only what the pixels depend on: the signal level and its colour, the battery look and its rounded percent, the two percents and the Bluetooth flag. |
+| The battery fill read three LVGL getters whose answers are only valid because `lv_obj_align_to` forced a layout pass earlier in the build. | The fill rectangle is computed in `doBuild` from the numbers it already has. |
+| A finger resting on a bar is one event per frame: the old page called the brightness setter (a panel write and a log line) and posted a volume record about sixty times a second. | Both setters return early when the percent has not changed, with a host case. |
+| The envelope for a media publish was built with `std::string` on the display task, which a bar drag reaches about eight times a second. | A fixed buffer and one `snprintf`. |
+| Two host cases were vacuous: the "inside the panel" assertion was `114 > 0`, and the "press outside both bars" probe was the panel centre, which is the middle of the sound bar, so it drove the volume while claiming nothing happened. | Real assertions, a dead probe to the right of the sound bar, and a new case pinning the hit-rect overlaps (the widened rects reach 6 px into the left edge column and 12 px into each other, resolved by test order, inherited verbatim from the old page). |
+
+Refuted, after tracing: that the dim does not cover the first paint (the pump does flush before
+the restore); that "no cell fitted" in the trough colour disappears (it reads as an unlit
+outline, the same grey the bar troughs use); that the dead `esp_app_desc.h` include was harmful
+(it was merely dead, and is gone); that `grep DeviceInfoScreen` must be empty in the notes too
+(the WBS and the logs have to name what they retired).
+
+Two residuals, both pre-existing and both owned by later rows: `handleMatrixNavigationGesture`
+still admits DEVICE_INFO while `onInput` gates it out, now doubly dead (`DISP-12`); and
+`WiFiManager::getSSID` / `getIPAddress` lost their only caller with the network-details callback,
+so they are dead until a row draws those strings.

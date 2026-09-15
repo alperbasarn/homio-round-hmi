@@ -11,7 +11,7 @@ namespace model {
 enum class IndoorBand : uint8_t { Invalid, Cold, Comfort, Warm, Hot };
 // Outdoor: <=0 freezing, <=15 cool, <=28 mild, else hot.
 enum class OutdoorBand : uint8_t { Invalid, Freezing, Cool, Mild, Hot };
-// Battery percent: <=20 critical, <=40 low, <=60 medium, else good (DeviceInfoScreen::getBatteryColor).
+// Battery percent: <=20 critical, <=40 low, <=60 medium, else good (the DEVICE_INFO battery colour).
 enum class BatteryBand : uint8_t { Invalid, Critical, Low, Medium, Good };
 
 // 0..4 bars. The old screen accepted 0..3 and showed the fourth bar for anything above, so the

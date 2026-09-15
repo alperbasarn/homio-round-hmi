@@ -9,9 +9,8 @@
 
 // Forward declarations
 class ModeController;
-namespace controllers { class BootScreenController; class ScreenController; }
+namespace controllers { class BootScreenController; class ScreenController; class DeviceInfoScreenController; }
 class EnvironmentInfoScreen;
-class DeviceInfoScreen;
 class PlaceholderPageScreen;
 
 enum Mode {
@@ -33,7 +32,7 @@ private:
   ModeController* modeController;
   controllers::BootScreenController* bootController;   // SCRN-08: the boot ramp and its view
   EnvironmentInfoScreen* infoScreen;
-  DeviceInfoScreen* deviceInfoScreen;
+  controllers::DeviceInfoScreenController* deviceInfoScreen;   // SCRN-11: the DEVICE_INFO page
   PlaceholderPageScreen* placeholderScreen;
 
   Mode currentMode;
@@ -62,6 +61,11 @@ private:
   void resetActiveScreen();
   void postNavigationScreen(Mode mode);
   void postNavigation(int field, int32_t value);
+  // SCRN-23 for one screen: dim, build, pump once, restore, so the first paint of a page is not
+  // drawn band by band and no view ever touches the backlight.
+  void enterDeviceInfo();
+  void exitDeviceInfo();
+  void applyBrightnessToPanel();
 
 public:
   DisplayController();
@@ -84,7 +88,7 @@ public:
   void registerBootController(controllers::BootScreenController* boot);
   void markCompositionComplete();
   void registerInfoScreen(EnvironmentInfoScreen* info);
-  void registerDeviceInfoScreen(DeviceInfoScreen* deviceInfo);
+  void registerDeviceInfoScreen(controllers::DeviceInfoScreenController* deviceInfo);
   void registerPlaceholderScreen(PlaceholderPageScreen* placeholder);
   void registerModelQueue(model::MutationQueue* queue);
 

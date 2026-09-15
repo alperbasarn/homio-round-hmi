@@ -3,7 +3,7 @@
 #include "ModeController.h"
 #include "BootScreenController.h"
 #include "EnvironmentInfoScreen.h"
-#include "DeviceInfoScreen.h"
+#include "DeviceInfoScreenController.h"
 #include "PlaceholderPageScreen.h"
 #include "LvglDisplay.h"
 #include "model/AppScreen.h"
@@ -187,20 +187,24 @@ void DisplayController::update() {
 
         case DEVICE_INFO:
             if (deviceInfoScreen) {
-                deviceInfoScreen->update();
-                if (deviceInfoScreen->isPageBackRequested()) {
-                    deviceInfoScreen->resetPageBackRequest();
-                    navigateToMatrixPage(0, 0);
-                    return;
+                // SCRN-11: the controller renders its view under the lock; the page's two intents
+                // (back to INFO, one matrix step) are polled once per frame.
+                const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                if (LvglDisplay::lock(-1)) {
+                    deviceInfoScreen->tick(now);
+                    LvglDisplay::unlock();
                 }
-                if (deviceInfoScreen->isPageLeftRequested()) {
-                    deviceInfoScreen->resetPageLeftRequest();
-                    navigateToMatrixPage(currentPageX, currentPageY - 1);
-                    return;
+                LvglDisplay::taskHandler();
+                if (deviceInfoScreen->hasNavigationRequest()) {
+                    const controllers::NavigationRequest request = deviceInfoScreen->takeNavigationRequest();
+                    if (request.valid() && request.screen == model::AppScreen::Info) {
+                        navigateToMatrixPage(0, 0);
+                        return;
+                    }
                 }
-                if (deviceInfoScreen->isPageRightRequested()) {
-                    deviceInfoScreen->resetPageRightRequest();
-                    navigateToMatrixPage(currentPageX, currentPageY + 1);
+                const int step = deviceInfoScreen->takePageStep();
+                if (step != 0) {
+                    navigateToMatrixPage(currentPageX, currentPageY + step);
                     return;
                 }
             }
@@ -319,7 +323,7 @@ void DisplayController::setMode(Mode mode) {
         infoScreen->deactivate();
     }
     if (currentMode == DEVICE_INFO && deviceInfoScreen) {
-        deviceInfoScreen->deactivate();
+        exitDeviceInfo();
     }
     if (currentMode == MATRIX_PAGE && placeholderScreen) {
         placeholderScreen->deactivate();
@@ -352,7 +356,7 @@ void DisplayController::setMode(Mode mode) {
         infoScreen->resetScreen();
     }
     if (mode == DEVICE_INFO && deviceInfoScreen) {
-        deviceInfoScreen->resetScreen();
+        enterDeviceInfo();
     }
     if (mode == MATRIX_PAGE && placeholderScreen) {
         const MatrixPageDescriptor* page = findMatrixPage(currentPageX, currentPageY);
@@ -426,7 +430,7 @@ void DisplayController::registerModeController(ModeController* m)      { modeCon
 void DisplayController::registerBootController(controllers::BootScreenController* boot) { bootController = boot; }
 void DisplayController::markCompositionComplete() { compositionComplete.store(true); }
 void DisplayController::registerInfoScreen(EnvironmentInfoScreen* info)       { infoScreen = info; }
-void DisplayController::registerDeviceInfoScreen(DeviceInfoScreen* di)        { deviceInfoScreen = di; }
+void DisplayController::registerDeviceInfoScreen(controllers::DeviceInfoScreenController* di) { deviceInfoScreen = di; }
 void DisplayController::registerPlaceholderScreen(PlaceholderPageScreen* p)   { placeholderScreen = p; }
 
 void DisplayController::requestKnobDelta(int delta) {
@@ -490,7 +494,11 @@ void DisplayController::onInput(const input::InputEvent& event) {
     // the pages that have no gestures of their own.
     switch (currentMode) {
         case INFO:        if (infoScreen) infoScreen->onInput(event); break;
-        case DEVICE_INFO: if (deviceInfoScreen) deviceInfoScreen->onInput(event); break;
+        case DEVICE_INFO:
+            if (deviceInfoScreen && deviceInfoScreen->onInput(event, static_cast<uint32_t>(esp_timer_get_time() / 1000))) {
+                return;  // SCRN-11: consumed; the page takes no matrix swipe and no knob default
+            }
+            break;
         case MATRIX_PAGE: if (placeholderScreen) placeholderScreen->onInput(event); break;
         case HOME:        if (modeController) modeController->onInput(event); break;
         case SOUND:
@@ -665,7 +673,8 @@ void DisplayController::resetActiveScreen() {
             break;
         case DEVICE_INFO:
             if (deviceInfoScreen) {
-                deviceInfoScreen->resetScreen();
+                exitDeviceInfo();
+                enterDeviceInfo();
             }
             break;
         case MATRIX_PAGE:
@@ -684,7 +693,49 @@ void DisplayController::resetActiveScreen() {
 
 // ---- WP1.4 shadow-phase posts (INPT-05, MDL-31) --------------------------------------------
 
+// SCRN-23, for this one screen: the page used to dim, build and fade the backlight from inside
+// the view (200 ms of vTaskDelay on the display task twice per navigation, and `displayIsOn` went
+// out of sync). The router owns the panel now: dim, build under the lock, pump one frame, restore.
+void DisplayController::applyBrightnessToPanel() {
+    if (!displayIsOn) {
+        return;
+    }
+    const int brightness = std::clamp((brightnessPercent * 255 + 50) / 100, 0, 255);
+    LvglDisplay::setBrightness(static_cast<uint8_t>(brightness));
+}
+
+void DisplayController::enterDeviceInfo() {
+    if (deviceInfoScreen == nullptr) {
+        return;
+    }
+    const bool dim = displayIsOn;
+    if (dim) {
+        LvglDisplay::setBrightness(0);
+    }
+    if (LvglDisplay::lock(-1)) {
+        deviceInfoScreen->onEnter(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        deviceInfoScreen->tick(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
+    }
+    LvglDisplay::invalidateScreen();
+    LvglDisplay::taskHandler();
+    if (dim) {
+        applyBrightnessToPanel();
+    }
+}
+
+void DisplayController::exitDeviceInfo() {
+    if (deviceInfoScreen == nullptr) {
+        return;
+    }
+    if (LvglDisplay::lock(-1)) {
+        deviceInfoScreen->onExit(static_cast<uint32_t>(esp_timer_get_time() / 1000));
+        LvglDisplay::unlock();
+    }
+}
+
 void DisplayController::registerModelQueue(model::MutationQueue* queue) {
+
     modelQueue = queue;
 }
 

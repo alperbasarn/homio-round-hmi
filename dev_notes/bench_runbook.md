@@ -25,6 +25,7 @@ carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_L
 | A3 gesture walk | `capture.sh 120 <log>` then use the panel | one `input` line per gesture; a swipe gives a gesture line and no release line (W3); INFO <-> DEVICE_INFO round trip; wheel -> LIGHT shows "no strip" and a 3 s hold returns to INFO; a tap in SLEEP wakes and is consumed |
 | A4 sleep gate | `sleep_check.sh` | `Stage 3 skipped` at 180 s, heartbeats through 240 s, port still present |
 | A5 MEDIA offline | during A3 | wheel -> MEDIA (double-tap SOUND) shows the ring at the last volume, `Syncing...`, then `No broker` after 3 s; the knob moves the ring with one `input` line per detent and no publish; a tap flashes `Not available` for a second; a double-tap flashes it too (no duration known); a 3 s hold returns to INFO; the DEVICE_INFO sound bar shows the same volume |
+| A6 DEVICE_INFO | during A3 | swipe up from INFO: the page appears at once with no dip and no banded repaint; the signal glyph lights the dot plus one arc per bar (four levels, not three); the battery icon is grey with no fill on this battery-less board; dragging the left bar dims and brightens the panel; dragging the right bar moves the volume and the MEDIA ring agrees; a tap on the bottom band returns to INFO; the right edge also returns to INFO; the left edge does nothing; pulling the AP greys the glyph within a second with no touch |
 
 ## 2. USB-drop protocol (the second cause is still open)
 

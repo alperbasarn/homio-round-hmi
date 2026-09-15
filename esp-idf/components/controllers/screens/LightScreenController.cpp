@@ -28,6 +28,7 @@ int LightScreenController::stripUnderRim(int x, int y) const {
 }
 
 void LightScreenController::onEnter(uint32_t /*nowMs*/) {
+    cancelNavigationRequest();  // a back request the router never polled must not outlive the screen
     touchDown_ = false;
     dragged_ = false;
     dial_ = 0;
@@ -38,6 +39,7 @@ void LightScreenController::onEnter(uint32_t /*nowMs*/) {
 }
 
 void LightScreenController::onExit(uint32_t /*nowMs*/) {
+    cancelNavigationRequest();
     touchDown_ = false;
     dragged_ = false;
     if (view_ != nullptr) {

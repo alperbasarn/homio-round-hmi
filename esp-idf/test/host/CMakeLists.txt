@@ -96,6 +96,7 @@ add_library(controllers_core STATIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/LightScreenController.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/MediaScreenController.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/KnobBindingMachine.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers/screens/DeviceInfoScreenController.cpp"
 )
 target_include_directories(controllers_core PUBLIC
     "${CMAKE_CURRENT_LIST_DIR}/../../components/controllers"

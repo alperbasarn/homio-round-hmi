@@ -54,9 +54,9 @@
 #include "BootScreenController.h"
 #include "InitializationView.h"
 #include "EnvironmentInfoScreen.h"
-#include "DeviceInfoScreen.h"
+#include "DeviceInfoScreenController.h"
+#include "DeviceInfoView.h"
 #include "PlaceholderPageScreen.h"
-#include "esp_app_desc.h"
 #include "BatteryHandler.h"
 
 // Media
@@ -79,6 +79,7 @@
 
 #include <atomic>
 #include <memory>
+#include <cstdio>
 #include <string>
 
 
@@ -140,11 +141,13 @@ static bool pcMediaPublish(const char* topic, const char* body, void*) {
     if (mqttManager == nullptr || !mqttManager->isConnected()) {
         return false;
     }
-    std::string full = "sender=";
-    full += (nvsManager != nullptr) ? nvsManager->deviceName : std::string("QNOB");
-    full += ',';
-    full += body;
-    const bool ok = mqttManager->publishRaw(topic, full.c_str(), full.size(), 0, false) == ESP_OK;
+    char full[160];
+    const char* name = (nvsManager != nullptr && !nvsManager->deviceName.empty()) ? nvsManager->deviceName.c_str() : "QNOB";
+    const int n = std::snprintf(full, sizeof(full), "sender=%s,%s", name, body);
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(full)) {
+        return false;
+    }
+    const bool ok = mqttManager->publishRaw(topic, full, static_cast<size_t>(n), 0, false) == ESP_OK;
     ESP_LOGI(TAG, "media publish %s %s%s", topic, body, ok ? "" : " (refused)");
     return ok;
 }
@@ -158,7 +161,18 @@ static controllers::BootScreenController* bootController = nullptr;    // SCRN-0
 // is published through this flag once app_main has built and registered it.
 static std::atomic<bool> s_compositionComplete{false};
 static EnvironmentInfoScreen* infoScreen = nullptr;
-static DeviceInfoScreen* deviceInfoScreen = nullptr;
+static ui::DeviceInfoView* deviceInfoView = nullptr;                        // SCRN-10
+static controllers::DeviceInfoScreenController* deviceInfoScreen = nullptr;  // SCRN-11
+// The display owns the backlight (SCRN-23); the page moves it through this pair until a row gives
+// the display its own model.
+static int deviceBrightnessGet(void*) {
+    return displayController != nullptr ? displayController->getBrightnessPercent() : 100;
+}
+static void deviceBrightnessSet(int percent, void*) {
+    if (displayController != nullptr) {
+        displayController->setBrightnessPercent(percent);
+    }
+}
 static PlaceholderPageScreen* placeholderPageScreen = nullptr;
 static BatteryHandler* batteryHandler = nullptr;
 
@@ -686,33 +700,18 @@ extern "C" void app_main(void) {
         return e.indoorValid ? e.indoorTemp : 18.0f;   // the old placeholder until the first sample
     });
 
-    // Create DeviceInfoScreen (WiFi, internet, MQTT, battery)
-    deviceInfoScreen = new DeviceInfoScreen();
-    deviceInfoScreen->setNetworkStatusCallback([](bool& wifi, bool& internet, bool& mqtt, int& strength) {
-        const model::ConnectivityState& c = appModel.connectivity().state();
-        wifi = c.wifiConnected;
-        internet = c.internetAvailable;
-        mqtt = c.mqttConnected;
-        strength = c.bars;
-    });
-    deviceInfoScreen->setBatteryCallback([]() -> DeviceBatteryStatus {
-        const model::PowerState& p = appModel.power().state();
-        return {p.presenceKnown, p.connected, p.percentValid, p.percent, p.voltage};
-    });
-    // Ported with the main DeviceInfoScreen (2026-09-12): network details, Bluetooth, software
-    // update and the two control rows. Bluetooth and release updates are not in this tree yet.
-    deviceInfoScreen->setNetworkDetailsCallback([](std::string& ssid, std::string& ip) {
-        ssid = wifiManager != nullptr ? wifiManager->getSSID() : "";
-        ip = wifiManager != nullptr ? wifiManager->getIPAddress() : "";
-    });
-    deviceInfoScreen->setBluetoothStatusCallback([]() { return false; });
-    deviceInfoScreen->setSoftwareUpdateStatusCallback([]() -> DeviceSoftwareUpdateState {
-        const esp_app_desc_t* app = esp_app_get_description();
-        return {false, false, false, app != nullptr ? app->version : "unknown", "", "Release updates not wired"};
-    });
-    deviceInfoScreen->setSoftwareUpdateActionCallback([]() {
-        ESP_LOGW(TAG, "Software update requested from the page, but release updates are not wired in this tree");
-    });
+    mediaTargets = new media::MediaTargetRegistry();                   // MEDIA-03
+    pcMedia = new media::PcMediaAdapter(&appModel.mutations(), &appModel.media(), &pcMediaPublish, nullptr);  // MEDIA-04
+    mediaTargets->registerTarget(pcMedia);
+
+    // DEVICE_INFO (SCRN-10 / SCRN-11): the view reads the connectivity and power models through
+    // the controller; the network-details, Bluetooth and software-update callbacks of the old screen
+    // are gone with it (none of them was ever drawn, and release updates are not wired in this tree).
+    deviceInfoView = new ui::DeviceInfoView();
+    deviceInfoScreen = new controllers::DeviceInfoScreenController(appModel, *mediaTargets, deviceInfoView,
+                                                                   displayPanelBackend->width(),
+                                                                   displayPanelBackend->height());
+    deviceInfoScreen->setBrightnessAccess(&deviceBrightnessGet, &deviceBrightnessSet, nullptr);
 
     // Matrix placeholder pages (timer, light, sound, temperature, PC); the PC page play/pause goes
     // to the PC over the existing sound path.
@@ -723,9 +722,6 @@ extern "C" void app_main(void) {
         }
     });
 
-    mediaTargets = new media::MediaTargetRegistry();                   // MEDIA-03
-    pcMedia = new media::PcMediaAdapter(&appModel.mutations(), &appModel.media(), &pcMediaPublish, nullptr);  // MEDIA-04
-    mediaTargets->registerTarget(pcMedia);
     mediaView = new ui::MediaView();                                   // MEDIA-16: the MEDIA screen on the target registry
     mediaScreen = new controllers::MediaScreenController(appModel, *mediaTargets, mediaView, displayPanelBackend->width(),
                                                          displayPanelBackend->height());
@@ -743,21 +739,6 @@ extern "C" void app_main(void) {
     inputRouter = new input::InputRouter(touchPanel, knobController);
     inputRouter->configure({displayPanelBackend->width(), displayPanelBackend->height(), false});
     inputSfx = new input::InputSfxListener(localAudio);
-    deviceInfoScreen->setBrightnessControlCallbacks(
-        []() { return displayController != nullptr ? displayController->getBrightnessPercent() : 100; },
-        [](int percent) {
-            if (displayController != nullptr) displayController->setBrightnessPercent(percent);
-        });
-    deviceInfoScreen->setSoundControlCallbacks(
-        []() { return static_cast<int>(appModel.media().state().volume); },
-        [](int percent) {
-            // MEDIA-16: the row owns the value the way the knob does; the target gets the transport call.
-            appModel.mutations().post(model::MediaModel::make(model::MediaModel::Field::VolumeLocal, percent,
-                                                              static_cast<uint32_t>(nowMs())));
-            if (mediaTargets != nullptr) {
-                mediaTargets->target(appModel.media().state().activeTarget).setVolume(percent, nowMs());
-            }
-        });
 
     // Initialize Sleep Handler (power management)
     ESP_LOGI(TAG, "Initializing sleep handler...");

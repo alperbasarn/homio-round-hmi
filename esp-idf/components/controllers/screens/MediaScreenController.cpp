@@ -22,6 +22,7 @@ media::IMediaTarget& MediaScreenController::target() {
 }
 
 void MediaScreenController::onEnter(uint32_t nowMs) {
+    cancelNavigationRequest();  // a back request the router never polled must not outlive the screen
     const model::MediaState& m = app_.media().state();
     phase_ = m.stateSynced ? ui::MediaPhase::Live : ui::MediaPhase::WaitForSync;
     enteredMs_ = nowMs;
@@ -43,6 +44,7 @@ void MediaScreenController::onEnter(uint32_t nowMs) {
 }
 
 void MediaScreenController::onExit(uint32_t nowMs) {
+    cancelNavigationRequest();
     act(binding_.exitSeek(nowMs), nowMs);
     if (view_ != nullptr) {
         view_->destroy();
