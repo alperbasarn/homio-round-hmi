@@ -357,3 +357,28 @@ Two residuals, both pre-existing and both owned by later rows: `handleMatrixNavi
 still admits DEVICE_INFO while `onInput` gates it out, now doubly dead (`DISP-12`); and
 `WiFiManager::getSSID` / `getIPAddress` lost their only caller with the network-details callback,
 so they are dead until a row draws those strings.
+
+## Knob write path, the screen side: PCKNOB-15 and half of PCKNOB-16 (2026-09-16)
+
+The write path the MEDIA port left owed. `KnobModel` has carried the whole write state machine
+since MDL-28 (requestWrite, takeWriteRequest, the 1 s ack timeout that adopts the value, stale
+bursts dropped while a write is pending); nothing took the request or sent it. Now:
+
+| Piece | What landed |
+|---|---|
+| `KnobController::setSetpoint(int)` | Clamps to 0..100 and writes one `setpoint=N` line to the UART. The never-called `sp?` probe (`askSetpoint`) is deleted. |
+| `InputTranslator` | Recognises the ack before the burst parser and the link fallback: `ok:setpoint=N` and the older `ok:setpoint:N` become a `KnobAck` event carrying N; a malformed or out-of-range ack is only a live link. Without this, the ack's `setpoint=` substring could never be mistaken for a burst (the prefix differs), but it would have been a bare link token and the write would always time out. |
+| `main` | The event switch turns `KnobAck` into a `WriteAck` record plus a `LinkActivity` record; after the screen update the display loop takes the pending write from the model and sends it. With no knob wired the ack never comes and the model's 1 s timeout adopts the value, exactly the degraded path MDL-28 designed. |
+| Screen entries | `MediaScreenController::onEnter` pushes the volume again (the WP3.4 deviation is closed) and `LightScreenController::onEnter` pushes the brightness (UIX-11's onEnter push), both through `KnobModel::onEnter`. |
+
+Still the knob firmware's half, waiting on §9 Q4: the `.ino` does not answer `setpoint=N` with an
+ack today (PCKNOB-16's serial side), `ping`/`pong` liveness (PCKNOB-17), the haptic setter
+validation (PCKNOB-19) and the `calibrate` passthrough (PCKNOB-20). Until Q4, every write on real
+hardware rides the timeout: the replica adopts the sent value after 1 s and detents continue from
+it, which is the same behaviour as today plus the push.
+
+Verification: the translator suite gained the ack case (ack with `=`, ack with `:`, out-of-range
+and empty acks as link tokens, a burst still a burst); the media suite asserts the entry push
+again; 34 suites green; the 1.75 builds (0x1cd4e0); include edges clean. Owed on the device (runbook
+A7): with the V11 knob on GPIO 16/17, an 80 to 20 screen switch logs the setpoint on the knob and
+the next detent starts from 20.

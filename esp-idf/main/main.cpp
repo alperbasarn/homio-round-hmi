@@ -355,6 +355,11 @@ void displayTask(void* parameter) {
                     case input::InputType::KnobLink:
                         appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::LinkActivity, 0, frameNow));
                         break;
+                    case input::InputType::KnobAck:
+                        // PCKNOB-16: the ack clears the pending write and is link activity too.
+                        appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::WriteAck, ev.knobDelta, frameNow));
+                        appModel.mutations().post(model::KnobModel::make(model::KnobModel::Field::LinkActivity, 0, frameNow));
+                        break;
                     default:
                         break;
                 }
@@ -368,6 +373,15 @@ void displayTask(void* parameter) {
         }
 
         displayController->update();
+        // PCKNOB-15: a screen entry asked the knob to follow its value (KnobModel::onEnter); the
+        // display task owns the model, so the request is taken here and written to the UART. With
+        // no knob wired the ack never comes and the model's 1 s timeout adopts the value instead.
+        if (ready) {
+            const int pendingKnobWrite = appModel.knob().takeWriteRequest(nowMs());
+            if (pendingKnobWrite >= 0 && knobController != nullptr) {
+                knobController->setSetpoint(pendingKnobWrite);
+            }
+        }
         if (ready && ledBridge != nullptr) {
             ledBridge->pumpOutbound(nowMs());  // LED-03: pairing intents, then the publishes
         }

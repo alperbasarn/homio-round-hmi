@@ -1,5 +1,6 @@
 #include "KnobController.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "esp_log.h"
@@ -68,8 +69,12 @@ bool KnobController::getHasNewMessage() const {
     return has_new_message;
 }
 
-void KnobController::askSetpoint() {
-    sendCommand("sp?");
+void KnobController::setSetpoint(int value) {
+    if (value < 0) value = 0;
+    if (value > 100) value = 100;
+    char line[20];
+    std::snprintf(line, sizeof(line), "setpoint=%d\n", value);
+    sendCommand(line);
 }
 
 void KnobController::update() {

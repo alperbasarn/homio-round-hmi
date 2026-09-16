@@ -20,7 +20,9 @@ public:
 
     esp_err_t begin(int baud_rate = 9600);
     void update();
-    void askSetpoint();
+    // PCKNOB-15: push the screen's value to the knob as one "setpoint=N" line; the knob acks with
+    // "ok:setpoint=N" (the router turns it into a KnobAck event and the model clears the write).
+    void setSetpoint(int value);
 
     // Signed detents accumulated since the last call (each token clamped to +-10, D5); clears.
     int consumeDelta();

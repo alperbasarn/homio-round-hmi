@@ -23,6 +23,7 @@ enum class InputType : uint8_t {
     KnobDelta,         // signed detents since the last event; knobDelta valid (D5)
     KnobBurst,         // a coalesced absolute "setpoint=N" token; knobDelta carries N (D5 converts)
     KnobLink,          // a token that carried no movement (link alive)
+    KnobAck,           // "ok:setpoint=N": the knob confirmed a write; knobDelta carries N (PCKNOB-16)
 };
 
 enum class Gesture : uint8_t {

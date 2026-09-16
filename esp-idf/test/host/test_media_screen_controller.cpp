@@ -120,13 +120,13 @@ struct Rig {
 
 }  // namespace
 
-TEST_CASE(entering_requests_the_state_and_sets_the_knob_context_then_times_out) {
+TEST_CASE(entering_requests_the_state_and_pushes_the_volume_to_the_knob_then_times_out) {
     Rig r;
     r.ctl.onEnter(r.now);
     CHECK(r.view.built());
     CHECK_EQ(r.pc.requests, 1);
     r.frame();
-    CHECK(r.app.knob().state().pendingWrite < 0);  // no push until the write path exists (WP3.6)
+    CHECK_EQ(r.app.knob().state().pendingWrite, 50);  // the default volume, pushed down the write path
     CHECK(r.app.knob().state().context == KnobContext::Volume);
     CHECK(r.ctl.phase() == ui::MediaPhase::WaitForSync);
     r.framesFor(2900);

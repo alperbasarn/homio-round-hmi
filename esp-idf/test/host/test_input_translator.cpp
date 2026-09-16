@@ -300,3 +300,30 @@ TEST_CASE(a_swipe_lift_inside_the_stale_window_leaves_no_trailing_release) {
     CHECK(ev[0].type == InputType::TouchPress);
     CHECK(!t.touchDown());
 }
+
+TEST_CASE(an_ok_setpoint_token_is_an_ack_and_not_a_burst) {
+    // PCKNOB-15/16: the knob confirms a written setpoint with ok:setpoint=N (older builds use a
+    // colon). The ack must not reach the burst parser, and a malformed one is only a live link.
+    input::InputTranslator tr;
+    tr.configure({466, 466, false});
+    input::InputEvent e;
+    tr.onKnobToken("ok:setpoint=20", 1000);
+    CHECK(tr.next(e));
+    CHECK(e.type == input::InputType::KnobAck);
+    CHECK_EQ(e.knobDelta, 20);
+    CHECK(!tr.next(e));
+    tr.onKnobToken("ok:setpoint:35", 1100);
+    CHECK(tr.next(e));
+    CHECK(e.type == input::InputType::KnobAck);
+    CHECK_EQ(e.knobDelta, 35);
+    tr.onKnobToken("ok:setpoint=999", 1200);  // out of range: alive, no ack
+    CHECK(tr.next(e));
+    CHECK(e.type == input::InputType::KnobLink);
+    tr.onKnobToken("ok:setpoint=", 1300);
+    CHECK(tr.next(e));
+    CHECK(e.type == input::InputType::KnobLink);
+    tr.onKnobToken("setpoint=42", 1400);      // a burst is still a burst
+    CHECK(tr.next(e));
+    CHECK(e.type == input::InputType::KnobBurst);
+    CHECK_EQ(e.knobDelta, 42);
+}

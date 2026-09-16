@@ -211,6 +211,21 @@ void InputTranslator::onKnobToken(const char* token, uint32_t nowMs) {
         push(e, nowMs);
         return;
     }
+    // PCKNOB-15/16: the knob answers a written setpoint with "ok:setpoint=N" (older builds say
+    // "ok:setpoint:N"); the ack must not fall into the burst parser or the link fallback.
+    if (std::strncmp(token, "ok:setpoint", 11) == 0 && (token[11] == '=' || token[11] == ':')) {
+        char* end = nullptr;
+        const long value = std::strtol(token + 12, &end, 10);
+        if (end != token + 12 && *end == 0 && value >= 0 && value <= 100) {
+            e.type = InputType::KnobAck;
+            e.knobDelta = static_cast<int16_t>(value);
+            push(e, nowMs);
+            return;
+        }
+        e.type = InputType::KnobLink;  // a malformed ack is still a live link
+        push(e, nowMs);
+        return;
+    }
     if (std::strncmp(token, "setpoint=", 9) == 0) {
         char* end = nullptr;
         const long value = std::strtol(token + 9, &end, 10);

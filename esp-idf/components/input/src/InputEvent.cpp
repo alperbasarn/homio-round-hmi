@@ -13,6 +13,7 @@ const char* toString(InputType type) {
         case InputType::KnobDelta: return "knob-delta";
         case InputType::KnobBurst: return "knob-burst";
         case InputType::KnobLink: return "knob-link";
+        case InputType::KnobAck: return "knob-ack";
     }
     return "?";
 }

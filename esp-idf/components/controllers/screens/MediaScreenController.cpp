@@ -38,9 +38,9 @@ void MediaScreenController::onEnter(uint32_t nowMs) {
     }
     // The old WAIT_FOR_SYNC: ask once; the phase moves on with the reply or the timeout.
     target().requestState(nowMs);
-    // UIX-11: the knob context for the divisor. The push of the volume down to the knob waits for
-    // the write path (WP3.6); a pending write with no sender would only drop every burst as stale.
-    app_.knob().setContext(model::KnobContext::Volume);
+    // UIX-11: the knob follows the mode value on entry; the display loop takes the write and
+    // sends setpoint=N (PCKNOB-15), and the ack or the 1 s timeout moves the replica.
+    app_.knob().onEnter(model::KnobContext::Volume, m.volume, nowMs);
 }
 
 void MediaScreenController::onExit(uint32_t nowMs) {

@@ -27,11 +27,13 @@ int LightScreenController::stripUnderRim(int x, int y) const {
     return ui::rim::usedSlotByOrdinal(s, ordinal);
 }
 
-void LightScreenController::onEnter(uint32_t /*nowMs*/) {
+void LightScreenController::onEnter(uint32_t nowMs) {
     cancelNavigationRequest();  // a back request the router never polled must not outlive the screen
     touchDown_ = false;
     dragged_ = false;
     dial_ = 0;
+    // UIX-11: the knob follows the brightness on entry (one detent, one percent).
+    app_.knob().onEnter(model::KnobContext::Volume, app_.light().state().brightness, nowMs);
     if (view_ != nullptr) {
         view_->build(nullptr, panelWidthPx_, panelHeightPx_);
         view_->setVisible(true);
