@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MSIX manifest for Qnob Companion.
+
+  Before building the MSIX package:
+    1. Replace Publisher="CN=YourName" with your code-signing cert subject.
+    2. Add PNG assets to packaging/Assets/ at the sizes listed below.
+    3. Run scripts/build_installer.ps1 (requires Windows SDK 10.0.19041+).
+
+  Required assets (PNG, transparent background recommended):
+    Assets/Square44x44Logo.png    — 44×44 px
+    Assets/Square150x150Logo.png  — 150×150 px
+    Assets/Wide310x150Logo.png    — 310×150 px
+    Assets/StoreLogo.png          — 50×50 px
+    Assets/app.ico                — multi-size Windows icon (for the EXE)
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="AlperBasaran.QnobCompanion"
+    Version="0.1.0.0"
+    Publisher="CN=AlperBasaran"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Qnob Companion</DisplayName>
+    <PublisherDisplayName>Alper Basaran</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Configuration and firmware update companion for Qnob smart-knob devices</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 2004 (19041) minimum; tested up to Windows 11 22H2 -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.19041.0"
+      MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="QnobCompanion"
+      Executable="qnob-companion\qnob-companion.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Qnob Companion"
+        Description="Discover, configure, and update Qnob devices"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Network access for TCP/mDNS and GitHub update check -->
+    <Capability Name="internetClient" />
+    <Capability Name="privateNetworkClientServer" />
+    <!-- Required to run a full-trust (unpackaged-style) app in an MSIX container -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

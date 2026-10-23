@@ -4,7 +4,7 @@
 # "Stage 3 skipped" at 180 s, a heartbeat every 30 s, the port still present at the end.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 LOG="${1:-$BENCH_OUT/sleep_$(date +%H%M%S).log}"
-grep -n -E 'QNOB_(LIGHT|DEEP)_SLEEP' "$BENCH_ROOT/Hardware Ref/sdkconfig.esp32s3_amoled175"
+grep -n -E 'QNOB_(LIGHT|DEEP)_SLEEP' "$BENCH_ROOT/helpers/sdkconfig.esp32s3_amoled175"
 bash "$BENCH_ROOT/tools/bench/flash.sh" || exit $?
 bash "$BENCH_ROOT/tools/bench/capture.sh" 260 "$LOG" --reset --send "sysInfo@40" --send "sysInfo@235" || exit $?
 echo "=== health ==="; bench_health "$LOG"

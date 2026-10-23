@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QNOB Device Info</title>
+<style>
+body{background:#000;color:#fff;font-family:monospace;margin:0;padding:16px;}
+h1{font-size:20px;margin:0 0 14px;}
+section{border:1px solid #fff;padding:12px;margin-bottom:12px;}
+.grid{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:8px 12px;align-items:center;}
+.k{color:#9ba7b6;}.v{word-break:break-word;}
+a,button{background:#000;color:#fff;border:1px solid #fff;padding:8px 10px;text-decoration:none;cursor:pointer;}
+button{width:100%;margin-top:10px;}
+pre{white-space:pre-wrap;word-break:break-word;border:1px solid #333;padding:10px;}
+</style>
+</head>
+<body>
+<h1>QNOB Device Info</h1>
+<section>
+  <div class="grid">
+    <div class="k">WiFi</div><div id="wifi" class="v">-</div>
+    <div class="k">Internet</div><div id="internet" class="v">-</div>
+    <div class="k">MQTT</div><div id="mqtt" class="v">-</div>
+    <div class="k">Bluetooth</div><div id="bluetooth" class="v">-</div>
+    <div class="k">WiFi Strength</div><div id="wifiStrength" class="v">-</div>
+    <div class="k">Battery Presence</div><div id="batteryPresence" class="v">-</div>
+    <div class="k">Battery Connected</div><div id="batteryConnected" class="v">-</div>
+    <div class="k">Battery % Available</div><div id="batteryPctAvailable" class="v">-</div>
+    <div class="k">Battery %</div><div id="batteryPct" class="v">-</div>
+    <div class="k">Battery Voltage</div><div id="batteryVoltage" class="v">-</div>
+    <div class="k">Software Configured</div><div id="swConfigured" class="v">-</div>
+    <div class="k">Software Busy</div><div id="swBusy" class="v">-</div>
+    <div class="k">Update Available</div><div id="swUpdateAvailable" class="v">-</div>
+    <div class="k">Current Version</div><div id="swCurrent" class="v">-</div>
+    <div class="k">Available Version</div><div id="swAvailable" class="v">-</div>
+    <div class="k">Status</div><div id="swStatus" class="v">-</div>
+    <div class="k">Last Update</div><div id="lastUpdate" class="v">-</div>
+  </div>
+  <button id="refreshBtn" type="button">Refresh</button>
+</section>
+<section><a href="/">Back to setup portal</a></section>
+<pre id="raw"></pre>
+<script>
+function yn(v){return v?'ON':'OFF';}
+function txt(id,v){const e=document.getElementById(id);if(e)e.textContent=(v===undefined||v===null||v==='')?'-':String(v);}
+async function refresh(){
+  try{const r=await fetch('/api/device-info');const d=await r.json();
+    txt('wifi',yn(d.wifi_connected));txt('internet',yn(d.internet_connected));txt('mqtt',yn(d.mqtt_connected));
+    txt('bluetooth',d.bluetooth_connected?'Connected':(d.bluetooth_enabled?'Enabled':'Disabled'));
+    txt('wifiStrength',String(d.wifi_strength_bars||0)+' bars');txt('batteryPresence',d.battery_presence_known?'Known':'Unknown');
+    txt('batteryConnected',d.battery_connected?'Yes':'No');txt('batteryPctAvailable',d.battery_percentage_available?'Yes':'No');
+    txt('batteryPct',d.battery_percentage_available?(String(d.battery_percentage)+'%'):'N/A');
+    txt('batteryVoltage',d.battery_voltage>=0?(String(d.battery_voltage)+' V'):'N/A');
+    txt('swConfigured',d.software_configured?'Yes':'No');txt('swBusy',d.software_busy?'Yes':'No');
+    txt('swUpdateAvailable',d.software_update_available?'Yes':'No');txt('swCurrent',d.current_version||'-');
+    txt('swAvailable',d.available_version||'-');txt('swStatus',d.status_text||'-');
+    txt('lastUpdate',new Date().toLocaleString());document.getElementById('raw').textContent=JSON.stringify(d,null,2);
+  }catch(e){document.getElementById('raw').textContent=JSON.stringify({ok:false,message:String(e)},null,2);}
+}
+document.getElementById('refreshBtn').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
+</script>
+</body>
+</html>

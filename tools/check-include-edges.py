@@ -2,7 +2,7 @@
 """BLD-42 companion to check-component-graph.py: every first-party component that includes a header
 owned by another first-party component must name that component in REQUIRES or PRIV_REQUIRES.
 
-    python3 tools/check-include-edges.py esp-idf
+    python3 tools/check-include-edges.py src/esp-idf
 
 Exit 0 when clean, 1 when a component includes what it does not require.
 """
