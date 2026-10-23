@@ -4,6 +4,10 @@ Written 2026-10-23 for whoever picks this up next, including a future session wi
 the work. It says where the project stands, what is trustworthy, what is owed, and the one thing
 that must be decided before the branch can rejoin its remote.
 
+**Update, same day:** section 4 is resolved. `main` (which already held the 14 codex commits) is
+merged into this line on `claude/blissful-mayer-kxvyad`, with main's layout and connectivity stack;
+the firmware now lives under `src/esp-idf/`. `dev_notes/integration-main-log.md` is the record.
+
 Read this first, then `mvc_refactor_plan.md` (the architecture and the numbered decisions D1-D21),
 then `mvc_refactor_wbs.md` (336 tasks, 1022 h; section 9 holds the owner's open questions), then
 the phase logs. Every work package that landed has a section in its phase log naming what it did,
@@ -47,12 +51,18 @@ Three legacy classes are deleted outright: `SoundController`, `DeviceInfoScreen`
 `LightController`. `EnvironmentInfoScreen` (911 lines), `ModeController` and
 `PlaceholderPageScreen` remain.
 
+Since the merge the tree also carries main's boot guard and safe mode, ConnectivityManager and its
+WiFiManager (APSTA, setup portal), Bluetooth (HID, battery service, BLE serial line), the command
+envelope with pairing auth, mDNS, the OTA release channel, and the Windows companion app. They sit
+outside the model for now, the way the legacy screens do.
+
 ## 3. What is trustworthy, and what is not
 
-**Verified by machine, every commit:** 34 host suites under ASan and UBSan with `-Werror` and a
-no-heap guard on the render paths; the 1.75 firmware builds (0x1cd4e0, 42 % of the app slot free);
-`tools/check-include-edges.py` reports 25 components with no undeclared include edge; the WBS lint
-is clean; two credential greps are empty before every commit (section 6).
+**Verified by machine, every commit up to `680c630` (before the merge):** 34 host suites under
+ASan and UBSan with `-Werror` and a no-heap guard on the render paths; the 1.75 firmware builds
+(0x1cd4e0, 42 % of the app slot free); `tools/check-include-edges.py` reports 25 components with no
+undeclared include edge; the WBS lint is clean; two credential greps are empty before every commit
+(section 6). For the merge itself see the paragraph after the next two.
 
 **Verified on the board:** everything up to and including phase 2, plus the stage-3 sleep gate and
 the boot path. The last bench session was 2026-09-13.
@@ -61,41 +71,31 @@ the boot path. The last bench session was 2026-09-13.
 is the session script in order, A1 through A7 plus the strip steps. Nothing in it has been run.
 Until it has, treat the DEVICE_INFO, MEDIA and LIGHT screens as code-complete and unproven.
 
+**The merge (2026-10-23):** host tests, include edges (30 components), WBS lint and the PC app's
+tests pass on the merged tree, and every translation unit the merge touched passes a host
+`-fsyntax-only` check against stub IDF headers. The merged firmware has **not been built** (ESP-IDF
+could not be installed in that environment) and has not been on the board.
+
 Two review rounds with independent agents (four readers and a critic mapping the old code, then
 five review dimensions with every finding handed to a second agent to refute) found nineteen real
 defects before their commits. The findings and the refutations are recorded in `phase3-log.md`.
 
-## 4. The branch problem, which blocks rejoining the remote
+## 4. The branch problem: resolved by a merge (2026-10-23)
 
-The firmware branch `codex/multi-board-support` **has diverged from its own remote**. As of
-2026-10-23:
+As written that morning: `codex/multi-board-support` had 14 commits after the `6332b09` fork
+(OTA support and its release pipeline, the configurable OTA variant, the setup portal, the LVGL
+display lifecycle and screen flows, the arc animation) touching the files the refactor rewrote.
+Those 14 were already in `main` (PR #1), and `main` had 109 more: the folder restructure,
+Bluetooth, the connectivity refactor, pairing and auth, the boot guard and the companion app.
 
-- our side: 39 commits, the entire refactor, forked at `6332b09`
-- the remote's side: 14 commits we do not have, pushed after the fork
+`origin/main` is merged into this line (merge `240ee2e` on `claude/blissful-mayer-kxvyad`), the
+refactor as the base per the owner's decision of 2026-09-13; `integration-main-log.md` has the
+per-file resolution, the behaviour calls and what is unverified. `main`, `codex/multi-board-support`
+and `refactor/mvc-phase3` are untouched and are all ancestors of the merged branch, which is 41
+commits ahead of `main` and 0 behind, so it can become `main` by a fast-forward or a pull request
+once it builds and passes the bench. That step is the owner's.
 
-The 14 are real work and must not be discarded: `df65ff9 add ota support`, the OTA release
-pipeline and GitHub Pages config, `caf8c49` the configurable OTA variant and software-update UI,
-the setup portal commits, `659bb1c` wiring the display controller to the LVGL display lifecycle,
-`85704c6` the init/mode/device-info LVGL screen flows, `ea75d5a` the UI drawing primitives, and
-`47e790b` the environment arc intro and outro animation.
-
-Those touch exactly the files the refactor rewrote: `DisplayController`, `main.cpp`, the screen
-classes. A merge is a real integration with real conflicts, not a formality, and it overlaps the
-WBS OTA cluster (`OTA-01..07`, "port the LED project's OTA flow"), which may now be partly
-redundant against `df65ff9`.
-
-**Therefore this work is pushed to its own branch, `refactor/mvc-phase3`.** Nothing on the remote
-is touched or lost. The integration is the owner's call, and the options are:
-
-1. Merge `origin/codex/multi-board-support` into the refactor branch and resolve, reconciling the
-   OTA cluster against the OTA work already on the remote. This is the honest path and should be
-   scheduled as its own work package with its own bench gate.
-2. Rebase the refactor onto those 14 commits. Cleaner history, but 39 commits replay over rewritten
-   files; expect the same conflicts spread across every replay.
-3. Treat the remote branch as superseded and merge the other way. Only the owner can say whether
-   the portal and OTA work there is still wanted.
-
-Do not force-push `codex/multi-board-support` under any circumstances.
+Do not force-push `codex/multi-board-support` or `main` under any circumstances.
 
 The QNOB superproject branch `task/esp-idf-migration` has not diverged: 38 commits ahead, nothing
 behind, a clean fast-forward. Each firmware commit is followed by a submodule-pointer commit there.
@@ -105,16 +105,16 @@ behind, a clean fast-forward. Each firmware commit is followed by a submodule-po
 The toolchain lives in WSL under the `buildserver` user. From `screen/SW/ESP`:
 
 ```bash
-bash run-host-tests.sh                        # 34 suites, ASan/UBSan, the purity guard
-bash build-variant.sh esp32s3_amoled175       # the bench board, out-of-tree build
-python3 tools/check-include-edges.py esp-idf  # component edges
-node tools/wbs-lint.mjs                       # the work breakdown
+bash scripts/run-host-tests.sh                    # 34 suites, ASan/UBSan, the purity guard
+bash scripts/build-variant.sh esp32s3_amoled175   # the bench board, out-of-tree build under helpers/
+python3 tools/check-include-edges.py src/esp-idf  # component edges
+node tools/wbs-lint.mjs                           # the work breakdown
 ```
 
 From Git Bash on Windows, wrap each in `wsl -u buildserver -- bash -lc '...'` with literal paths;
 `$VAR` and `$(...)` do not survive the outer shell. The bench scripts in `tools/bench/` (flash,
 capture, boot_check, sleep_check, diag, led_check) are the repo-resident versions of the session
-scripts and write to `Hardware Ref/bench_logs`, which is ignored; they scrub the WiFi PSK and exit
+scripts and write to `helpers/bench_logs`, which is ignored; they scrub the WiFi PSK and exit
 2 without a port.
 
 Other tooling quirks that bite, recorded because they cost hours: a heredoc over about 8 KB is
@@ -141,18 +141,26 @@ the gate greps the index, so pasting the literal here would make every future co
 documentation. It was caught doing exactly that while this handover was being committed. Take the
 value from the key the owner is rotating, or from the shell history of an earlier session.
 
-The bench values live in `esp-idf/sdkconfig.defaults.local`, an untracked overlay that also turns
-the model trace on and both sleep modes off.
+The bench values live in `src/esp-idf/sdkconfig.defaults.local`, an untracked overlay that also
+turns the model trace on and both sleep modes off. A copy made before the merge sits at
+`esp-idf/sdkconfig.defaults.local` and has to be moved by hand. Main's tree carried the weather key
+again as a fallback in `InternetHandler.cpp`; the merge does not, but main's history does.
 
 ## 7. What is owed, in the order it should be picked up
 
-1. **A bench session.** `bench_runbook.md` A1 to A7 and the strip steps. Everything in phase 3
-   since 2026-09-13 is unproven, and A2, A5, A6 and A7 are first looks at new screens.
+0. **The first build of the merged tree**, all three variants, then commit the regenerated
+   dependency locks (they gain `espressif/mdns`). Watch IRAM and RAM on the S3 with Bluetooth in;
+   `integration-main-log.md` section 7 has the open points, the IDF version among them.
+1. **A bench session.** `bench_runbook.md` A1 to A7, the strip steps, and B1 to B7 for what came
+   from main. Everything in phase 3 since 2026-09-13 is unproven, and A2, A5, A6 and A7 are first
+   looks at new screens. Mind the boot guard: three boots shorter than 15 s put the board in Rescue.
 2. **The second USB-drop cause.** A build with deep sleep compiled out still dropped off the bus
    while the port sat idle. Diagnostics are committed and waiting: an RTC no-init black box
    rewritten every 30 s and the AXP2101 power-off reason at boot. After the next drop press RST,
    not re-plug, then run `diag.sh <log> 60 --no-flash` and read the `sysInfo:` block.
-3. **The branch integration** of section 4.
+3. **WBS reconciliation** against what main already built: the OTA cluster (`OTA-01..07`), WP3.7
+   against `docs/protocol.md` and the companion, the NET rows against ConnectivityManager
+   (`integration-main-log.md` section 7).
 4. **WP3.3**, the environment screen. It starts with `SCRN-02`, a leave-animation hotfix that
    ships alone, and its middle holds `SCRN-28`, a lifecycle measurement that needs a 50-cycle soak
    on the board and decides D17 for every view's `destroy()`.
@@ -177,16 +185,26 @@ The whole list is section 9 of the WBS; these are the ones blocking scheduled wo
   reconciles the knob UART with PWR_KEY and the touch-wake line if it is.
 - The `p0-fixed` screenshots, which several view rows compare against and which only the owner can
   take.
+- Whether the merged branch becomes `main`, and on which IDF: the WSL bench runs 5.3.2, main's code
+  was built on 5.5.1 on Windows.
+- The trust model across the new transports (`integration-main-log.md` section 4): the portal and a
+  paired envelope run every command, a plain BLE line only the MQTT allowlist; `pair` still hands
+  the token to any caller, and port 23456 has no server on main.
 
 ## 9. Repository map
 
 - `screen/SW/ESP` — this repo, `alperbasarn/homio-round-hmi`, a submodule of `alperbasarn/QNOB`.
   Run git here, not in the superproject, for firmware work. Other copies of the tree on disk
   (`screen - Copy` and friends) are stale and must not be edited.
-- `esp-idf/` — the live firmware tree: `components/`, `main/`, `test/host/`, `PC/` (the companion
-  app and its pytest suite), `tools/`.
+- `src/esp-idf/` — the live firmware tree: `components/`, `main/`, `test/host/`, `PC/` (the older
+  PC app and its pytest suite).
+- `scripts/` — build, flash and host-test entry points; `tools/` — the include-edge and graph
+  checks, the WBS lint, the bench scripts.
+- `Companions/Windows/` — main's companion app (discovery, pairing, config, OTA) and its CI in
+  `.github/workflows/companion.yml`; `docs/protocol.md` — its wire protocol.
 - `dev_notes/` — the plan, the work breakdown, a log per phase, the bench runbook, the gesture
   table, the LED MQTT contract and its strip-side review, the credential rotation note, and the
   character set.
-- `Hardware Ref/` — the out-of-tree build directories, the generated sdkconfigs per variant, and
-  the ignored bench logs.
+- `documents/` — the OTA release notes and `Hardware Ref/` (datasheets, `variant_overview.csv`).
+- `helpers/` (ignored) — the out-of-tree build directories, the generated sdkconfigs per variant,
+  the host-test build and the bench logs; `binaries/` (ignored) — published images.

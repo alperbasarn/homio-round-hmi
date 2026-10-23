@@ -4,9 +4,14 @@ One page for the next bench session. Everything below runs from Windows Git Bash
 
     wsl -u buildserver -- bash -lc 'bash /mnt/c/Users/alper/Documents/GitHub/QNOB/screen/SW/ESP/tools/bench/<script>.sh'
 
-Logs land in `Hardware Ref/bench_logs/` (ignored by git); the WiFi PSK is scrubbed from them.
-Build first: `bash build-variant.sh esp32s3_amoled175` in WSL with `sdkconfig.defaults.local`
-carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_LIGHT_SLEEP=n`.
+Logs land in `helpers/bench_logs/` (ignored by git); the WiFi PSK is scrubbed from them.
+Build first: `bash scripts/build-variant.sh esp32s3_amoled175` in WSL with
+`src/esp-idf/sdkconfig.defaults.local` carrying `CONFIG_QNOB_MODEL_TRACE=y`,
+`CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_LIGHT_SLEEP=n`.
+
+Since the merge of main (2026-10-23, `integration-main-log.md`) the firmware lives under
+`src/esp-idf/`. The untracked overlay does not move with checkout: move
+`esp-idf/sdkconfig.defaults.local` to `src/esp-idf/sdkconfig.defaults.local` once.
 
 ## 0. Setup (once per session)
 
@@ -15,6 +20,10 @@ carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_L
    WSL shuts down 8 s after the last process, which drops the attach; the helper re-attaches.
 2. A tap does not wake a deep-sleeping board and the bench build has deep sleep off. If the board
    is missing from the bus, press RST, do not re-plug, and go to step 3 of the drop protocol.
+3. The boot guard (main) counts every boot that ends within 15 s as a crash, whatever ended it:
+   a flash, RST, or a capture that resets over RTS. Three in a row and the board comes up in
+   Rescue mode (sad face, AP and portal only, `Boot guard: Rescue` in the log). Let each boot run
+   past 15 s between resets; one boot past 15 s clears the count.
 
 ## 1. Knob alone
 
@@ -70,7 +79,19 @@ carrying `CONFIG_QNOB_MODEL_TRACE=y`, `CONFIG_QNOB_DEEP_SLEEP=n`, `CONFIG_QNOB_L
    and previous track. DEVICE_INFO: dragging the sound bar moves the PC volume. Stop the PC
    app: `PC not answering` after the next request, the knob still moves the ring.
 
-## 4. After the session
+## 4. Merged from main (first look at each)
+
+| Step | How | Pass when |
+|---|---|---|
+| B1 boot guard | the A1 capture | `Boot guard: Normal mode (crash_count=0)` first, then the A1 lines; after 15 s nothing more from the guard |
+| B2 Rescue | three boots cut short before 15 s (RST), then a fourth left alone | the fourth shows the safe-mode face, `Safe mode Rescue running: AP and portal only`, the AP is visible and its portal page loads; the next boot left past 15 s is back to Normal |
+| B3 portal | join the AP from a phone | the captive page opens, saving a WiFi slot connects the station (`Got IP address`), and the `status` line in the log follows |
+| B4 Bluetooth | a phone or PC scanning BLE | the device advertises under its BT name; pairing as a HID host works; on the PC page a tap sends play/pause over HID while paired and over the media target when not |
+| B5 BLE serial | the companion over BLE | `ping` answers without pairing; a command without the token answers `unauthorized`; after pairing, `status` returns WiFi, MQTT and BLE fields; a plain line (no JSON) is refused unless it is on the MQTT allowlist |
+| B6 mDNS | the companion's discovery tab | the device appears as `_qnob._tcp` on the AP and again after the station connects; nothing answers on port 23456 yet (A2 never reached main) |
+| B7 brightness and screen | `setBrightness:30`, `screen:timer` over BLE or serial | the panel dims and the page changes on the next frame, with no LVGL error and no watchdog |
+
+## 5. After the session
 
 Summarise each log in the phase logs (phase 2 for the drop protocol, phase 3 for A2, A3 and
 the LED path) and commit; the `p0-fixed` screenshots and the push of the strip branch stay owner

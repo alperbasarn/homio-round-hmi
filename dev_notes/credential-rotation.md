@@ -37,3 +37,5 @@ Decision: _pending_
 2026-09-12 (NET-28): the OpenWeatherMap literal is gone from `WeatherHandler.h`; the key now comes from `CONFIG_QNOB_WEATHER_API_KEY`, kept in the untracked `sdkconfig.defaults.local` (see `sdkconfig.defaults.local.example`). The old value stays burned until it is rotated at the provider.
 
 2026-09-12 (WP1.4 commit): the same key was also in `arduino/WeatherHandler.h` (blanked) and inside the tracked OTA image `esp-idf/ota/qnub-screen.bin` (untracked; `esp-idf/ota/` is ignored; the file stays on disk). History carries both until the key is rotated.
+
+2026-10-23 (merge of `main`, `integration-main-log.md`): main's tree carried the weather key again, as a literal fallback in `InternetHandler.cpp` and inside its committed build output (`src/esp-idf/build/`, `build_s3_amoled175/`), the bench PSK in `sdkconfig.defaults.esp32c6`, and the broker host, user and password in three PC-app files. The merged index carries none of them; main's history still does. Rotation stays the owner action.
